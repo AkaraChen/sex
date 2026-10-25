@@ -31,20 +31,24 @@ services:
     command: ["worker"]
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     restart: unless-stopped
+    ports: ["127.0.0.1:${REDIS_PORT:-6379}:6379"]
     volumes: [redis-data:/data]
 
+  # Pin to a tested tag or digest in production (set SEARXNG_IMAGE / LIGHTPANDA_IMAGE).
   searxng:
-    image: searxng/searxng:latest
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
     restart: unless-stopped
+    ports: ["127.0.0.1:${SEARXNG_PORT:-8080}:8080"]
     volumes:
       - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me}
 
+  # Pin to a tested tag or digest in production (set SEARXNG_IMAGE / LIGHTPANDA_IMAGE).
   lightpanda:
-    image: lightpanda/browser:nightly
+    image: ${LIGHTPANDA_IMAGE:-lightpanda/browser:nightly}
     restart: unless-stopped
     environment:
       LIGHTPANDA_DISABLE_TELEMETRY: "true"
