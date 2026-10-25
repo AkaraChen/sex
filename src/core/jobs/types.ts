@@ -55,6 +55,8 @@ export interface JobStore {
   /** Moves a completed job back to "scraping" (batch appendToId). */
   reopen(id: string): Promise<void>;
   incr(id: string, counter: CounterName, by?: number): Promise<number>;
+  /** Decrements `pending` once for this task; returns the new value, or null if `taskId` was already settled. Without a taskId it behaves like `incr(id, "pending", -1)`. */
+  settle(id: string, taskId: string | undefined): Promise<number | null>;
   /** Reserves `count` fetch slots spaced `intervalMs` apart, starting no earlier than `now` or the end of the previous reservation. Returns the start time (ms) of the first slot. */
   reserveSlots(id: string, count: number, intervalMs: number, now: number): Promise<number>;
   pushDocument(id: string, doc: Document): Promise<void>;
@@ -71,8 +73,8 @@ export interface JobStore {
 }
 
 export type Task =
-  | { type: "crawl-start"; jobId: string }
-  | { type: "page"; jobId: string; url: string; depth: number; options?: Record<string, unknown> }
+  | { type: "crawl-start"; jobId: string; taskId?: string }
+  | { type: "page"; jobId: string; taskId?: string; url: string; depth: number; options?: Record<string, unknown> }
   | { type: "extract"; jobId: string };
 
 export interface TaskQueue {

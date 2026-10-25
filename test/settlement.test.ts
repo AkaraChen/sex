@@ -1,0 +1,162 @@
+// Each task settles its job's pending count at most once, and every task settles even when its handler fails early.
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { Engine } from "../src/core/engine.ts";
+import type { JobRecord, Task, TaskQueue } from "../src/core/jobs/index.ts";
+import { runTask } from "../src/core/tasks.ts";
+import { testEngine, waitFor } from "./helpers.ts";
+
+const paragraphs = Array.from(
+  { length: 4 },
+  (_, i) => `<p>Paragraph ${i + 1} about settlement. ${"Lorem ipsum dolor sit amet. ".repeat(8)}</p>`,
+).join("");
+
+function startSite() {
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(req) {
+      if (new URL(req.url).pathname === "/page") {
+        return new Response(
+          `<!doctype html><html lang="en"><head><title>Page</title></head><body><main><article><h1>Page</h1>${paragraphs}</article></main></body></html>`,
+          {
+            headers: { "content-type": "text/html; charset=utf-8" },
+          },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+}
+
+/** Webhook receiver that records every batch_scrape/crawl event type it gets. */
+function startHookServer() {
+  const types: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(req) {
+      const body = (await req.json()) as { type: string };
+      types.push(body.type);
+      return new Response("ok");
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}/hook`, types, stop: () => server.stop(true) };
+}
+
+/** Records every task passed to queue.add, then forwards it to the real queue. */
+function recordTasks(queue: TaskQueue): Task[] {
+  const recorded: Task[] = [];
+  const original = queue.add.bind(queue);
+  queue.add = async (tasks) => {
+    recorded.push(...tasks.map((t) => t.task));
+    return original(tasks);
+  };
+  return recorded;
+}
+
+async function finished(engine: Engine, id: string): Promise<JobRecord> {
+  return waitFor(async () => {
+    const j = await engine.getJob(id, "batch_scrape");
+    return j.status !== "scraping" ? j : undefined;
+  });
+}
+
+describe("settle", () => {
+  let engine: Engine;
+
+  beforeAll(() => {
+    engine = testEngine();
+  });
+
+  afterAll(async () => {
+    await engine.jobs.close();
+  });
+
+  test("the same taskId decrements pending once; a new taskId decrements again", async () => {
+    const { store } = engine.jobs;
+    const job = await store.create({ kind: "batch_scrape", options: {} });
+    await store.incr(job.id, "pending", 2);
+    expect(await store.settle(job.id, "a")).toBe(1);
+    expect(await store.settle(job.id, "a")).toBeNull();
+    expect(await store.settle(job.id, "b")).toBe(0);
+    expect((await store.get(job.id))?.pending).toBe(0);
+  });
+
+  test("settling an unknown job returns null", async () => {
+    expect(await engine.jobs.store.settle("no-such-job", "a")).toBeNull();
+  });
+});
+
+describe("settlement", () => {
+  let site: ReturnType<typeof startSite>;
+  let hooks: ReturnType<typeof startHookServer>;
+  let engine: Engine;
+
+  beforeAll(() => {
+    site = startSite();
+    hooks = startHookServer();
+    engine = testEngine();
+  });
+
+  afterAll(async () => {
+    site.stop();
+    hooks.stop();
+    await engine.jobs.close();
+  });
+
+  test("a redelivered page task does not complete the job early or twice", async () => {
+    const recorded = recordTasks(engine.jobs.queue);
+    const { job } = await engine.batchScrape({ urls: [`${site.url}/page`], webhook: hooks.url });
+    const done = await finished(engine, job.id);
+    expect(done.status).toBe("completed");
+
+    const pageTask = recorded.find((t) => t.type === "page");
+    if (!pageTask) throw new Error("no page task recorded");
+    await runTask(engine, pageTask);
+
+    const after = await engine.getJob(job.id, "batch_scrape");
+    expect(after.pending).toBe(0);
+    expect(after.status).toBe("completed");
+    await waitFor(() => (hooks.types.length >= 1 ? true : undefined));
+    await Bun.sleep(100);
+    expect(hooks.types.filter((t) => t === "batch_scrape.completed")).toHaveLength(1);
+  });
+
+  test("a page task whose store.get throws still settles, so the job completes", async () => {
+    const { store } = engine.jobs;
+    const realGet = store.get.bind(store);
+    let failures = 1;
+    store.get = async (id: string) => {
+      if (failures > 0) {
+        failures--;
+        throw new Error("transient store failure");
+      }
+      return realGet(id);
+    };
+    try {
+      const { job } = await engine.batchScrape({ urls: [`${site.url}/page`] });
+      const done = await finished(engine, job.id);
+      expect(failures).toBe(0);
+      expect(done.status).toBe("completed");
+      expect(done.pending).toBe(0);
+    } finally {
+      store.get = realGet;
+    }
+  });
+
+  test("a failed enqueue rolls back pending and rethrows", async () => {
+    const queue = engine.jobs.queue;
+    const realAdd = queue.add.bind(queue);
+    queue.add = async () => {
+      throw new Error("queue down");
+    };
+    try {
+      await expect(engine.batchScrape({ urls: [`${site.url}/page`] })).rejects.toThrow("queue down");
+    } finally {
+      queue.add = realAdd;
+    }
+    const jobs = await engine.jobs.store.active("batch_scrape");
+    for (const j of jobs) expect(j.pending).toBe(0);
+  });
+});

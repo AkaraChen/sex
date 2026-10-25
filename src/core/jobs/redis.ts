@@ -24,6 +24,15 @@ local start = math.max(now, next)
 redis.call('HSET', KEYS[1], 'nextSlotAt', start + count * interval)
 return start`;
 
+// KEYS: job hash, settled-task set. ARGV: taskId ("" = none). Returns nil when the job is gone or the task was already settled.
+const SETTLE_SCRIPT = `
+if redis.call('HEXISTS', KEYS[1], 'kind') == 0 then return nil end
+if ARGV[1] ~= '' then
+  if redis.call('SADD', KEYS[2], ARGV[1]) == 0 then return nil end
+  redis.call('PEXPIREAT', KEYS[2], redis.call('HGET', KEYS[1], 'expiresAt'))
+end
+return redis.call('HINCRBY', KEYS[1], 'pending', -1)`;
+
 const REOPEN_SCRIPT = `
 if redis.call('HGET', KEYS[1], 'status') ~= 'completed' then return 0 end
 redis.call('HSET', KEYS[1], 'status', 'scraping')
@@ -126,6 +135,11 @@ export class RedisJobStore implements JobStore {
 
   async incr(id: string, counter: CounterName, by = 1) {
     return this.redis.hincrby(this.key(id), counter, by);
+  }
+
+  async settle(id: string, taskId: string | undefined) {
+    const res = await this.redis.eval(SETTLE_SCRIPT, 2, this.key(id), this.key(id, "settled"), taskId ?? "");
+    return res === null ? null : Number(res);
   }
 
   async reserveSlots(id: string, count: number, intervalMs: number, now: number) {

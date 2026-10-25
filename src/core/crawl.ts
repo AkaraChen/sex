@@ -3,7 +3,7 @@ import { badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import { CrawlRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
-import { type JobRecord, sendWebhook, settleTask, validateWebhook } from "./jobs/index.ts";
+import { type JobRecord, sendWebhook, validateWebhook } from "./jobs/index.ts";
 import { normalizeUrl, sitemapUrls } from "./map.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
 import { parseRobots, type Robots } from "./robots.ts";
@@ -171,7 +171,14 @@ export async function startCrawl(engine: Engine, input: CrawlRequest, defaults: 
   const { store, queue } = engine.jobs;
   const job = await store.create({ kind: "crawl", url: start.href, options: req as unknown as Record<string, unknown> });
   await store.incr(job.id, "pending", 1);
-  await queue.add([{ task: { type: "crawl-start", jobId: job.id } }]);
+  try {
+    await queue.add([{ task: { type: "crawl-start", jobId: job.id, taskId: crypto.randomUUID() } }]);
+  } catch (err) {
+    // Nothing will run or settle this task, so undo the count and fail the job.
+    await store.incr(job.id, "pending", -1);
+    await store.finish(job.id, "failed", { error: toAppError(err).message });
+    throw err;
+  }
   return job;
 }
 
@@ -223,7 +230,16 @@ async function enqueueLinks(engine: Engine, job: JobRecord, plan: CrawlPlan, lin
     const start = await store.reserveSlots(job.id, allowed.length, interval, now);
     delays = allowed.map((_, i) => Math.max(0, start + i * interval - now));
   }
-  await queue.add(allowed.map((url, i) => ({ task: { type: "page" as const, jobId: job.id, url, depth }, delayMs: delays[i] })));
+  const tasks = allowed.map((url, i) => ({
+    task: { type: "page" as const, jobId: job.id, taskId: crypto.randomUUID(), url, depth },
+    delayMs: delays[i],
+  }));
+  try {
+    await queue.add(tasks);
+  } catch (err) {
+    await store.incr(job.id, "pending", -allowed.length);
+    throw err;
+  }
 }
 
 export async function handleCrawlStart(engine: Engine, jobId: string) {
@@ -261,8 +277,6 @@ export async function handleCrawlStart(engine: Engine, jobId: string) {
       const job = await store.get(jobId);
       if (job) sendWebhook(engine.config, job, "failed", [], e.message);
     }
-  } finally {
-    await settleTask(engine, jobId);
   }
 }
 
@@ -282,7 +296,5 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
     if ((plan.req.sitemap ?? "include") !== "only") await enqueueLinks(engine, job, plan, links ?? [], depth + 1);
   } catch (err) {
     await store.pushError(job.id, { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: toAppError(err).message });
-  } finally {
-    await settleTask(engine, job.id);
   }
 }
