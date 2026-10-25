@@ -39,9 +39,13 @@ redis.call('HSET', KEYS[1], 'status', 'scraping')
 redis.call('SADD', KEYS[2], ARGV[1])
 return 1`;
 
-export function redisConnection(url: string): IORedis {
+/**
+ * Connection for the job store and the BullMQ Queue: commands fail after a few retries during an outage instead of
+ * hanging, so API calls (job status etc.) return an error. The Worker gets its own unlimited-retry connection.
+ */
+export function redisConnection(url: string, opts: { blocking?: boolean } = {}): IORedis {
   // BullMQ workers need maxRetriesPerRequest: null for their blocking connection.
-  const conn = new IORedis(url, { maxRetriesPerRequest: null, lazyConnect: false });
+  const conn = new IORedis(url, { maxRetriesPerRequest: opts.blocking ? null : 3, lazyConnect: false });
   conn.on("error", (err) => log.error("redis error", { error: err.message }));
   return conn;
 }
@@ -226,11 +230,14 @@ export class RedisJobStore implements JobStore {
 export class BullTaskQueue implements TaskQueue {
   private readonly queue: Queue;
   private worker?: Worker;
+  private ownedWorkerConnection?: IORedis;
 
   constructor(
     private readonly connection: IORedis,
     private readonly prefix: string,
     private readonly concurrency: number,
+    /** Connection options for the worker only; created lazily because it must retry forever (BullMQ requirement). */
+    private readonly workerConnection?: () => IORedis,
   ) {
     this.queue = new Queue("tasks", { connection, prefix });
   }
@@ -252,8 +259,9 @@ export class BullTaskQueue implements TaskQueue {
 
   startWorker(handler: (task: Task) => Promise<void>) {
     if (this.worker) return;
+    if (this.workerConnection) this.ownedWorkerConnection = this.workerConnection();
     this.worker = new Worker("tasks", (job) => handler(job.data as Task), {
-      connection: this.connection,
+      connection: this.ownedWorkerConnection ?? this.connection,
       prefix: this.prefix,
       concurrency: this.concurrency,
     });
@@ -272,5 +280,6 @@ export class BullTaskQueue implements TaskQueue {
   async close() {
     await this.worker?.close();
     await this.queue.close();
+    this.ownedWorkerConnection?.disconnect();
   }
 }

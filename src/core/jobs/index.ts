@@ -19,9 +19,10 @@ export interface JobBackend {
 /** Redis + BullMQ when a Redis URL is configured, otherwise an in-process store and queue. */
 export function createJobBackend(config: Config): JobBackend {
   if (config.redisUrl) {
-    const conn = redisConnection(config.redisUrl);
+    const url = config.redisUrl;
+    const conn = redisConnection(url);
     const store = new RedisJobStore(conn, config.redisPrefix, config.jobTtlMs);
-    const queue = new BullTaskQueue(conn, config.redisPrefix, config.concurrency);
+    const queue = new BullTaskQueue(conn, config.redisPrefix, config.concurrency, () => redisConnection(url, { blocking: true }));
     return {
       kind: "redis",
       store,
