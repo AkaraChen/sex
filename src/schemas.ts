@@ -91,12 +91,18 @@ export type Action = z.infer<typeof Action>;
 // ---------------------------------------------------------------- scrape
 
 export const LocationConfig = z.object({
-  country: z.string().optional().describe("ISO 3166-1 alpha-2 country code"),
+  country: z.string().optional().describe("ISO 3166-1 alpha-2 country code. Accepted; not used for geo-targeting."),
   languages: z.array(z.string()).optional().describe("Preferred languages, sent as Accept-Language"),
 });
 
 export const ScrapeOptions = z.object({
-  formats: z.array(FormatOption).max(20).optional().describe('Output formats. Defaults to ["markdown"]. At most 20.'),
+  formats: z
+    .array(FormatOption)
+    .max(20)
+    .optional()
+    .describe(
+      'Output formats. Defaults to ["markdown"]. At most 20. "screenshot", "changeTracking", "branding", "product", "menu", "audio" and "video" return 501 NOT_SUPPORTED.',
+    ),
   onlyMainContent: z.boolean().optional().describe("Return only the main content (Defuddle). Defaults to true."),
   includeTags: z
     .array(z.string().max(1000))
@@ -122,10 +128,10 @@ export const ScrapeOptions = z.object({
   actions: z.array(Action).max(50).optional().describe("Browser actions run before the page is captured (browser only, at most 50)"),
   location: LocationConfig.optional(),
   removeBase64Images: z.boolean().optional(),
-  blockAds: z.boolean().optional(),
-  proxy: z.string().optional(),
-  maxAge: z.number().optional(),
-  storeInCache: z.boolean().optional(),
+  blockAds: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+  proxy: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+  maxAge: z.number().optional().describe("Accepted for Firecrawl compatibility; ignored (there is no cache)."),
+  storeInCache: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
 });
 export type ScrapeOptions = z.infer<typeof ScrapeOptions>;
 
@@ -189,12 +195,15 @@ export const SearchRequest = z.object({
   categories: z.array(z.union([CategoryName, z.object({ type: CategoryName })])).optional(),
   includeDomains: z.array(z.string()).max(50).optional().describe("At most 50; each one costs a separate SearXNG query"),
   excludeDomains: z.array(z.string()).max(50).optional(),
-  tbs: z.string().optional().describe("Time filter: qdr:h, qdr:d, qdr:w, qdr:m, qdr:y"),
-  location: z.string().optional(),
-  country: z.string().optional(),
+  tbs: z
+    .string()
+    .optional()
+    .describe("Time filter: qdr:h, qdr:d, qdr:w, qdr:m, qdr:y. qdr:h is treated as qdr:d (SearXNG has no hourly range)."),
+  location: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+  country: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
   lang: z.string().optional().describe("SearXNG language code, e.g. en, zh-CN (extension)"),
   timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
-  ignoreInvalidURLs: z.boolean().optional(),
+  ignoreInvalidURLs: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
   scrapeOptions: ScrapeOptions.optional().describe("If formats are given, every web/news result is scraped too"),
 });
 export type SearchRequest = z.infer<typeof SearchRequest>;
@@ -286,7 +295,7 @@ export const CrawlRequest = z.object({
   ignoreRobotsTxt: z.boolean().optional(),
   robotsUserAgent: z.string().optional(),
   delay: z.number().nonnegative().max(60).optional().describe("Seconds between page fetches (max 60)"),
-  maxConcurrency: z.number().int().positive().optional(),
+  maxConcurrency: z.number().int().positive().optional().describe("Accepted; concurrency is set per server (SEX_CONCURRENCY)."),
   webhook: WebhookConfig.optional(),
   scrapeOptions: ScrapeOptions.optional(),
 });
@@ -331,7 +340,7 @@ export const CrawlParamsPreviewResponse = z.object({ success: z.literal(true), d
 export const BatchScrapeRequest = ScrapeOptions.extend({
   urls: z.array(z.string()).min(1).max(10_000),
   ignoreInvalidURLs: z.boolean().optional(),
-  maxConcurrency: z.number().int().positive().optional(),
+  maxConcurrency: z.number().int().positive().optional().describe("Accepted; concurrency is set per server (SEX_CONCURRENCY)."),
   appendToId: z.string().optional(),
   webhook: WebhookConfig.optional(),
 });
@@ -343,7 +352,7 @@ export const ExtractRequest = z.object({
   schema: z.record(z.string(), z.unknown()).optional(),
   systemPrompt: z.string().max(20_000).optional(),
   enableWebSearch: z.boolean().optional().describe("Also search the web for the prompt and include top results"),
-  allowExternalLinks: z.boolean().optional(),
+  allowExternalLinks: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
   showSources: z.boolean().optional(),
   ignoreInvalidURLs: z.boolean().optional(),
   scrapeOptions: ScrapeOptions.optional(),
