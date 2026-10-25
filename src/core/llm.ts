@@ -30,20 +30,43 @@ export class Llm {
 
   private async complete(what: string, messages: Message[], responseFormat?: ResponseFormat, signal?: AbortSignal): Promise<string> {
     const llm = this.require(what);
-    const res = await fetch(`${llm.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(llm.apiKey ? { authorization: `Bearer ${llm.apiKey}` } : {}),
-      },
-      body: JSON.stringify({ model: llm.model, messages, ...(responseFormat ? { response_format: responseFormat } : {}) }),
-      signal,
-    });
+    const { llmTimeout } = this.config;
+    const deadline = AbortSignal.timeout(llmTimeout);
+    const sig = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    const timedOut = (): AppError | undefined => {
+      if (deadline.aborted) return new AppError(408, "TIMEOUT", `LLM request timed out after ${llmTimeout}ms`);
+      if (signal?.aborted) return new AppError(408, "TIMEOUT", "LLM request cancelled");
+      return undefined;
+    };
+    let res: Response;
+    try {
+      res = await fetch(`${llm.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(llm.apiKey ? { authorization: `Bearer ${llm.apiKey}` } : {}),
+        },
+        body: JSON.stringify({ model: llm.model, messages, ...(responseFormat ? { response_format: responseFormat } : {}) }),
+        signal: sig,
+      });
+    } catch (err) {
+      const t = timedOut();
+      if (t) throw t;
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new AppError(502, "LLM_UNAVAILABLE", `Cannot reach LLM at ${llm.baseUrl}: ${reason}`);
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new AppError(502, "LLM_ERROR", `LLM request failed (${res.status}): ${text.slice(0, 500)}`, { status: res.status });
     }
-    const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    let body: { choices?: Array<{ message?: { content?: string } }> };
+    try {
+      body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    } catch {
+      const t = timedOut();
+      if (t) throw t;
+      throw new AppError(502, "LLM_ERROR", "LLM returned a non-JSON response");
+    }
     const content = body.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new AppError(502, "LLM_ERROR", "LLM returned no content");
     return content;

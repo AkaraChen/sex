@@ -16,6 +16,8 @@ export interface Config {
   concurrency: number;
   /** Default per-page timeout in ms. */
   timeout: number;
+  /** Deadline for a single LLM request in ms. */
+  llmTimeout: number;
   /** Redis URL for BullMQ jobs; in-memory queue when unset. */
   redisUrl?: string;
   redisPrefix: string;
@@ -42,6 +44,7 @@ export interface ConfigOverrides {
   userAgent?: string;
   concurrency?: number;
   timeout?: number;
+  llmTimeout?: number;
   redisUrl?: string;
   redisPrefix?: string;
   llmMaxInputChars?: number;
@@ -77,6 +80,7 @@ const flagField = z
 const RAW_SCHEMA = z.object({
   concurrency: intField(1),
   timeout: intField(1),
+  llmTimeout: intField(1000),
   maxBodyBytes: intField(1024),
   jobTtlMs: intField(60_000),
   extractWildcardPages: intField(1),
@@ -91,6 +95,7 @@ const RAW_SCHEMA = z.object({
 const FIELD_RULES: Record<keyof z.infer<typeof RAW_SCHEMA>, [name: string, expected: string]> = {
   concurrency: ["SEX_CONCURRENCY", "an integer >= 1"],
   timeout: ["SEX_TIMEOUT", "an integer >= 1"],
+  llmTimeout: ["SEX_LLM_TIMEOUT", "an integer >= 1000 (milliseconds)"],
   maxBodyBytes: ["SEX_MAX_BODY_BYTES", "an integer >= 1024"],
   jobTtlMs: ["SEX_JOB_TTL_MS", "an integer >= 60000 (milliseconds)"],
   extractWildcardPages: ["SEX_EXTRACT_WILDCARD_PAGES", "an integer >= 1"],
@@ -112,6 +117,7 @@ export function resolveConfig(
   const raw = {
     concurrency: o.concurrency ?? str(env.SEX_CONCURRENCY),
     timeout: o.timeout ?? str(env.SEX_TIMEOUT),
+    llmTimeout: o.llmTimeout ?? str(env.SEX_LLM_TIMEOUT),
     maxBodyBytes: str(env.SEX_MAX_BODY_BYTES),
     jobTtlMs: str(env.SEX_JOB_TTL_MS),
     extractWildcardPages: str(env.SEX_EXTRACT_WILDCARD_PAGES),
@@ -148,6 +154,7 @@ export function resolveConfig(
     userAgent: str(o.userAgent) ?? str(env.SEX_USER_AGENT) ?? DEFAULT_UA,
     concurrency: v.concurrency ?? 8,
     timeout: v.timeout ?? 30_000,
+    llmTimeout: v.llmTimeout ?? 120_000,
     redisUrl: str(o.redisUrl) ?? str(env.SEX_REDIS_URL),
     redisPrefix: str(o.redisPrefix) ?? str(env.SEX_REDIS_PREFIX) ?? "sex",
     llmMaxInputChars: v.llmMaxInputChars ?? 200_000,

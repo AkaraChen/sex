@@ -48,24 +48,34 @@ export async function searxng(engine: Engine, query: SearxQuery, pageno: number,
   const params = new URLSearchParams({ q: query.q, format: "json", categories: query.categories, pageno: String(pageno) });
   if (query.timeRange) params.set("time_range", query.timeRange);
   if (query.language) params.set("language", query.language);
+  const { timeout, searxngUrl } = engine.config;
+  const deadline = AbortSignal.timeout(timeout);
+  const sig = signal ? AbortSignal.any([signal, deadline]) : deadline;
   let res: Response;
   try {
-    res = await fetch(`${engine.config.searxngUrl}/search?${params}`, {
-      headers: { accept: "application/json" },
-      signal: signal ?? AbortSignal.timeout(engine.config.timeout),
-    });
+    res = await fetch(`${searxngUrl}/search?${params}`, { headers: { accept: "application/json" }, signal: sig });
   } catch (err) {
+    if (deadline.aborted) throw new AppError(408, "TIMEOUT", `SearXNG request timed out after ${timeout}ms`);
+    if (signal?.aborted) throw new AppError(408, "TIMEOUT", "SearXNG request cancelled");
     throw new AppError(
       502,
       "SEARCH_BACKEND_UNAVAILABLE",
-      `Cannot reach SearXNG at ${engine.config.searxngUrl}: ${err instanceof Error ? err.message : String(err)}`,
+      `Cannot reach SearXNG at ${searxngUrl}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
   if (!res.ok) {
     const hint = res.status === 403 ? " (is the json format enabled in SearXNG settings.yml?)" : "";
     throw new AppError(502, "SEARCH_BACKEND_ERROR", `SearXNG returned HTTP ${res.status}${hint}`);
   }
-  const body = (await res.json()) as { results?: SearxResult[] };
+  let body: { results?: SearxResult[] };
+  try {
+    body = (await res.json()) as { results?: SearxResult[] };
+  } catch {
+    if (deadline.aborted) throw new AppError(408, "TIMEOUT", `SearXNG request timed out after ${timeout}ms`);
+    if (signal?.aborted) throw new AppError(408, "TIMEOUT", "SearXNG request cancelled");
+    const type = res.headers.get("content-type") ?? "none";
+    throw new AppError(502, "SEARCH_BACKEND_ERROR", `SearXNG returned a non-JSON response (content-type: ${type})`);
+  }
   return body.results ?? [];
 }
 
