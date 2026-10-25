@@ -117,7 +117,11 @@ export async function scrapeUrl(
   const formats = assertScrapeCapabilities(engine, options);
   const url = parseHttpUrl(rawUrl.trim());
   await assertPublicUrl(url, engine.config.allowPrivateNetwork);
-  return engine.scrapeLimit(() => scrapeInner(engine, url.href, options, formats, internal));
+  return engine.scrapeLimit(() => {
+    // Waiting in the queue can outlast the caller; do not start work nobody is waiting for.
+    if (internal.signal?.aborted) throw new AppError(408, "TIMEOUT", "Request cancelled before the scrape started");
+    return scrapeInner(engine, url.href, options, formats, internal);
+  });
 }
 
 async function scrapeInner(
@@ -175,6 +179,7 @@ async function scrapeInner(
               return false;
             }
           },
+      signal: internal.signal,
     });
     ({ url: finalUrl, status, contentType } = browserResult);
     rawHtml = browserResult.rawHtml;

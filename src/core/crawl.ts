@@ -293,7 +293,9 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
       await store.incr(job.id, "completed", 1);
       sendWebhook(engine.config, job, "page", [document]);
     }
-    if ((plan.req.sitemap ?? "include") !== "only") await enqueueLinks(engine, job, plan, links ?? [], depth + 1);
+    // `scheduled` only grows toward `limit` and then stays there, so a full crawl has nothing left to discover.
+    const full = job.scheduled >= plan.limit;
+    if ((plan.req.sitemap ?? "include") !== "only" && !full) await enqueueLinks(engine, job, plan, links ?? [], depth + 1);
   } catch (err) {
     await store.pushError(job.id, { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: toAppError(err).message });
   }

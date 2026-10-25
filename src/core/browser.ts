@@ -26,6 +26,8 @@ export interface BrowserScrapeOptions {
   extract: Omit<PageExtractOptions, "url">;
   /** Checked for every request the browser makes (documents, redirects, subresources). Resolves true when allowed. */
   requestGuard?: (url: string) => Promise<boolean>;
+  /** Aborting closes the page's browser context, freeing its slot immediately. */
+  signal?: AbortSignal;
 }
 
 export interface BrowserScrapeResult {
@@ -175,16 +177,28 @@ export class BrowserPool {
     if (this.enabled) await this.getEndpoint();
   }
 
-  async withPage<T>(fn: (page: Page) => Promise<T>): Promise<T> {
+  async withPage<T>(fn: (page: Page) => Promise<T>, signal?: AbortSignal): Promise<T> {
     return this.limit(async () => {
+      if (signal?.aborted) throw new AppError(408, "TIMEOUT", "Browser scrape cancelled before it started");
       const browser = await puppeteer.connect({ browserWSEndpoint: await this.getEndpoint(), defaultViewport: null });
       try {
         const context = await browser.createBrowserContext();
+        // Closing the context makes in-flight page operations reject, so the slot is released at once.
+        let closed = false;
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          context.close().catch(() => {});
+        };
+        const onAbort = () => close();
+        signal?.addEventListener("abort", onAbort, { once: true });
         try {
+          if (signal?.aborted) throw new AppError(408, "TIMEOUT", "Browser scrape cancelled before it started");
           const page = await context.newPage();
           return await fn(page);
         } finally {
-          await context.close().catch(() => {});
+          signal?.removeEventListener("abort", onAbort);
+          close();
         }
       } finally {
         await browser.disconnect().catch(() => {});
@@ -193,6 +207,13 @@ export class BrowserPool {
   }
 
   async scrape(opts: BrowserScrapeOptions): Promise<BrowserScrapeResult> {
+    return this.scrapeInner(opts).catch((err: unknown) => {
+      if (opts.signal?.aborted) throw new AppError(408, "TIMEOUT", "Browser scrape cancelled");
+      throw err;
+    });
+  }
+
+  private async scrapeInner(opts: BrowserScrapeOptions): Promise<BrowserScrapeResult> {
     return this.withPage(async (page) => {
       page.setDefaultTimeout(opts.timeout);
       page.setDefaultNavigationTimeout(opts.timeout);
@@ -275,7 +296,7 @@ export class BrowserPool {
       const rawHtml = await page.content();
       const extracted = await runPageScript(page, { ...opts.extract, url: page.url() || opts.url });
       return { ...base, url: page.url() || opts.url, rawHtml, extracted, actions };
-    });
+    }, opts.signal);
   }
 
   async close(): Promise<void> {
