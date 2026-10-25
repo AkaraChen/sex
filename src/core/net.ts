@@ -143,6 +143,7 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
       throw new AppError(408, "SCRAPE_TIMEOUT", `Timed out after ${opts.timeout}ms fetching ${rawUrl}`);
     }
     if (err instanceof AppError) throw err;
+    if (opts.signal?.aborted) throw new AppError(408, "TIMEOUT", `Request cancelled while fetching ${rawUrl}`);
     throw new AppError(502, "FETCH_FAILED", `Failed to fetch ${rawUrl}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

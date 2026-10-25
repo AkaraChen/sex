@@ -7,7 +7,7 @@ import defuddleBundle from "defuddle/full" with { type: "text" };
 import pLimit from "p-limit";
 import puppeteer, { type Page } from "puppeteer-core";
 import type { Config } from "../config.ts";
-import { AppError } from "../errors.ts";
+import { AppError, BROWSER_HINT } from "../errors.ts";
 import { log } from "../log.ts";
 import type { Action } from "../schemas.ts";
 import { PAGE_SCRIPT, type PageExtractOptions, type PageExtractResult } from "./page.ts";
@@ -93,8 +93,15 @@ export class BrowserPool {
     if (this.config.cdpUrl) {
       const url = this.config.cdpUrl;
       if (url.startsWith("ws://") || url.startsWith("wss://")) return url;
-      const res = await fetch(new URL("/json/version", url));
-      const body = (await res.json()) as { webSocketDebuggerUrl?: string };
+      let body: { webSocketDebuggerUrl?: string };
+      try {
+        const res = await fetch(new URL("/json/version", url), { signal: AbortSignal.timeout(10_000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        body = (await res.json()) as { webSocketDebuggerUrl?: string };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new AppError(502, "BROWSER_UNAVAILABLE", `Cannot reach the CDP browser at ${url}: ${reason}. ${BROWSER_HINT}`);
+      }
       if (!body.webSocketDebuggerUrl) throw new Error(`No webSocketDebuggerUrl at ${url}/json/version`);
       return body.webSocketDebuggerUrl;
     }
