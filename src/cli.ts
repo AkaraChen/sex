@@ -40,9 +40,20 @@ const serverArgs = {
   ...commonArgs,
   "redis-url": { type: "string", description: "Run crawl/batch/extract jobs on BullMQ in Redis (env SEX_REDIS_URL); in-memory when unset" },
   worker: { type: "boolean", default: true, description: "Process queued jobs in this process (--no-worker to only enqueue; Redis mode)" },
+  "cors-origin": {
+    type: "string",
+    description: "Comma-separated browser origins allowed cross-origin, e.g. https://app.example.com (env SEX_CORS_ORIGINS; default none)",
+  },
+  "allowed-host": {
+    type: "string",
+    description: "Comma-separated Host header hostnames accepted (env SEX_ALLOWED_HOSTS; default: localhost names when bound to loopback)",
+  },
 } as const;
 
-function engineFrom(args: CommonArgs & { "redis-url"?: string }, defaults: { allowPrivateNetwork: boolean }): Engine {
+function engineFrom(
+  args: CommonArgs & { "redis-url"?: string; "cors-origin"?: string; "allowed-host"?: string },
+  defaults: { allowPrivateNetwork: boolean },
+): Engine {
   if (args["log-level"]) setLogLevel(args["log-level"]);
   const overrides: ConfigOverrides = {
     searxngUrl: args["searxng-url"],
@@ -57,6 +68,8 @@ function engineFrom(args: CommonArgs & { "redis-url"?: string }, defaults: { all
     concurrency: int(args.concurrency, "--concurrency"),
     timeout: int(args.timeout, "--timeout"),
     redisUrl: args["redis-url"],
+    corsOrigins: args["cors-origin"],
+    allowedHosts: args["allowed-host"],
   };
   return new Engine(resolveConfig(overrides, defaults));
 }

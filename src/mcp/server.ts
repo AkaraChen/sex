@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Engine } from "../core/engine.ts";
 import type { JobRecord } from "../core/jobs/index.ts";
 import { toAppError } from "../errors.ts";
+import { checkBrowserAccess } from "../http/server.ts";
 import { log } from "../log.ts";
 import { CrawlRequest, type Document, ExtractRequest, MapRequest, ScrapeRequest, SearchRequest } from "../schemas.ts";
 import { VERSION } from "../version.ts";
@@ -206,7 +207,14 @@ export async function serveMcp(
     idleTimeout: 255,
     fetch(req) {
       const { pathname } = new URL(req.url);
-      if (pathname === "/mcp") return handler.fetch(req);
+      if (pathname === "/mcp") {
+        const refused = checkBrowserAccess(req, {
+          bindHost: opts.host,
+          corsOrigins: engine.config.corsOrigins,
+          allowedHosts: engine.config.allowedHosts,
+        });
+        return refused ?? handler.fetch(req);
+      }
       if (pathname === "/health") return new Response("ok");
       return new Response("Not found", { status: 404 });
     },
