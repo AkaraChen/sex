@@ -3,7 +3,7 @@ import { resolveConfig } from "../src/config.ts";
 import { createJobBackend } from "../src/core/jobs/index.ts";
 
 test("job store reads fail fast instead of hanging when Redis is unreachable", async () => {
-  const config = resolveConfig({ redisUrl: "redis://127.0.0.1:1" }, {}, {});
+  const config = resolveConfig({ redisUrl: "redis://127.0.0.1:1" }, { allowPrivateNetwork: true }, {});
   const backend = createJobBackend(config);
   try {
     const started = Date.now();
