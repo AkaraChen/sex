@@ -37,31 +37,49 @@ export async function startExtract(engine: Engine, req: ExtractRequest): Promise
   return { job, invalidURLs: req.ignoreInvalidURLs ? invalid : undefined };
 }
 
+/** How often a running extract checks whether its job was cancelled. */
+const CANCEL_POLL_MS = 2000;
+
 export async function handleExtract(engine: Engine, job: JobRecord) {
   const { store } = engine.jobs;
+  // Cancelling a job finishes it in the store; poll for that so in-flight map/search/scrape/LLM work stops too.
+  const controller = new AbortController();
+  const timer = setInterval(async () => {
+    try {
+      const current = await store.get(job.id);
+      if (current?.status !== "scraping") controller.abort();
+    } catch {
+      // A transient store error is retried on the next tick.
+    }
+  }, CANCEL_POLL_MS);
   try {
     const req = job.options as unknown as ExtractRequest;
-    const { result, sources, total, completed } = await runExtract(engine, job.id, req, req.urls ?? []);
+    const { result, sources, total, completed } = await runExtract(engine, job.id, req, req.urls ?? [], controller.signal);
+    if (controller.signal.aborted) return;
     await store.incr(job.id, "total", total);
     await store.incr(job.id, "completed", completed);
     await store.finish(job.id, "completed", { result, sources });
   } catch (err) {
+    // Cancelled jobs were already finished by cancelJob; do not overwrite that.
+    if (controller.signal.aborted) return;
     const e = toAppError(err);
     log.error("extract failed", { id: job.id, error: e.message });
     await store.finish(job.id, "failed", { error: e.message });
+  } finally {
+    clearInterval(timer);
   }
 }
 
-async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, urls: string[]) {
+async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, urls: string[], signal: AbortSignal) {
   const targets = new Set<string>();
   for (const u of urls) {
     if (u.endsWith("/*")) {
-      const links = await mapSite(engine, { url: u.slice(0, -1), limit: engine.config.extractWildcardPages, search: req.prompt });
+      const links = await mapSite(engine, { url: u.slice(0, -1), limit: engine.config.extractWildcardPages, search: req.prompt }, signal);
       for (const l of links) targets.add(l.url);
     } else targets.add(u);
   }
   if (req.enableWebSearch && req.prompt) {
-    const { data } = await search(engine, { query: req.prompt, limit: SEARCH_RESULTS });
+    const { data } = await search(engine, { query: req.prompt, limit: SEARCH_RESULTS }, signal);
     for (const r of data.web ?? []) targets.add(r.url);
   }
 
@@ -71,9 +89,10 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
     [...targets].map((url) =>
       limit(async () => {
         try {
-          const { document } = await scrapeUrl(engine, url, options, {});
+          const { document } = await scrapeUrl(engine, url, options, { signal });
           return { url, markdown: document.markdown ?? "" };
         } catch (err) {
+          if (signal.aborted) return undefined;
           await engine.jobs.store.pushError(jobId, {
             id: crypto.randomUUID(),
             timestamp: new Date().toISOString(),
@@ -103,14 +122,18 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
   if (current) chunks.push(current);
 
   const llmOpts = { prompt: req.prompt, schema: req.schema, systemPrompt: req.systemPrompt };
-  const partials = await Promise.all(chunks.map((c) => limit(() => engine.llm.extractJson(c, llmOpts))));
+  const partials = await Promise.all(chunks.map((c) => limit(() => engine.llm.extractJson(c, llmOpts, signal))));
   const result =
     partials.length === 1
       ? partials[0]
-      : await engine.llm.extractJson(`Partial extraction results from different source pages, as JSON:\n${JSON.stringify(partials)}`, {
-          ...llmOpts,
-          prompt: `Merge these partial results into one complete answer, deduplicating entries.${req.prompt ? ` Original instructions: ${req.prompt}` : ""}`,
-        });
+      : await engine.llm.extractJson(
+          `Partial extraction results from different source pages, as JSON:\n${JSON.stringify(partials)}`,
+          {
+            ...llmOpts,
+            prompt: `Merge these partial results into one complete answer, deduplicating entries.${req.prompt ? ` Original instructions: ${req.prompt}` : ""}`,
+          },
+          signal,
+        );
 
   return {
     result,
