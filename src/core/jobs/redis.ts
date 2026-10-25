@@ -33,6 +33,21 @@ if ARGV[1] ~= '' then
 end
 return redis.call('HINCRBY', KEYS[1], 'pending', -1)`;
 
+// KEYS: document list. ARGV: skip, max bytes. Returns {nextSkip or -1, items...}: items are read in small chunks and
+// stop before the one that would exceed the budget (the first item is always returned), so nothing is read twice.
+const DOCUMENTS_SCRIPT = `
+local skip = tonumber(ARGV[1]); local max = tonumber(ARGV[2])
+local len = redis.call('LLEN', KEYS[1])
+local out = {-1}; local size = 0; local i = skip
+while i < len do
+  local chunk = redis.call('LRANGE', KEYS[1], i, i + 9)
+  for _, item in ipairs(chunk) do
+    if #out > 1 and size + #item > max then out[1] = i; return out end
+    out[#out + 1] = item; size = size + #item; i = i + 1
+  end
+end
+return out`;
+
 const REOPEN_SCRIPT = `
 if redis.call('HGET', KEYS[1], 'status') ~= 'completed' then return 0 end
 redis.call('HSET', KEYS[1], 'status', 'scraping')
@@ -164,25 +179,9 @@ export class RedisJobStore implements JobStore {
   }
 
   async documents(id: string, skip: number, maxChars: number) {
-    const key = this.key(id, "docs");
-    const data: Document[] = [];
-    let size = 0;
-    let index = skip;
-    const batch = 50;
-    while (true) {
-      const raw = await this.redis.lrange(key, index, index + batch - 1);
-      if (!raw.length) return { data, nextSkip: null };
-      for (const item of raw) {
-        if (data.length > 0 && size + item.length > maxChars) return { data, nextSkip: index };
-        data.push(JSON.parse(item));
-        size += item.length;
-        index++;
-      }
-      if (raw.length < batch) {
-        const len = await this.redis.llen(key);
-        return { data, nextSkip: index < len ? index : null };
-      }
-    }
+    const res = (await this.redis.eval(DOCUMENTS_SCRIPT, 1, this.key(id, "docs"), skip, maxChars)) as [number, ...string[]];
+    const [next, ...raw] = res;
+    return { data: raw.map((item) => JSON.parse(item) as Document), nextSkip: next < 0 ? null : next };
   }
 
   async pushError(id: string, error: JobError) {
@@ -191,6 +190,16 @@ export class RedisJobStore implements JobStore {
 
   async errors(id: string) {
     return (await this.redis.lrange(this.key(id, "errors"), 0, -1)).map((e) => JSON.parse(e) as JobError);
+  }
+
+  async setRobotsTxt(id: string, text: string) {
+    const expiresAt = await this.redis.hget(this.key(id), "expiresAt");
+    if (!expiresAt) return;
+    await this.redis.set(this.key(id, "robotstxt"), text, "PXAT", Number(expiresAt));
+  }
+
+  async robotsTxt(id: string) {
+    return (await this.redis.get(this.key(id, "robotstxt"))) ?? "";
   }
 
   async pushRobotsBlocked(id: string, url: string) {

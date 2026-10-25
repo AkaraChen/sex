@@ -11,6 +11,7 @@ interface Entry {
   docBytes: number;
   errors: JobError[];
   robots: string[];
+  robotsTxt: string;
   seen: Set<string>;
   /** taskIds whose `pending` decrement has been applied. */
   settled: Set<string>;
@@ -53,7 +54,17 @@ export class MemoryJobStore implements JobStore {
       scheduled: 0,
       slots: 0,
     };
-    this.jobs.set(record.id, { record, docs: [], docBytes: 0, errors: [], robots: [], seen: new Set(), settled: new Set(), nextSlotAt: 0 });
+    this.jobs.set(record.id, {
+      record,
+      docs: [],
+      docBytes: 0,
+      errors: [],
+      robots: [],
+      robotsTxt: "",
+      seen: new Set(),
+      settled: new Set(),
+      nextSlotAt: 0,
+    });
     return { ...record };
   }
 
@@ -152,6 +163,15 @@ export class MemoryJobStore implements JobStore {
 
   async errors(id: string) {
     return [...(this.entry(id)?.errors ?? [])];
+  }
+
+  async setRobotsTxt(id: string, text: string) {
+    const e = this.entry(id);
+    if (e) e.robotsTxt = text;
+  }
+
+  async robotsTxt(id: string) {
+    return this.entry(id)?.robotsTxt ?? "";
   }
 
   async pushRobotsBlocked(id: string, url: string) {

@@ -24,8 +24,6 @@ export interface JobMeta {
   /** Extract result. */
   result?: unknown;
   sources?: Record<string, unknown>;
-  /** robots.txt body fetched once per crawl and shared by all workers ("" = none). */
-  robotsTxt?: string;
 }
 
 export interface JobCounters {
@@ -43,7 +41,7 @@ export interface JobCounters {
 
 export type CounterName = keyof JobCounters;
 export type JobRecord = JobMeta & JobCounters;
-export type JobPatch = Partial<Pick<JobMeta, "error" | "result" | "sources" | "robotsTxt">>;
+export type JobPatch = Partial<Pick<JobMeta, "error" | "result" | "sources">>;
 
 /** Where job state lives: process memory or Redis. All methods are safe to call from many workers. */
 export interface JobStore {
@@ -64,6 +62,10 @@ export interface JobStore {
   documents(id: string, skip: number, maxChars: number): Promise<{ data: Document[]; nextSkip: number | null }>;
   pushError(id: string, error: JobError): Promise<void>;
   errors(id: string): Promise<JobError[]>;
+  /** Stores the robots.txt body fetched once per crawl and shared by all workers ("" = none). Kept out of the job record so status reads stay small. */
+  setRobotsTxt(id: string, text: string): Promise<void>;
+  /** The crawl's robots.txt body, or "" if none was stored. */
+  robotsTxt(id: string): Promise<string>;
   pushRobotsBlocked(id: string, url: string): Promise<void>;
   robotsBlocked(id: string): Promise<string[]>;
   /** Adds keys to the job's seen-set; returns true for each key that was new. */
