@@ -1,7 +1,7 @@
 import { badRequest, notFound, toAppError } from "../errors.ts";
 import type { BatchScrapeRequest, ScrapeOptions } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
-import { type JobRecord, sendWebhook, settleTask, validateWebhook } from "./jobs/index.ts";
+import { type JobRecord, sendWebhook, validateWebhook } from "./jobs/index.ts";
 import { assertPublicUrl, parseHttpUrl } from "./net.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "./scrape.ts";
 
@@ -47,7 +47,16 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
     await store.incr(job.id, "pending", valid.length);
   }
   await store.incr(job.id, "total", valid.length);
-  await queue.add(valid.map((url) => ({ task: { type: "page" as const, jobId: job.id, url, depth: 0, options: taskOptions } })));
+  try {
+    await queue.add(
+      valid.map((url) => ({
+        task: { type: "page" as const, jobId: job.id, taskId: crypto.randomUUID(), url, depth: 0, options: taskOptions },
+      })),
+    );
+  } catch (err) {
+    await store.incr(job.id, "pending", -valid.length);
+    throw err;
+  }
   return { job, invalidURLs: ignoreInvalidURLs ? invalid : undefined };
 }
 
@@ -64,6 +73,5 @@ export async function handleBatchPage(engine: Engine, job: JobRecord, url: strin
     await store.pushError(job.id, { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: toAppError(err).message });
   } finally {
     await store.incr(job.id, "completed", 1);
-    await settleTask(engine, job.id);
   }
 }

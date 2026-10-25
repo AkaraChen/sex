@@ -10,6 +10,8 @@ interface Entry {
   errors: JobError[];
   robots: string[];
   seen: Set<string>;
+  /** taskIds whose `pending` decrement has been applied. */
+  settled: Set<string>;
   /** Start time (ms) of the next free crawl politeness slot. */
   nextSlotAt: number;
 }
@@ -41,7 +43,7 @@ export class MemoryJobStore implements JobStore {
       scheduled: 0,
       slots: 0,
     };
-    this.jobs.set(record.id, { record, docs: [], errors: [], robots: [], seen: new Set(), nextSlotAt: 0 });
+    this.jobs.set(record.id, { record, docs: [], errors: [], robots: [], seen: new Set(), settled: new Set(), nextSlotAt: 0 });
     return { ...record };
   }
 
@@ -72,6 +74,17 @@ export class MemoryJobStore implements JobStore {
     if (!e) return 0;
     e.record[counter] += by;
     return e.record[counter];
+  }
+
+  async settle(id: string, taskId: string | undefined) {
+    const e = this.entry(id);
+    if (!e) return null;
+    if (taskId !== undefined) {
+      if (e.settled.has(taskId)) return null;
+      e.settled.add(taskId);
+    }
+    e.record.pending -= 1;
+    return e.record.pending;
   }
 
   async reserveSlots(id: string, count: number, intervalMs: number, now: number) {
