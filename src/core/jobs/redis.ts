@@ -16,6 +16,14 @@ for i = 3, #ARGV, 2 do redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1]) end
 redis.call('SREM', KEYS[2], ARGV[2])
 return 1`;
 
+// KEYS: job hash. ARGV: now (ms), slot count, interval (ms). Returns the first slot's start time.
+const RESERVE_SLOTS_SCRIPT = `
+local now = tonumber(ARGV[1]); local count = tonumber(ARGV[2]); local interval = tonumber(ARGV[3])
+local next = tonumber(redis.call('HGET', KEYS[1], 'nextSlotAt') or '0')
+local start = math.max(now, next)
+redis.call('HSET', KEYS[1], 'nextSlotAt', start + count * interval)
+return start`;
+
 const REOPEN_SCRIPT = `
 if redis.call('HGET', KEYS[1], 'status') ~= 'completed' then return 0 end
 redis.call('HSET', KEYS[1], 'status', 'scraping')
@@ -50,7 +58,7 @@ export class RedisJobStore implements JobStore {
     if (!h.kind) return undefined;
     const rec: Record<string, unknown> = { id };
     for (const [k, v] of Object.entries(h)) {
-      if ((COUNTERS as string[]).includes(k) || k === "createdAt" || k === "expiresAt") rec[k] = Number(v);
+      if ((COUNTERS as string[]).includes(k) || k === "createdAt" || k === "expiresAt" || k === "nextSlotAt") rec[k] = Number(v);
       else if ((JSON_FIELDS as readonly string[]).includes(k)) rec[k] = JSON.parse(v);
       else rec[k] = v;
     }
@@ -118,6 +126,10 @@ export class RedisJobStore implements JobStore {
 
   async incr(id: string, counter: CounterName, by = 1) {
     return this.redis.hincrby(this.key(id), counter, by);
+  }
+
+  async reserveSlots(id: string, count: number, intervalMs: number, now: number) {
+    return Number(await this.redis.eval(RESERVE_SLOTS_SCRIPT, 1, this.key(id), now, count, intervalMs));
   }
 
   /** Appends to a per-job list/set and gives it the job's expiry. */

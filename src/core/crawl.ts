@@ -218,9 +218,10 @@ async function enqueueLinks(engine: Engine, job: JobRecord, plan: CrawlPlan, lin
   await store.incr(job.id, "pending", allowed.length);
   let delays: number[] = allowed.map(() => 0);
   if (req.delay) {
-    const lastSlot = await store.incr(job.id, "slots", allowed.length);
-    const firstSlot = lastSlot - allowed.length;
-    delays = allowed.map((_, i) => Math.max(0, job.createdAt + (firstSlot + i) * req.delay! * 1000 - Date.now()));
+    const interval = req.delay * 1000;
+    const now = Date.now();
+    const start = await store.reserveSlots(job.id, allowed.length, interval, now);
+    delays = allowed.map((_, i) => Math.max(0, start + i * interval - now));
   }
   await queue.add(allowed.map((url, i) => ({ task: { type: "page" as const, jobId: job.id, url, depth }, delayMs: delays[i] })));
 }

@@ -55,6 +55,8 @@ export interface JobStore {
   /** Moves a completed job back to "scraping" (batch appendToId). */
   reopen(id: string): Promise<void>;
   incr(id: string, counter: CounterName, by?: number): Promise<number>;
+  /** Reserves `count` fetch slots spaced `intervalMs` apart, starting no earlier than `now` or the end of the previous reservation. Returns the start time (ms) of the first slot. */
+  reserveSlots(id: string, count: number, intervalMs: number, now: number): Promise<number>;
   pushDocument(id: string, doc: Document): Promise<void>;
   /** Documents from `skip`, up to ~maxChars of JSON; nextSkip is null when there are no more. */
   documents(id: string, skip: number, maxChars: number): Promise<{ data: Document[]; nextSkip: number | null }>;
