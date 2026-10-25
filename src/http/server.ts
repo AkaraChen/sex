@@ -25,7 +25,11 @@ function encodeError(error: { code: string; message: string; data: unknown; caus
       .slice(0, 3)
       .map((d) => (d.path ? `${d.path}: ${d.message}` : d.message))
       .join("; ");
-    return { success: false, code: "BAD_REQUEST", error: `Invalid request body: ${summary}`, details };
+    if (error.code === "BAD_REQUEST") {
+      return { success: false, code: "BAD_REQUEST", error: `Invalid request body: ${summary}`, details };
+    }
+    // Output validation failed: this is a server bug, not a client error.
+    return { success: false, code: "INVALID_RESPONSE", error: `Server produced an invalid response: ${summary}`, details };
   }
   return { success: false, code: error.code, error: error.message, ...(error.data !== undefined ? { details: error.data } : {}) };
 }

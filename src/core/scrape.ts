@@ -215,6 +215,14 @@ async function scrapeInner(
   }
 
   const metadata: Record<string, unknown> = { ...(extracted?.metadata ?? {}) };
+  // Repeated <meta> tags can yield arrays (page-script `add`); the schema types these keys as strings.
+  for (const k of ["title", "description", "language", "error"]) {
+    const v = metadata[k];
+    if (!Array.isArray(v)) continue;
+    const first = v.find((x): x is string => typeof x === "string" && x.length > 0);
+    if (first === undefined) delete metadata[k];
+    else metadata[k] = first;
+  }
   if (title) metadata.title = title;
   const d = extracted?.defuddle;
   if (d) {
