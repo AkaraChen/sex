@@ -243,7 +243,15 @@ export class BullTaskQueue implements TaskQueue {
       prefix: this.prefix,
       concurrency: this.concurrency,
     });
-    this.worker.on("failed", (job, err) => log.error("task failed", { type: job?.name, error: err.message }));
+    this.worker.on("failed", (job, err) => {
+      const task = job?.data as Task | undefined;
+      log.error("task failed", {
+        type: job?.name,
+        job: task?.jobId,
+        ...(task && "url" in task ? { url: task.url } : {}),
+        error: err.message,
+      });
+    });
     log.info("queue worker started", { backend: "redis", concurrency: this.concurrency });
   }
 

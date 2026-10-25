@@ -17,11 +17,17 @@ export function setLogLevel(level: string) {
   threshold = levelFrom(level, "log level");
 }
 
+/** Simple string tokens stay bare; anything with whitespace, quotes or `=` is JSON-quoted so fields stay parseable. */
+function formatValue(v: unknown): string {
+  if (typeof v !== "string") return JSON.stringify(v);
+  return /[\s"=]/.test(v) ? JSON.stringify(v) : v;
+}
+
 function emit(level: Level, msg: string, fields?: Record<string, unknown>) {
   if (LEVELS[level] < threshold) return;
   const extra = fields
     ? ` ${Object.entries(fields)
-        .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+        .map(([k, v]) => `${k}=${formatValue(v)}`)
         .join(" ")}`
     : "";
   process.stderr.write(`${new Date().toISOString()} ${level.toUpperCase()} ${msg}${extra}\n`);
