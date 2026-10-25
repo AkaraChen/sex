@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import defuddleBundle from "defuddle/full" with { type: "text" };
 import pLimit from "p-limit";
-import puppeteer, { type Page } from "puppeteer-core";
+import puppeteer, { type HTTPRequest, type Page } from "puppeteer-core";
 import type { Config } from "../config.ts";
 import { AppError, BROWSER_HINT } from "../errors.ts";
 import { log } from "../log.ts";
@@ -24,6 +24,8 @@ export interface BrowserScrapeOptions {
   waitFor?: number;
   actions?: Action[];
   extract: Omit<PageExtractOptions, "url">;
+  /** Checked for every request the browser makes (documents, redirects, subresources). Resolves true when allowed. */
+  requestGuard?: (url: string) => Promise<boolean>;
 }
 
 export interface BrowserScrapeResult {
@@ -201,12 +203,68 @@ export class BrowserPool {
       const viewport = opts.mobile ? { width: 390, height: 844 } : { width: 1280, height: 800 };
       await page.setViewport({ ...viewport, isMobile: !!opts.mobile }).catch(() => {});
 
+      const blockedDocs: string[] = [];
+      if (opts.requestGuard) {
+        const guard = opts.requestGuard;
+        const interceptable = await page.setRequestInterception(true).then(
+          () => true,
+          () => false,
+        );
+        if (!interceptable) {
+          throw new AppError(
+            501,
+            "BROWSER_INTERCEPTION_UNSUPPORTED",
+            "This browser cannot intercept requests, so private-network protection cannot be enforced. Use a browser with CDP Fetch support or --allow-private-network.",
+          );
+        }
+        // Verdicts are cached per origin for this page; every request still goes through the handler.
+        const verdicts = new Map<string, Promise<boolean>>();
+        const handle = async (req: HTTPRequest): Promise<void> => {
+          if (req.isInterceptResolutionHandled()) return;
+          const u = req.url();
+          if (/^(data|blob|about):/i.test(u)) {
+            await req.continue().catch(() => {});
+            return;
+          }
+          let parsed: URL;
+          try {
+            parsed = new URL(u);
+          } catch {
+            await req.abort("blockedbyclient").catch(() => {});
+            return;
+          }
+          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            await req.abort("blockedbyclient").catch(() => {});
+            return;
+          }
+          let verdict = verdicts.get(parsed.origin);
+          if (!verdict) {
+            verdict = guard(parsed.origin);
+            verdicts.set(parsed.origin, verdict);
+          }
+          if (await verdict) {
+            await req.continue().catch(() => {});
+          } else {
+            // Record main-frame navigations so the caller gets a clear error instead of a generic load failure.
+            if (req.isNavigationRequest() && req.frame() === page.mainFrame()) blockedDocs.push(u);
+            await req.abort("blockedbyclient").catch(() => {});
+          }
+        };
+        page.on("request", (req) => {
+          handle(req).catch(() => req.abort("failed").catch(() => {}));
+        });
+      }
+
       const response = await page.goto(opts.url, { waitUntil: "load", timeout: opts.timeout }).catch((err: Error) => {
+        if (blockedDocs.length) return null;
         if (err.name === "TimeoutError") {
           throw new AppError(408, "SCRAPE_TIMEOUT", `Timed out after ${opts.timeout}ms loading ${opts.url}`);
         }
         throw new AppError(502, "FETCH_FAILED", `Browser failed to load ${opts.url}: ${err.message}`);
       });
+      if (blockedDocs.length) {
+        throw new AppError(403, "PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${blockedDocs[0]}`);
+      }
       const contentType = response?.headers()["content-type"] ?? "text/html";
       const base = { url: page.url() || opts.url, status: response?.status() ?? 200, contentType };
       if (!/html|xml/i.test(contentType)) return { ...base, nonHtml: true, rawHtml: "" };
