@@ -233,7 +233,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string) {
     if (job?.status !== "scraping") return;
     const req = job.options as unknown as CrawlRequest;
     const start = new URL(job.url as string);
-    sendWebhook(job, "started");
+    sendWebhook(engine.config, job, "started");
 
     if (!req.ignoreRobotsTxt) {
       const robotsTxt = await safeFetch(`${start.origin}/robots.txt`, {
@@ -259,10 +259,10 @@ export async function handleCrawlStart(engine: Engine, jobId: string) {
     const e = toAppError(err);
     if (await store.finish(jobId, "failed", { error: e.message })) {
       const job = await store.get(jobId);
-      if (job) sendWebhook(job, "failed", [], e.message);
+      if (job) sendWebhook(engine.config, job, "failed", [], e.message);
     }
   } finally {
-    await settleTask(engine.jobs.store, jobId);
+    await settleTask(engine, jobId);
   }
 }
 
@@ -277,12 +277,12 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
     if (url !== start || matchesFilters(plan, new URL(url))) {
       await store.pushDocument(job.id, document);
       await store.incr(job.id, "completed", 1);
-      sendWebhook(job, "page", [document]);
+      sendWebhook(engine.config, job, "page", [document]);
     }
     if ((plan.req.sitemap ?? "include") !== "only") await enqueueLinks(engine, job, plan, links ?? [], depth + 1);
   } catch (err) {
     await store.pushError(job.id, { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: toAppError(err).message });
   } finally {
-    await settleTask(engine.jobs.store, job.id);
+    await settleTask(engine, job.id);
   }
 }

@@ -13,7 +13,8 @@ export interface FetchOptions {
   allowPrivateNetwork: boolean;
   skipTlsVerification?: boolean;
   userAgent: string;
-  method?: "GET" | "HEAD";
+  method?: "GET" | "POST";
+  body?: string;
   /** Body size cap; defaults to DEFAULT_MAX_BODY_BYTES. Callers pass engine.config.maxBodyBytes. */
   maxBodyBytes?: number;
 }
@@ -105,6 +106,8 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
   const timeoutSignal = AbortSignal.timeout(opts.timeout);
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal;
   let url = parseHttpUrl(rawUrl);
+  let method = opts.method ?? "GET";
+  let body: string | undefined = opts.body;
   const headers: Record<string, string> = {
     "user-agent": opts.userAgent,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -115,7 +118,8 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       await assertPublicUrl(url, opts.allowPrivateNetwork);
       const res = await fetch(url, {
-        method: opts.method ?? "GET",
+        method,
+        ...(body !== undefined ? { body } : {}),
         headers,
         redirect: "manual",
         signal,
@@ -125,16 +129,28 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {
         await res.body?.cancel();
-        url = parseHttpUrl(new URL(location, url).href);
+        const next = parseHttpUrl(new URL(location, url).href);
+        // 301/302/303 turn a POST into a bodiless GET; 307/308 keep method and body.
+        if (method === "POST" && [301, 302, 303].includes(res.status)) {
+          method = "GET";
+          body = undefined;
+        }
+        // Credentials are never forwarded to a different origin (same rule browsers apply).
+        if (next.origin !== url.origin) {
+          delete headers.authorization;
+          delete headers.cookie;
+          delete headers["proxy-authorization"];
+        }
+        url = next;
         continue;
       }
-      const body = opts.method === "HEAD" ? new Uint8Array() : await readLimited(res, signal, opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES);
+      const bytes = await readLimited(res, signal, opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES);
       return {
         url: url.href,
         status: res.status,
         headers: res.headers,
         contentType: res.headers.get("content-type") ?? "",
-        body,
+        body: bytes,
       };
     }
     throw new AppError(508, "TOO_MANY_REDIRECTS", `Too many redirects: ${rawUrl}`);

@@ -2,7 +2,7 @@ import type { Config } from "../../config.ts";
 import { log } from "../../log.ts";
 import type { WebhookConfig } from "../../schemas.ts";
 import type { Engine } from "../engine.ts";
-import { assertPublicUrl, parseHttpUrl } from "../net.ts";
+import { assertPublicUrl, parseHttpUrl, safeFetch } from "../net.ts";
 import { MemoryJobStore, MemoryTaskQueue } from "./memory.ts";
 import { BullTaskQueue, RedisJobStore, redisConnection } from "./redis.ts";
 import type { JobRecord, JobStore, TaskQueue } from "./types.ts";
@@ -54,6 +54,7 @@ export async function validateWebhook(engine: Engine, webhook: WebhookConfig | u
 
 /** Fire-and-forget webhook delivery using Firecrawl's `<kind>.<event>` payloads. */
 export function sendWebhook(
+  config: Config,
   job: JobRecord,
   event: "started" | "page" | "completed" | "failed",
   data: unknown[] = [],
@@ -71,21 +72,24 @@ export function sendWebhook(
     metadata: "metadata" in cfg ? (cfg.metadata ?? {}) : {},
     ...(error ? { error } : {}),
   };
-  fetch(cfg.url, {
+  safeFetch(cfg.url, {
     method: "POST",
-    headers: { "content-type": "application/json", ...("headers" in cfg ? (cfg.headers ?? {}) : {}) },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10_000),
+    headers: { "content-type": "application/json", ...("headers" in cfg ? (cfg.headers ?? {}) : {}) },
+    timeout: 10_000,
+    allowPrivateNetwork: config.allowPrivateNetwork,
+    userAgent: config.userAgent,
+    maxBodyBytes: 1024 * 1024,
   }).catch((err) => log.warn("webhook delivery failed", { url: cfg.url, error: err instanceof Error ? err.message : String(err) }));
 }
 
 /** Marks one task of a job done; whoever finishes the last task completes the job. */
-export async function settleTask(store: JobStore, jobId: string): Promise<void> {
-  const left = await store.incr(jobId, "pending", -1);
+export async function settleTask(engine: Engine, jobId: string): Promise<void> {
+  const left = await engine.jobs.store.incr(jobId, "pending", -1);
   if (left > 0) return;
-  if (await store.finish(jobId, "completed")) {
-    const job = await store.get(jobId);
-    if (job) sendWebhook(job, "completed");
+  if (await engine.jobs.store.finish(jobId, "completed")) {
+    const job = await engine.jobs.store.get(jobId);
+    if (job) sendWebhook(engine.config, job, "completed");
   }
 }
 

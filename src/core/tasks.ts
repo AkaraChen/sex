@@ -17,7 +17,7 @@ export async function runTask(engine: Engine, task: Task): Promise<void> {
     return;
   }
   // Cancelled or failed jobs still drain their queued pages.
-  if (job.status !== "scraping") return settleTask(store, job.id);
+  if (job.status !== "scraping") return settleTask(engine, job.id);
   if (job.kind === "crawl") return handleCrawlPage(engine, job, task.url, task.depth);
   return handleBatchPage(engine, job, task.url, task.options);
 }
