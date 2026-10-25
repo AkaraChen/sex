@@ -152,6 +152,8 @@ export class MemoryJobStore implements JobStore {
   }
 }
 
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 /** In-process queue: tasks run on a p-limit pool; delayed tasks wait on a timer. */
 export class MemoryTaskQueue implements TaskQueue {
   private handler?: (task: Task) => Promise<void>;
@@ -166,14 +168,23 @@ export class MemoryTaskQueue implements TaskQueue {
 
   async add(tasks: Array<{ task: Task; delayMs?: number }>) {
     for (const { task, delayMs } of tasks) {
-      if (delayMs && delayMs > 0) {
-        const timer = setTimeout(() => {
-          this.timers.delete(timer);
-          this.dispatch(task);
-        }, delayMs);
-        this.timers.add(timer);
-      } else this.dispatch(task);
+      if (delayMs && delayMs > 0) this.schedule(task, Date.now() + delayMs);
+      else this.dispatch(task);
     }
+  }
+
+  /** Timers longer than 2^31-1 ms fire immediately, so long delays are re-armed in chunks. */
+  private schedule(task: Task, dueAt: number) {
+    const timer = setTimeout(
+      () => {
+        this.timers.delete(timer);
+        const left = dueAt - Date.now();
+        if (left > 0) this.schedule(task, dueAt);
+        else this.dispatch(task);
+      },
+      Math.min(Math.max(0, dueAt - Date.now()), MAX_TIMER_MS),
+    );
+    this.timers.add(timer);
   }
 
   startWorker(handler: (task: Task) => Promise<void>) {
