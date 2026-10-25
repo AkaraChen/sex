@@ -52,8 +52,23 @@ services:
     restart: unless-stopped
     environment:
       LIGHTPANDA_DISABLE_TELEMETRY: "true"
-    # --advertise-host lets other containers connect with Host: lightpanda.
-    command: ["/bin/lightpanda", "serve", "--host", "0.0.0.0", "--port", "9222", "--advertise-host", "lightpanda", "--log-level", "warn"]
+    # --advertise-host lets other containers connect with Host: lightpanda. The CDP limits default to 16 connections and
+    # 1 MB messages; three sex services at concurrency 8 and pages up to 25 MB need more.
+    command:
+      - /bin/lightpanda
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9222"
+      - --advertise-host
+      - lightpanda
+      - --log-level
+      - warn
+      - --cdp-max-connections
+      - "64"
+      - --cdp-max-message-size
+      - "67108864"
 
 volumes:
   redis-data:
