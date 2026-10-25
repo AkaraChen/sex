@@ -26,6 +26,8 @@ export interface BrowserScrapeOptions {
   extract: Omit<PageExtractOptions, "url">;
   /** Checked for every request the browser makes (documents, redirects, subresources). Resolves true when allowed. */
   requestGuard?: (url: string) => Promise<boolean>;
+  /** Accept invalid TLS certificates (Chrome only; CDP Security.setIgnoreCertificateErrors). */
+  skipTlsVerification?: boolean;
   /** Aborting closes the page's browser context, freeing its slot immediately. */
   signal?: AbortSignal;
 }
@@ -276,8 +278,22 @@ export class BrowserPool {
         });
       }
 
+      if (opts.skipTlsVerification) {
+        // Best effort: browsers without the Security domain (Lightpanda) keep their own certificate handling.
+        await page
+          .createCDPSession()
+          .then((cdp) => cdp.send("Security.setIgnoreCertificateErrors", { ignore: true }))
+          .catch(() => {});
+      }
+
+      let aborted = false;
       const response = await page.goto(opts.url, { waitUntil: "load", timeout: opts.timeout }).catch((err: Error) => {
         if (blockedDocs.length) return null;
+        // PDFs and Content-Disposition: attachment responses abort the navigation; the caller re-fetches them over HTTP.
+        if (err.message.includes("net::ERR_ABORTED")) {
+          aborted = true;
+          return null;
+        }
         if (err.name === "TimeoutError") {
           throw new AppError(408, "SCRAPE_TIMEOUT", `Timed out after ${opts.timeout}ms loading ${opts.url}`);
         }
@@ -286,6 +302,7 @@ export class BrowserPool {
       if (blockedDocs.length) {
         throw new AppError(403, "PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${blockedDocs[0]}`);
       }
+      if (aborted) return { url: opts.url, status: 200, contentType: "", nonHtml: true, rawHtml: "" };
       const contentType = response?.headers()["content-type"] ?? "text/html";
       const base = { url: page.url() || opts.url, status: response?.status() ?? 200, contentType };
       if (!/html|xml/i.test(contentType)) return { ...base, nonHtml: true, rawHtml: "" };
