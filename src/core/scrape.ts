@@ -208,14 +208,9 @@ async function scrapeInner(
   }
 
   let markdown = plainMarkdown ?? extracted?.markdown ?? "";
-  const title = String(extracted?.metadata.title ?? "") || extracted?.defuddle.title || pdfMeta?.title || "";
-  if (extracted && onlyMainContent && !options.includeTags?.length) {
-    const heading = extracted.defuddle.title || title;
-    if (heading && !/^#\s/.test(markdown.trimStart())) markdown = `# ${heading}\n\n${markdown}`;
-  }
-
   const metadata: Record<string, unknown> = { ...(extracted?.metadata ?? {}) };
   // Repeated <meta> tags can yield arrays (page-script `add`); the schema types these keys as strings.
+  // Coerce before deriving `title` so a page without <title> does not get a comma-joined array.
   for (const k of ["title", "description", "language", "error"]) {
     const v = metadata[k];
     if (!Array.isArray(v)) continue;
@@ -223,6 +218,12 @@ async function scrapeInner(
     if (first === undefined) delete metadata[k];
     else metadata[k] = first;
   }
+  const title = String(metadata.title ?? "") || extracted?.defuddle.title || pdfMeta?.title || "";
+  if (extracted && onlyMainContent && !options.includeTags?.length) {
+    const heading = extracted.defuddle.title || title;
+    if (heading && !/^#\s/.test(markdown.trimStart())) markdown = `# ${heading}\n\n${markdown}`;
+  }
+
   if (title) metadata.title = title;
   const d = extracted?.defuddle;
   if (d) {

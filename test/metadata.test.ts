@@ -17,6 +17,8 @@ const fixtures: Record<string, string> = {
     "micro",
   ),
   "/dup-title": page('<meta name="title" content="First title"><meta name="title" content="Second title">', "Dup", "dup"),
+  // No <title> element at all; two different meta titles must not be comma-joined into metadata.title.
+  "/no-title-tag": `<!doctype html><html lang="en"><head><meta name="title" content="A"><meta name="title" content="B"></head><body><main><article><h1>Heading</h1>${body("no title tag")}</article></main></body></html>`,
 };
 
 let server: ReturnType<typeof Bun.serve>;
@@ -68,6 +70,12 @@ describe("metadata arrays", () => {
     const { status, body } = await call("POST", "/v2/scrape", { url: `${base}/dup-title`, formats: ["markdown"] });
     expect(status).toBe(200);
     expect(typeof body.data.metadata.title).toBe("string");
+  });
+
+  test("without a <title> element, repeated meta titles yield the first value, not a joined array", async () => {
+    const { status, body } = await call("POST", "/v2/scrape", { url: `${base}/no-title-tag`, formats: ["markdown"] });
+    expect(status).toBe(200);
+    expect(body.data.metadata.title).toBe("A");
   });
 
   test("crawl of a page with repeated meta tags completes and status is 200", async () => {
