@@ -27,6 +27,7 @@
     "fastmcp": "^4.23.7",
     "hono": "^4.13.14",
     "ioredis": "^6.0.0",
+    "ipaddr.js": "^2",
     "linkedom": "^0.18.14",
     "p-limit": "^7.3.3",
     "puppeteer-core": "^25.16.0",

@@ -1,5 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import ipaddr from "ipaddr.js";
 import { AppError, badRequest } from "../errors.ts";
 
 const MAX_REDIRECTS = 10;
@@ -37,41 +38,22 @@ export function parseHttpUrl(raw: string): URL {
   return url;
 }
 
-function ipv4ToInt(ip: string): number {
-  return ip.split(".").reduce((acc, part) => (acc << 8) + Number(part), 0) >>> 0;
-}
+const v4Blocked = (a: ipaddr.IPv4) => a.range() !== "unicast";
+const fromParts = (hi: number, lo: number) => new ipaddr.IPv4([hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]);
 
-const V4_BLOCKED: Array<[string, number]> = [
-  ["0.0.0.0", 8],
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["172.16.0.0", 12],
-  ["192.0.0.0", 24],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15],
-  ["224.0.0.0", 3],
-];
-
+/** True for anything that is not a globally routable unicast address (IPv6 forms embedding IPv4 are unwrapped). */
 export function isPrivateIp(ip: string): boolean {
-  const version = isIP(ip);
-  if (version === 4) {
-    const n = ipv4ToInt(ip);
-    return V4_BLOCKED.some(([base, bits]) => {
-      const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
-      return (n & mask) === (ipv4ToInt(base) & mask);
-    });
-  }
-  if (version === 6) {
-    const lower = ip.toLowerCase();
-    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped?.[1]) return isPrivateIp(mapped[1]);
-    if (lower === "::" || lower === "::1") return true;
-    // fc00::/7 unique local, fe80::/10 link local, ff00::/8 multicast
-    return /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower) || lower.startsWith("ff");
-  }
-  return false;
+  if (!isIP(ip)) return false;
+  const addr = ipaddr.parse(ip);
+  if (addr.kind() === "ipv4") return v4Blocked(addr as ipaddr.IPv4);
+  const v6 = addr as ipaddr.IPv6;
+  if (v6.isIPv4MappedAddress()) return v4Blocked(v6.toIPv4Address());
+  const p = v6.parts;
+  if (p.slice(0, 6).every((x) => x === 0)) return true; // ::, ::1 and deprecated IPv4-compatible ::a.b.c.d
+  const range = v6.range();
+  if (range === "rfc6052") return v4Blocked(fromParts(p[6] ?? 0, p[7] ?? 0)); // NAT64 64:ff9b::/96
+  if (range === "6to4") return v4Blocked(fromParts(p[1] ?? 0, p[2] ?? 0)); // 2002:AABB:CCDD::/48
+  return range !== "unicast"; // teredo, ULA, link-local, multicast, reserved, ...
 }
 
 /** Rejects URLs that point at loopback/private/link-local hosts unless allowed. */
