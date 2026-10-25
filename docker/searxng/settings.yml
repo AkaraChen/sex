@@ -1,0 +1,14 @@
+# Minimal SearXNG config for sex: inherit defaults, enable the JSON API.
+use_default_settings: true
+
+server:
+  # Change this in production: `openssl rand -hex 32`
+  secret_key: "change-me-sex-searxng-secret"
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json

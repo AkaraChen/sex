@@ -1,0 +1,277 @@
+#!/usr/bin/env bun
+import { defineCommand, runMain } from "citty";
+import { type ConfigOverrides, resolveConfig } from "./config.ts";
+import { Engine } from "./core/engine.ts";
+import { toAppError } from "./errors.ts";
+import { log, setLogLevel } from "./log.ts";
+import type { Document, FormatOption, ScrapeOptions, SearchRequest } from "./schemas.ts";
+import { VERSION } from "./version.ts";
+
+const commonArgs = {
+  "searxng-url": { type: "string", description: "SearXNG base URL (env SEX_SEARXNG_URL, default http://127.0.0.1:8080)" },
+  lightpanda: { type: "boolean", description: "Spawn a local Lightpanda browser for page rendering (env SEX_LIGHTPANDA)" },
+  "lightpanda-path": { type: "string", description: "Path to the lightpanda binary (env SEX_LIGHTPANDA_PATH)" },
+  "cdp-url": { type: "string", description: "Use an existing CDP browser, e.g. ws://127.0.0.1:9222 (env SEX_CDP_URL)" },
+  "llm-model": { type: "string", description: "Enable LLM features with this model (env SEX_LLM_MODEL)" },
+  "llm-base-url": { type: "string", description: "OpenAI-compatible base URL (env SEX_LLM_BASE_URL, default https://api.openai.com/v1)" },
+  "llm-api-key": { type: "string", description: "LLM API key (env SEX_LLM_API_KEY or OPENAI_API_KEY)" },
+  "allow-private-network": { type: "boolean", description: "Allow fetching localhost/private IPs (env SEX_ALLOW_PRIVATE_NETWORK)" },
+  "user-agent": { type: "string", description: "User-Agent for page fetches (env SEX_USER_AGENT)" },
+  concurrency: { type: "string", description: "Max concurrent page scrapes (env SEX_CONCURRENCY, default 8)" },
+  timeout: { type: "string", description: "Default per-page timeout in ms (env SEX_TIMEOUT, default 30000)" },
+  "log-level": { type: "string", description: "debug | info | warn | error | silent (env SEX_LOG_LEVEL)" },
+} as const;
+
+type CommonArgs = { [K in keyof typeof commonArgs]?: (typeof commonArgs)[K]["type"] extends "boolean" ? boolean : string };
+
+const int = (v: string | undefined) => (v === undefined ? undefined : Number.parseInt(v, 10));
+const list = (v: string | undefined) =>
+  v
+    ?.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+const serverArgs = {
+  ...commonArgs,
+  "redis-url": { type: "string", description: "Run crawl/batch/extract jobs on BullMQ in Redis (env SEX_REDIS_URL); in-memory when unset" },
+  worker: { type: "boolean", default: true, description: "Process queued jobs in this process (--no-worker to only enqueue; Redis mode)" },
+} as const;
+
+function engineFrom(args: CommonArgs & { "redis-url"?: string }, defaults: { allowPrivateNetwork: boolean }): Engine {
+  if (args["log-level"]) setLogLevel(args["log-level"]);
+  const overrides: ConfigOverrides = {
+    searxngUrl: args["searxng-url"],
+    lightpanda: args.lightpanda,
+    lightpandaPath: args["lightpanda-path"],
+    cdpUrl: args["cdp-url"],
+    llmModel: args["llm-model"],
+    llmBaseUrl: args["llm-base-url"],
+    llmApiKey: args["llm-api-key"],
+    allowPrivateNetwork: args["allow-private-network"],
+    userAgent: args["user-agent"],
+    concurrency: int(args.concurrency),
+    timeout: int(args.timeout),
+    redisUrl: args["redis-url"],
+  };
+  return new Engine(resolveConfig(overrides, defaults));
+}
+
+/** Runs a one-shot command, printing errors as `error: CODE: message` and always shutting the engine down. */
+async function oneShot(engine: Engine, fn: () => Promise<void>) {
+  try {
+    await fn();
+  } catch (err) {
+    const e = toAppError(err);
+    process.stderr.write(`error: ${e.code}: ${e.message}\n`);
+    process.exitCode = 1;
+  } finally {
+    await engine.close();
+  }
+}
+
+/** Starts the job worker unless disabled; without Redis the in-memory queue always runs in-process. */
+function maybeStartWorker(engine: Engine, enabled: boolean) {
+  if (!engine.config.redisUrl) return;
+  if (enabled) engine.startWorker();
+  else log.info("job worker disabled; jobs run on other `sex worker` processes");
+}
+
+function onShutdown(engine: Engine) {
+  const stop = async () => {
+    await engine.close();
+    process.exit(0);
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+}
+
+const parseJsonArg = async (value: string): Promise<unknown> => {
+  const text = value.trim().startsWith("{") ? value : await Bun.file(value).text();
+  return JSON.parse(text);
+};
+
+const search = defineCommand({
+  meta: { name: "search", description: "Search the web via SearXNG" },
+  args: {
+    ...commonArgs,
+    query: { type: "positional", description: "Search query", required: true },
+    limit: { type: "string", alias: "n", description: "Results per source (default 5)" },
+    sources: { type: "string", description: "Comma-separated: web,news,images (default web)" },
+    categories: { type: "string", description: "Comma-separated: github,research,pdf,developer,gov" },
+    tbs: { type: "string", description: "Time filter: qdr:h|d|w|m|y" },
+    lang: { type: "string", description: "Search language, e.g. en, zh-CN" },
+    "include-domains": { type: "string", description: "Comma-separated domains to restrict to" },
+    "exclude-domains": { type: "string", description: "Comma-separated domains to exclude" },
+    scrape: { type: "boolean", description: "Also fetch each result as markdown" },
+    json: { type: "boolean", description: "Print the raw JSON response" },
+  },
+  run: async ({ args }) => {
+    const engine = engineFrom(args, { allowPrivateNetwork: true });
+    await oneShot(engine, async () => {
+      const query = [args.query, ...args._.slice(1)].join(" ");
+      const req: SearchRequest = {
+        query,
+        limit: int(args.limit),
+        sources: list(args.sources) as SearchRequest["sources"],
+        categories: list(args.categories) as SearchRequest["categories"],
+        tbs: args.tbs,
+        lang: args.lang,
+        includeDomains: list(args["include-domains"]),
+        excludeDomains: list(args["exclude-domains"]),
+        scrapeOptions: args.scrape ? { formats: ["markdown"] } : undefined,
+      };
+      const { data, warning } = await engine.search(req);
+      if (args.json) {
+        console.log(JSON.stringify({ success: true, data, ...(warning ? { warning } : {}) }, null, 2));
+        return;
+      }
+      if (warning) log.warn(warning);
+      const sections: Array<
+        [string, Array<{ url?: string; title?: string; description?: string; snippet?: string; imageUrl?: string; markdown?: string }>]
+      > = [
+        ["web", data.web ?? []],
+        ["news", data.news ?? []],
+        ["images", data.images ?? []],
+      ];
+      const multiple = sections.filter(([, items]) => items.length).length > 1;
+      for (const [name, items] of sections) {
+        if (!items.length) continue;
+        if (multiple) console.log(`== ${name} ==\n`);
+        items.forEach((r, i) => {
+          console.log(`${i + 1}. ${r.title || "(untitled)"}\n   ${r.url ?? r.imageUrl ?? ""}`);
+          const text = r.description || r.snippet;
+          if (text) console.log(`   ${text}`);
+          if (name === "images" && r.imageUrl) console.log(`   image: ${r.imageUrl}`);
+          if (r.markdown) console.log(`\n${r.markdown}\n`);
+          console.log();
+        });
+      }
+    });
+  },
+});
+
+const fetchCmd = defineCommand({
+  meta: { name: "fetch", description: "Fetch a URL and print it as markdown (or other formats)" },
+  args: {
+    ...commonArgs,
+    url: { type: "positional", description: "URL to fetch", required: true },
+    formats: {
+      type: "string",
+      alias: "f",
+      description: "Comma-separated: markdown,html,rawHtml,links,images,summary (default markdown)",
+    },
+    full: { type: "boolean", description: "Keep the whole page instead of only the main content" },
+    "include-tags": { type: "string", description: "Comma-separated CSS selectors to keep" },
+    "exclude-tags": { type: "string", description: "Comma-separated CSS selectors to remove" },
+    "wait-for": { type: "string", description: "Extra ms to wait after load (browser only)" },
+    mobile: { type: "boolean", description: "Emulate a mobile device" },
+    "json-prompt": { type: "string", description: "LLM extraction prompt (adds the json format)" },
+    "json-schema": { type: "string", description: "JSON Schema (inline JSON or file path) for LLM extraction" },
+    options: { type: "string", description: "Extra Firecrawl scrape options as inline JSON or a file path" },
+    json: { type: "boolean", description: "Print the full JSON document" },
+  },
+  run: async ({ args }) => {
+    const engine = engineFrom(args, { allowPrivateNetwork: true });
+    await oneShot(engine, async () => {
+      const formats: FormatOption[] = (list(args.formats) ?? []) as FormatOption[];
+      if (!formats.length && !args["json-prompt"] && !args["json-schema"]) formats.push("markdown");
+      if (args["json-prompt"] || args["json-schema"]) {
+        formats.push({
+          type: "json",
+          prompt: args["json-prompt"],
+          schema: args["json-schema"] ? ((await parseJsonArg(args["json-schema"])) as Record<string, unknown>) : undefined,
+        });
+      }
+      const extra = args.options ? ((await parseJsonArg(args.options)) as ScrapeOptions) : {};
+      const doc: Document = await engine.scrape({
+        ...extra,
+        url: args.url,
+        formats: extra.formats ?? formats,
+        onlyMainContent: args.full ? false : extra.onlyMainContent,
+        includeTags: list(args["include-tags"]) ?? extra.includeTags,
+        excludeTags: list(args["exclude-tags"]) ?? extra.excludeTags,
+        waitFor: int(args["wait-for"]) ?? extra.waitFor,
+        mobile: args.mobile ?? extra.mobile,
+      });
+      const requested = new Set(formats.map((f) => (typeof f === "string" ? f : f.type)));
+      if (args.json) {
+        console.log(JSON.stringify({ success: true, data: doc }, null, 2));
+      } else if (requested.size === 1 && requested.has("markdown")) {
+        console.log(doc.markdown ?? "");
+      } else if (requested.size === 1 && requested.has("json")) {
+        console.log(JSON.stringify(doc.json, null, 2));
+      } else if (requested.size === 1 && requested.has("summary")) {
+        console.log(doc.summary ?? "");
+      } else {
+        console.log(JSON.stringify(doc, null, 2));
+      }
+    });
+  },
+});
+
+const http = defineCommand({
+  meta: { name: "http", description: "Run the Firecrawl-compatible HTTP API (docs at /docs, spec at /openapi.json)" },
+  args: {
+    ...serverArgs,
+    port: { type: "string", alias: "p", description: "Port (env PORT, default 3002)" },
+    host: { type: "string", description: "Bind address (env HOST, default 127.0.0.1)" },
+  },
+  run: async ({ args }) => {
+    const engine = engineFrom(args, { allowPrivateNetwork: false });
+    onShutdown(engine);
+    await engine.browser.warmup();
+    maybeStartWorker(engine, args.worker);
+    const { serveHttp } = await import("./http/server.ts");
+    serveHttp(engine, {
+      port: int(args.port) ?? int(process.env.PORT) ?? 3002,
+      host: args.host ?? process.env.HOST ?? "127.0.0.1",
+    });
+  },
+});
+
+const mcp = defineCommand({
+  meta: { name: "mcp", description: "Run the MCP server (stdio or streamable HTTP)" },
+  args: {
+    ...serverArgs,
+    transport: { type: "enum", options: ["stdio", "http"], default: "stdio", description: "stdio | http" },
+    port: { type: "string", alias: "p", description: "HTTP port (default 3003)" },
+    host: { type: "string", description: "HTTP bind address (default 127.0.0.1)" },
+    stateless: { type: "boolean", description: "Stateless HTTP mode (no MCP sessions)" },
+  },
+  run: async ({ args }) => {
+    const engine = engineFrom(args, { allowPrivateNetwork: false });
+    onShutdown(engine);
+    await engine.browser.warmup();
+    maybeStartWorker(engine, args.worker);
+    const { serveMcp } = await import("./mcp/server.ts");
+    await serveMcp(engine, {
+      transport: args.transport as "stdio" | "http",
+      port: int(args.port) ?? 3003,
+      host: args.host ?? "127.0.0.1",
+      stateless: !!args.stateless,
+    });
+  },
+});
+
+const worker = defineCommand({
+  meta: { name: "worker", description: "Process crawl/batch/extract jobs from Redis (BullMQ) without serving an API" },
+  args: { ...serverArgs },
+  run: async ({ args }) => {
+    const engine = engineFrom(args, { allowPrivateNetwork: false });
+    if (!engine.config.redisUrl) {
+      process.stderr.write("error: worker needs --redis-url (or SEX_REDIS_URL); the in-memory queue only runs inside http/mcp\n");
+      process.exit(1);
+    }
+    onShutdown(engine);
+    await engine.browser.warmup();
+    engine.startWorker();
+    log.info("worker running", engine.describe());
+  },
+});
+
+const main = defineCommand({
+  meta: { name: "sex", version: VERSION, description: "Self-hosted, Firecrawl-compatible web search + fetch" },
+  subCommands: { search, fetch: fetchCmd, http, mcp, worker },
+});
+
+runMain(main);

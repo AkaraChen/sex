@@ -1,0 +1,55 @@
+# SearXNG + Lightpanda + Redis + sex (HTTP API on :3002, MCP over HTTP on :3003).
+# Crawl/batch/extract jobs run on BullMQ in Redis; every sex process is also a worker.
+# Scale workers with: docker compose up -d --scale sex-worker=4
+# LLM features: set SEX_LLM_MODEL (and SEX_LLM_BASE_URL / SEX_LLM_API_KEY) in .env.
+x-sex: &sex
+  build: .
+  image: sex:latest
+  restart: unless-stopped
+  depends_on: [searxng, lightpanda, redis]
+  environment:
+    SEX_SEARXNG_URL: http://searxng:8080
+    SEX_CDP_URL: ws://lightpanda:9222
+    SEX_REDIS_URL: redis://redis:6379
+    SEX_LLM_MODEL: ${SEX_LLM_MODEL:-}
+    SEX_LLM_BASE_URL: ${SEX_LLM_BASE_URL:-}
+    SEX_LLM_API_KEY: ${SEX_LLM_API_KEY:-}
+
+services:
+  sex-http:
+    <<: *sex
+    command: ["http", "--host", "0.0.0.0", "--port", "3002"]
+    ports: ["3002:3002"]
+
+  sex-mcp:
+    <<: *sex
+    command: ["mcp", "--transport", "http", "--host", "0.0.0.0", "--port", "3003"]
+    ports: ["3003:3003"]
+
+  sex-worker:
+    <<: *sex
+    command: ["worker"]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes: [redis-data:/data]
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me}
+
+  lightpanda:
+    image: lightpanda/browser:nightly
+    restart: unless-stopped
+    environment:
+      LIGHTPANDA_DISABLE_TELEMETRY: "true"
+    # --advertise-host lets other containers connect with Host: lightpanda.
+    command: ["/bin/lightpanda", "serve", "--host", "0.0.0.0", "--port", "9222", "--advertise-host", "lightpanda", "--log-level", "warn"]
+
+volumes:
+  redis-data:

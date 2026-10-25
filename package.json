@@ -1,0 +1,41 @@
+{
+  "name": "sex",
+  "type": "module",
+  "scripts": {
+    "dev": "bun src/cli.ts",
+    "typecheck": "bun check",
+    "lint": "biome check src test",
+    "test": "bun test",
+    "build": "bun build --compile --minify --external effect --external sury --external @valibot/to-json-schema src/cli.ts --outfile dist/sex"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.3",
+    "@mendable/firecrawl-js": "^4.51.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@types/bun": "^1.4.4"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@orpc/openapi": "^1.16.1",
+    "@orpc/server": "^1.16.1",
+    "@orpc/zod": "^1.16.1",
+    "bullmq": "^6.4.2",
+    "citty": "^0.2.2",
+    "defuddle": "^0.19.6",
+    "fastmcp": "^4.23.7",
+    "hono": "^4.13.14",
+    "ioredis": "^6.0.0",
+    "linkedom": "^0.18.14",
+    "p-limit": "^7.3.3",
+    "puppeteer-core": "^25.16.0",
+    "unpdf": "^1.9.1",
+    "zod": "^4.6.7"
+  },
+  "version": "0.1.0",
+  "description": "Self-hosted Firecrawl-compatible web search (SearXNG) + fetch (Defuddle) CLI, HTTP API and MCP server",
+  "bin": {
+    "sex": "src/cli.ts"
+  }
+}

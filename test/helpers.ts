@@ -1,0 +1,107 @@
+import { type ConfigOverrides, resolveConfig } from "../src/config.ts";
+import { Engine } from "../src/core/engine.ts";
+
+const page = (title: string, body: string) =>
+  `<!doctype html><html lang="en"><head><title>${title}</title>
+<meta name="description" content="About ${title}"><meta property="og:title" content="${title} OG">
+</head><body><nav><a href="/">Home</a> <a href="/docs/a">A</a></nav>
+<main><article><h1>${title}</h1>${body}</article></main><footer>footer text</footer></body></html>`;
+
+const paragraphs = (topic: string) =>
+  Array.from({ length: 4 }, (_, i) => `<p>Paragraph ${i + 1} about ${topic}. ${"Lorem ipsum dolor sit amet. ".repeat(8)}</p>`).join("");
+
+/** A tiny local website: /, /docs/a, /docs/b, /private/x, robots.txt, sitemap.xml, JSON. */
+export function startFixtureSite() {
+  const server = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const { pathname } = new URL(req.url);
+      const html = (s: string) => new Response(s, { headers: { "content-type": "text/html; charset=utf-8" } });
+      switch (pathname) {
+        case "/":
+          return html(
+            page(
+              "Home",
+              `${paragraphs("home")}<p><a href="/docs/a">Doc A</a> <a href="/docs/b">Doc B</a> <a href="/private/x">Private</a></p>`,
+            ),
+          );
+        case "/docs/a":
+          return html(page("Doc A", `${paragraphs("doc a")}<a href="/docs/b">next</a><img src="/img/a.png">`));
+        case "/docs/b":
+          return html(page("Doc B", paragraphs("doc b")));
+        case "/private/x":
+          return html(page("Private", paragraphs("secret")));
+        case "/robots.txt":
+          return new Response("User-agent: *\nDisallow: /private/\nSitemap: /sitemap.xml\n");
+        case "/sitemap.xml":
+          return new Response(
+            `<?xml version="1.0"?><urlset><url><loc>${new URL("/docs/b", req.url).href}</loc></url><url><loc>${new URL("/docs/c", req.url).href}</loc></url></urlset>`,
+            { headers: { "content-type": "application/xml" } },
+          );
+        case "/data.json":
+          return Response.json({ hello: "world" });
+        case "/redirect":
+          return Response.redirect(new URL("/docs/a", req.url).href, 302);
+        default:
+          return new Response("not found", { status: 404 });
+      }
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+}
+
+/** OpenAI-compatible /chat/completions mock that records requests and answers from `reply`. */
+type ChatRequest = { messages: Array<{ role: string; content: string }>; response_format?: { type: string } };
+
+export function startMockLlm(reply: (body: ChatRequest) => string) {
+  const requests: ChatRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = (await req.json()) as ChatRequest;
+      requests.push(body);
+      return Response.json({ choices: [{ message: { role: "assistant", content: reply(body) } }] });
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}/v1`, requests, stop: () => server.stop(true) };
+}
+
+/** A fake SearXNG returning results that point at the fixture site. */
+export function startMockSearxng(siteUrl: string) {
+  const server = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const u = new URL(req.url);
+      if (u.searchParams.get("pageno") !== "1") return Response.json({ results: [] });
+      const category = u.searchParams.get("categories");
+      return Response.json({
+        results: [
+          { url: `${siteUrl}/docs/a`, title: "Doc \ue000A\ue001", content: "About doc a", category },
+          { url: `${siteUrl}/docs/b`, title: "Doc B", content: "About doc b", publishedDate: "2026-01-01", category },
+          {
+            url: "https://other.example/x",
+            title: "Other",
+            content: "Elsewhere",
+            img_src: "https://other.example/i.png",
+            resolution: "640 x 480",
+          },
+        ],
+      });
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+}
+
+export function testEngine(overrides: ConfigOverrides = {}) {
+  return new Engine(resolveConfig({ allowPrivateNetwork: true, concurrency: 4, timeout: 10_000, ...overrides }));
+}
+
+export async function waitFor<T>(fn: () => T | undefined | Promise<T | undefined>, timeoutMs = 15_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const v = await fn();
+    if (v !== undefined) return v;
+    await Bun.sleep(25);
+  }
+  throw new Error("waitFor timed out");
+}
