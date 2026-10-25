@@ -15,6 +15,15 @@ export interface Robots {
 
 const ALLOW_ALL: Robots = { isAllowed: () => true, sitemaps: [] };
 
+/** robots.txt body that forbids everything; stands in for a server error response (RFC 9309 section 2.3.1.4). */
+export const DISALLOW_ALL_TXT = "User-agent: *\nDisallow: /\n";
+
+/** The robots.txt text to apply for a fetched response: 5xx means disallow all, other errors (4xx) mean allow all. */
+export function robotsTextFor(status: number, body: () => string): string {
+  if (status >= 500) return DISALLOW_ALL_TXT;
+  return status < 400 ? body() : "";
+}
+
 /** Glob match where `*` matches any run of characters; every other character is literal. */
 function globMatch(pattern: string, text: string): boolean {
   let p = 0,
@@ -66,7 +75,8 @@ export function parseRobots(text: string, userAgent: string): Robots {
         current = { agents: [], rules: [] };
         groups.push(current);
       }
-      current.agents.push(value.toLowerCase());
+      // An empty token matches no crawler (it would otherwise match every user agent as a substring).
+      if (value) current.agents.push(value.toLowerCase());
       lastWasAgent = true;
       continue;
     }
@@ -107,8 +117,8 @@ export async function fetchRobots(engine: Engine, origin: string, userAgent: str
       userAgent: engine.config.userAgent,
       maxBodyBytes: engine.config.maxBodyBytes,
     });
-    if (res.status >= 400) return ALLOW_ALL;
-    return parseRobots(decodeBody(res.body, res.contentType), userAgent);
+    const text = robotsTextFor(res.status, () => decodeBody(res.body, res.contentType));
+    return text ? parseRobots(text, userAgent) : ALLOW_ALL;
   } catch {
     return ALLOW_ALL;
   }

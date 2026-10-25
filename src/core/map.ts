@@ -18,20 +18,32 @@ const safeDecode = (s: string) => {
   }
 };
 
-const decodeXml = (s: string) =>
-  s
-    .replace(/^<!\[CDATA\[|\]\]>$/g, "")
+const decodeXml = (raw: string) => {
+  const s = raw.trim();
+  // A CDATA section is literal text: no entity decoding inside it.
+  const cdata = s.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/);
+  if (cdata) return (cdata[1] ?? "").trim();
+  return s
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .trim();
+};
 
 /** Collects page URLs from robots.txt sitemaps and /sitemap.xml, following sitemap indexes. */
 export async function sitemapUrls(engine: Engine, origin: string, max: number, signal?: AbortSignal): Promise<string[]> {
   const robots = await fetchRobots(engine, origin, "sex", signal);
-  const queue = Array.from(new Set([...robots.sitemaps, `${origin}/sitemap.xml`]));
+  // Sitemap: lines may be relative; resolve them against the site's origin.
+  const declared = robots.sitemaps.flatMap((sm) => {
+    try {
+      return [new URL(sm, origin).href];
+    } catch {
+      return [];
+    }
+  });
+  const queue = Array.from(new Set([...declared, `${origin}/sitemap.xml`]));
   const visited = new Set<string>();
   const urls = new Set<string>();
   while (queue.length && visited.size < MAX_SITEMAPS && urls.size < max) {

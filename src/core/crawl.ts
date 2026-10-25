@@ -6,7 +6,7 @@ import type { Engine } from "./engine.ts";
 import { type JobRecord, sendWebhook, validateWebhook } from "./jobs/index.ts";
 import { normalizeUrl, sitemapUrls } from "./map.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
-import { parseRobots, type Robots } from "./robots.ts";
+import { parseRobots, type Robots, robotsTextFor } from "./robots.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "./scrape.ts";
 
 /** The crawl options an LLM may derive from a prompt, validated with the same rules as the API. */
@@ -258,7 +258,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string) {
         userAgent: engine.config.userAgent,
         maxBodyBytes: engine.config.maxBodyBytes,
       })
-        .then((res) => (res.status < 400 ? decodeBody(res.body, res.contentType) : ""))
+        .then((res) => robotsTextFor(res.status, () => decodeBody(res.body, res.contentType)))
         .catch(() => "");
       await store.patch(jobId, { robotsTxt });
       job = { ...job, robotsTxt };
