@@ -175,7 +175,14 @@ export class MemoryTaskQueue implements TaskQueue {
       this.buffered.push(task);
       return;
     }
-    this.limit(() => handler(task)).catch((err) => log.error("task failed", { type: task.type, error: String(err) }));
+    this.limit(() => handler(task)).catch((err) =>
+      log.error("task failed", {
+        type: task.type,
+        job: task.jobId,
+        ...("url" in task ? { url: task.url } : {}),
+        error: String(err),
+      }),
+    );
   }
 
   async close() {

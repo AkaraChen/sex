@@ -22,6 +22,7 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
   } catch (err) {
     if (err instanceof UserError) throw err;
     const e = toAppError(err);
+    log.warn("mcp tool failed", { code: e.code, error: e.message });
     throw new UserError(`${e.code}: ${e.message}`);
   }
 }

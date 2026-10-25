@@ -13,6 +13,9 @@ interface Issue {
   message: string;
 }
 
+/** Caller-supplied request ids are accepted only when they are short and token-safe. */
+const REQUEST_ID = /^[\w.-]{1,128}$/;
+
 const formatPath = (path: Issue["path"]) =>
   (path ?? []).map((p) => (typeof p === "object" && p !== null && "key" in p ? String(p.key) : String(p))).join(".");
 
@@ -63,13 +66,19 @@ export function createApp(engine: Engine): Hono {
     const proto = c.req.header("x-forwarded-proto") ?? new URL(c.req.url).protocol.replace(":", "");
     const host = c.req.header("x-forwarded-host") ?? c.req.header("host") ?? new URL(c.req.url).host;
     const started = performance.now();
+    const incoming = c.req.header("x-request-id");
+    const rid = incoming && REQUEST_ID.test(incoming) ? incoming : crypto.randomUUID();
     const { matched, response } = await handler.handle(c.req.raw, {
       prefix: "/",
       context: { engine, origin: `${proto}://${host}` },
     });
     if (matched) {
-      log.info("http", { method: c.req.method, path: c.req.path, status: response.status, ms: Math.round(performance.now() - started) });
-      return c.newResponse(response.body, response);
+      const fields = { method: c.req.method, path: c.req.path, status: response.status, ms: Math.round(performance.now() - started), rid };
+      if (response.status >= 500) log.warn("http", fields);
+      else log.info("http", fields);
+      const out = c.newResponse(response.body, response);
+      out.headers.set("x-request-id", rid);
+      return out;
     }
     await next();
   });

@@ -2,6 +2,7 @@ import { ORPCError, os } from "@orpc/server";
 import type { Engine } from "../core/engine.ts";
 import { PAGE_BUDGET_CHARS } from "../core/jobs/index.ts";
 import { toAppError } from "../errors.ts";
+import { log } from "../log.ts";
 import {
   ActiveCrawlsResponse,
   BatchScrapeRequest,
@@ -38,11 +39,34 @@ const base = os.$context<HttpContext>().use(async ({ next }) => {
   } catch (err) {
     if (err instanceof ORPCError) throw err;
     const e = toAppError(err);
+    if (e.status >= 500) {
+      log.error("request failed", { code: e.code, error: e.message, stack: err instanceof Error ? err.stack : undefined });
+    }
     throw new ORPCError(e.code, { status: e.status, message: e.message, data: e.details });
   }
 });
 
 type JobKind = "crawl" | "batch_scrape" | "extract";
+
+const REDACTED = "[redacted]";
+
+/** Copies stored job options with every header value replaced, so credentials never leave the server. */
+function redactOptions(options: unknown): unknown {
+  if (!options || typeof options !== "object") return options;
+  const copy = structuredClone(options) as Record<string, unknown>;
+  const redactHeaders = (holder: unknown) => {
+    if (!holder || typeof holder !== "object") return;
+    const record = holder as Record<string, unknown>;
+    const headers = record.headers;
+    if (headers && typeof headers === "object") {
+      record.headers = Object.fromEntries(Object.keys(headers).map((name) => [name, REDACTED]));
+    }
+  };
+  redactHeaders(copy);
+  redactHeaders(copy.scrapeOptions);
+  redactHeaders(copy.webhook);
+  return copy;
+}
 
 const jobStatus = async (engine: Engine, kind: JobKind, id: string, skip: number, statusUrl: string) => {
   const job = await engine.getJob(id, kind);
@@ -110,7 +134,7 @@ export const router = {
           id: j.id,
           teamId: "local",
           url: j.url ?? "",
-          options: j.options,
+          options: redactOptions(j.options),
         })),
       })),
     paramsPreview: base
