@@ -1,5 +1,5 @@
 import pLimit from "p-limit";
-import { AppError, toAppError } from "../errors.ts";
+import { AppError, badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import type { Document, SearchData, SearchRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
@@ -172,6 +172,8 @@ export async function search(engine: Engine, req: SearchRequest, signal?: AbortS
 
   const data: SearchData = {};
   const warnings: string[] = [];
+  const failures: unknown[] = [];
+  let succeeded = 0;
   await Promise.all(
     sourceList(req).map(async (source) => {
       try {
@@ -193,7 +195,7 @@ export async function search(engine: Engine, req: SearchRequest, signal?: AbortS
             imageUrl: r.thumbnail || r.img_src || undefined,
             position: i + 1,
           }));
-        } else {
+        } else if (source === "images") {
           const results = await run("images");
           data.images = results.map((r, i) => {
             const [w, h] = (r.resolution ?? "").split(/\s*[x×]\s*/).map((n) => Number.parseInt(n, 10));
@@ -206,14 +208,18 @@ export async function search(engine: Engine, req: SearchRequest, signal?: AbortS
               position: i + 1,
             };
           });
+        } else {
+          throw badRequest(`Unknown source: ${source}`);
         }
+        succeeded++;
       } catch (err) {
-        // Fail the whole request only when no source succeeded.
-        if (sourceList(req).length === 1) throw err;
+        failures.push(err);
         warnings.push(`${source}: ${toAppError(err).message}`);
       }
     }),
   );
+  // Fail the whole request only when no source succeeded; partial results come back with a warning.
+  if (!succeeded && failures.length) throw failures[0];
 
   if (wantsScrape) {
     const scrapeOne = async <T extends { url?: string }>(item: T): Promise<T & Document> => {

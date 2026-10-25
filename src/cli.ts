@@ -4,7 +4,7 @@ import { type ConfigOverrides, resolveConfig } from "./config.ts";
 import { Engine } from "./core/engine.ts";
 import { AppError, toAppError } from "./errors.ts";
 import { log, setLogLevel } from "./log.ts";
-import type { Document, FormatOption, ScrapeOptions, SearchRequest } from "./schemas.ts";
+import { type Document, type FormatOption, type ScrapeOptions, ScrapeRequest, SearchRequest } from "./schemas.ts";
 import { VERSION } from "./version.ts";
 
 const commonArgs = {
@@ -73,6 +73,14 @@ function engineOrExit(args: CommonArgs & { "redis-url"?: string }, defaults: { a
   }
 }
 
+/** Prints the first schema issue as `error: BAD_REQUEST: path: message` and exits with code 2. */
+function invalidRequest(error: { issues: ReadonlyArray<{ path: PropertyKey[]; message: string }> }) {
+  const issue = error.issues[0];
+  const where = issue?.path.map(String).join(".");
+  process.stderr.write(`error: BAD_REQUEST: ${where ? `${where}: ` : ""}${issue?.message ?? "invalid request"}\n`);
+  process.exitCode = 2;
+}
+
 /** Runs a one-shot command, printing errors as `error: CODE: message` and always shutting the engine down. */
 async function oneShot(engine: Engine, fn: () => Promise<void>) {
   try {
@@ -127,7 +135,7 @@ const search = defineCommand({
     if (!engine) return;
     await oneShot(engine, async () => {
       const query = [args.query, ...args._.slice(1)].join(" ");
-      const req: SearchRequest = {
+      const req = {
         query,
         limit: int(args.limit, "--limit"),
         sources: list(args.sources) as SearchRequest["sources"],
@@ -138,7 +146,9 @@ const search = defineCommand({
         excludeDomains: list(args["exclude-domains"]),
         scrapeOptions: args.scrape ? { formats: ["markdown"] } : undefined,
       };
-      const { data, warning } = await engine.search(req);
+      const parsed = SearchRequest.safeParse(req);
+      if (!parsed.success) return invalidRequest(parsed.error);
+      const { data, warning } = await engine.search(parsed.data);
       if (args.json) {
         console.log(JSON.stringify({ success: true, data, ...(warning ? { warning } : {}) }, null, 2));
         return;
@@ -202,17 +212,21 @@ const fetchCmd = defineCommand({
         });
       }
       const extra = args.options ? ((await parseJsonArg(args.options)) as ScrapeOptions) : {};
-      const doc: Document = await engine.scrape({
+      const effectiveFormats = extra.formats ?? formats;
+      const req = {
         ...extra,
         url: args.url,
-        formats: extra.formats ?? formats,
+        formats: effectiveFormats,
         onlyMainContent: args.full ? false : extra.onlyMainContent,
         includeTags: list(args["include-tags"]) ?? extra.includeTags,
         excludeTags: list(args["exclude-tags"]) ?? extra.excludeTags,
         waitFor: int(args["wait-for"], "--wait-for") ?? extra.waitFor,
         mobile: args.mobile ?? extra.mobile,
-      });
-      const requested = new Set(formats.map((f) => (typeof f === "string" ? f : f.type)));
+      };
+      const parsed = ScrapeRequest.safeParse(req);
+      if (!parsed.success) return invalidRequest(parsed.error);
+      const doc: Document = await engine.scrape(parsed.data);
+      const requested = new Set(effectiveFormats.map((f) => (typeof f === "string" ? f : f.type)));
       if (args.json) {
         console.log(JSON.stringify({ success: true, data: doc }, null, 2));
       } else if (requested.size === 1 && requested.has("markdown")) {
@@ -276,7 +290,7 @@ const mcp = defineCommand({
 
 const worker = defineCommand({
   meta: { name: "worker", description: "Process crawl/batch/extract jobs from Redis (BullMQ) without serving an API" },
-  args: { ...serverArgs },
+  args: { ...commonArgs, "redis-url": serverArgs["redis-url"] },
   run: async ({ args }) => {
     const engine = engineOrExit(args, { allowPrivateNetwork: false });
     if (!engine) return;
