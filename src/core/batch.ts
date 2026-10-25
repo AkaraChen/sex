@@ -43,7 +43,7 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
     taskOptions = { ...rest };
   } else {
     job = await store.create({ kind: "batch_scrape", options: { ...rest, webhook } as Record<string, unknown> });
-    sendWebhook(job, "started");
+    sendWebhook(engine.config, job, "started");
     await store.incr(job.id, "pending", valid.length);
   }
   await store.incr(job.id, "total", valid.length);
@@ -59,11 +59,11 @@ export async function handleBatchPage(engine: Engine, job: JobRecord, url: strin
     const { document } = await scrapeUrl(engine, url, options);
     if ((await store.get(job.id))?.status !== "scraping") return;
     await store.pushDocument(job.id, document);
-    sendWebhook(job, "page", [document]);
+    sendWebhook(engine.config, job, "page", [document]);
   } catch (err) {
     await store.pushError(job.id, { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: toAppError(err).message });
   } finally {
     await store.incr(job.id, "completed", 1);
-    await settleTask(store, job.id);
+    await settleTask(engine, job.id);
   }
 }
