@@ -50,6 +50,16 @@ export function startFixtureSite() {
   return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
 }
 
+/** A streamed (SSE) /chat/completions response carrying `content`. */
+export function chatCompletionStream(content: string): Response {
+  const chunks = [
+    { choices: [{ index: 0, delta: { role: "assistant", content } }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+  ];
+  const sse = `${chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("")}data: [DONE]\n\n`;
+  return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+}
+
 /** OpenAI-compatible /chat/completions mock that records requests and answers from `reply`. */
 type ChatRequest = { messages: Array<{ role: string; content: string }>; response_format?: { type: string } };
 
@@ -60,7 +70,7 @@ export function startMockLlm(reply: (body: ChatRequest) => string) {
     async fetch(req) {
       const body = (await req.json()) as ChatRequest;
       requests.push(body);
-      return Response.json({ choices: [{ message: { role: "assistant", content: reply(body) } }] });
+      return chatCompletionStream(reply(body));
     },
   });
   return { url: `http://127.0.0.1:${server.port}/v1`, requests, stop: () => server.stop(true) };

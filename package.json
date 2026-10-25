@@ -36,6 +36,7 @@
     "p-limit": "^7.3.3",
     "puppeteer-core": "^25.16.0",
     "unpdf": "^1.9.1",
+    "xsai": "^1.0.0-beta.3",
     "zod": "^4.6.7"
   },
   "version": "0.1.0",

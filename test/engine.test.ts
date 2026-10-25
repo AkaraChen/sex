@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Engine } from "../src/core/engine.ts";
 import { AppError } from "../src/errors.ts";
-import { startFixtureSite, startMockLlm, startMockSearxng, testEngine } from "./helpers.ts";
+import { chatCompletionStream, startFixtureSite, startMockLlm, startMockSearxng, testEngine } from "./helpers.ts";
 
 let site: ReturnType<typeof startFixtureSite>;
 let searx: ReturnType<typeof startMockSearxng>;
@@ -91,6 +91,29 @@ describe("scrape", () => {
     expect(doc.json).toEqual({ title: "Doc A", paragraphs: 4 });
     const schemaCall = llm.requests.find((r) => r.response_format?.type === "json_schema");
     expect(schemaCall?.messages[1]?.content).toContain("Paragraph 1 about doc a");
+  });
+
+  test("JSON extraction retries without response_format when the endpoint rejects json_schema", async () => {
+    const formats: Array<string | undefined> = [];
+    const strict = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const body = (await req.json()) as { response_format?: { type: string } };
+        formats.push(body.response_format?.type);
+        if (body.response_format) return new Response("json_schema not supported", { status: 400 });
+        return chatCompletionStream('```json\n{"title":"Doc A"}\n```');
+      },
+    });
+    const e = testEngine({ llmModel: "m", llmBaseUrl: `http://127.0.0.1:${strict.port}/v1` });
+    try {
+      const doc = await e.scrape({ url: `${site.url}/docs/a`, formats: [{ type: "json", schema: { type: "object" } }] });
+      expect(doc.json).toEqual({ title: "Doc A" });
+      expect(formats).toEqual(["json_schema", undefined]);
+    } finally {
+      strict.stop(true);
+      await e.close();
+    }
   });
 });
 

@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Engine } from "../src/core/engine.ts";
 import type { JobRecord } from "../src/core/jobs/index.ts";
-import { testEngine, waitFor } from "./helpers.ts";
+import { chatCompletionStream, testEngine, waitFor } from "./helpers.ts";
 
 const CDP = process.env.SEX_TEST_CDP_URL;
 const body = (title: string, links: string[] = [], repeat = 1) =>
@@ -98,7 +98,7 @@ describe("extract cancel", () => {
       async fetch() {
         llmRequests++;
         await Bun.sleep(3000);
-        return Response.json({ choices: [{ message: { role: "assistant", content: "{}" } }] });
+        return chatCompletionStream("{}");
       },
     });
     // A small input budget gives each page its own LLM chunk; concurrency 1 serialises the LLM calls.

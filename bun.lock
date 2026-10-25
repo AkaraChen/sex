@@ -19,6 +19,7 @@
         "p-limit": "^7.3.3",
         "puppeteer-core": "^25.16.0",
         "unpdf": "^1.9.1",
+        "xsai": "^1.0.0-beta.3",
         "zod": "^4.6.7",
       },
       "devDependencies": {
@@ -162,6 +163,26 @@
     "@typescript/typescript-win32-x64": ["@typescript/typescript-win32-x64@7.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g=="],
 
     "@xmldom/xmldom": ["@xmldom/xmldom@0.9.12", "", {}, "sha512-5AXjrcMClTryPe9LgZrygpB1lj7s0S9E0+W+AHaVKAVyHanafK86iPSvG5xHVSp/jC+VH1UXu0TAEmY279xH7A=="],
+
+    "@xsai/audio": ["@xsai/audio@1.0.0-beta.3", "", { "dependencies": { "@xsai/shared": "1.0.0-beta.3" } }, "sha512-fOFN8j006eLOurxD1q5T3bARuP/ufMsWxSATlEQviRlrc1vfspHjuceDj6izC3FzaVWvtwqBoISbl2NiWvKzDw=="],
+
+    "@xsai/decide": ["@xsai/decide@1.0.0-beta.3", "", { "dependencies": { "@xsai/shared": "1.0.0-beta.3", "@xsai/text": "1.0.0-beta.3" } }, "sha512-v/Nr64osVeix7/pjhyDA3sUK0nVl9wFX9Guy9z40xT8rAY+QXTkQaT2GYwfCDLfah8qRL9hGKsBEkPVgm/JPWQ=="],
+
+    "@xsai/embed": ["@xsai/embed@1.0.0-beta.3", "", { "dependencies": { "@xsai/shared": "1.0.0-beta.3" } }, "sha512-Em17VRsEs+AWixnzYkWrhvpXF2Y1Sd27U++pz/Pt7iEo6jTd6zam4m153SlYLXdl5WiSqgmROSPr2ugb7lqhKA=="],
+
+    "@xsai/image": ["@xsai/image@1.0.0-beta.3", "", { "dependencies": { "@xsai/shared": "1.0.0-beta.3" } }, "sha512-W9XvEEhzB+uxMwkFGRfGnqC704VIDoORAt+0YHs53FKvgmcYTALk8SH0/pnFspuegrXBzLifL9PL5lPgQ+SOdA=="],
+
+    "@xsai/model": ["@xsai/model@1.0.0-beta.3", "", { "dependencies": { "@xsai/shared": "1.0.0-beta.3" } }, "sha512-jvuHPQ5ThnjnvWf8Ue4XJ4dB/QjoBL1hfPWp7pcIPaFxtjoEzrQ7gJ+Hka5TKMijY64E0Cdjd8uUdbXK9y3kKQ=="],
+
+    "@xsai/shared": ["@xsai/shared@1.0.0-beta.3", "", {}, "sha512-eu02bKqywIc0wLr9Ls3nZOxFQlGXp67NUO4u+NEK6JxKL/3HaEco6RH2/HnNqjAmCb8hfXiTbhOCuT6bHbrDcg=="],
+
+    "@xsai/text": ["@xsai/text@1.0.0-beta.3", "", { "dependencies": { "@xsai/shared": "1.0.0-beta.3" } }, "sha512-3O1CFyDhfs4cjLPxCl+bc6l5OjU2HCsWq9jddvWOSzD3oHtruIM+SFayLlN4MxveBYWUIxfBWMIBR6ES9PVvjA=="],
+
+    "@xsai/text-chat": ["@xsai/text-chat@1.0.0-beta.3", "", { "dependencies": { "@xsai/shared": "1.0.0-beta.3" }, "peerDependencies": { "@xsai/text": "1.0.0-beta.3" } }, "sha512-C/6i0qrqa2UUmtkmQ8ApFYT/2i2cRhciIk6ruLvi+CeVSjqdvsIVC1tiWKL4N8nWUAQFYzcGtUD9zgUpChjHBg=="],
+
+    "@xsai/text-messages": ["@xsai/text-messages@1.0.0-beta.3", "", { "dependencies": { "@xsai/shared": "1.0.0-beta.3" }, "peerDependencies": { "@xsai/text": "1.0.0-beta.3" } }, "sha512-177Jm98oQ6ho8mQWS5vCodW7se9AkwkrPKeMpSaGH6uh3Xl0zx3Gdilfu7eKrLD8bEmi5Oghv0pV3cAcYv2BwQ=="],
+
+    "@xsai/text-responses": ["@xsai/text-responses@1.0.0-beta.3", "", { "dependencies": { "@xsai/shared": "1.0.0-beta.3" }, "peerDependencies": { "@xsai/text": "1.0.0-beta.3" } }, "sha512-tijw9gAXGi/j1hsqoJyCekTnIAoi6vgFEg2IiXBj6B6VNbWziqZ4rCgAfhgq7klZhEj+l5Bu5kjZMqypMEqDQg=="],
 
     "accepts": ["accepts@2.0.0", "", { "dependencies": { "mime-types": "^3.0.0", "negotiator": "^1.0.0" } }, "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng=="],
 
@@ -490,6 +511,8 @@
     "wrappy": ["wrappy@1.0.2", "", {}, "sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ=="],
 
     "ws": ["ws@8.22.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="],
+
+    "xsai": ["xsai@1.0.0-beta.3", "", { "dependencies": { "@xsai/audio": "1.0.0-beta.3", "@xsai/decide": "1.0.0-beta.3", "@xsai/embed": "1.0.0-beta.3", "@xsai/image": "1.0.0-beta.3", "@xsai/model": "1.0.0-beta.3", "@xsai/shared": "1.0.0-beta.3", "@xsai/text": "1.0.0-beta.3", "@xsai/text-chat": "1.0.0-beta.3", "@xsai/text-messages": "1.0.0-beta.3", "@xsai/text-responses": "1.0.0-beta.3" } }, "sha512-imNKVlF2hXlPtjJwMQpMlUU0lVyB5TojKUt8EArArCLyp0z9+HhdOPpgvb7G5GhF/RIfGwxhhtkWSI4il38rWw=="],
 
     "y18n": ["y18n@5.0.8", "", {}, "sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA=="],
 
