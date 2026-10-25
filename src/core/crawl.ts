@@ -1,5 +1,7 @@
+import type { z } from "zod";
 import { badRequest, toAppError } from "../errors.ts";
-import type { CrawlRequest } from "../schemas.ts";
+import { log } from "../log.ts";
+import { CrawlRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
 import { type JobRecord, sendWebhook, settleTask, validateWebhook } from "./jobs/index.ts";
 import { normalizeUrl, sitemapUrls } from "./map.ts";
@@ -7,16 +9,50 @@ import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
 import { parseRobots, type Robots } from "./robots.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "./scrape.ts";
 
-const DERIVABLE_KEYS = [
-  "includePaths",
-  "excludePaths",
-  "maxDiscoveryDepth",
-  "crawlEntireDomain",
-  "allowSubdomains",
-  "allowExternalLinks",
-  "sitemap",
-  "limit",
-] as const;
+/** The crawl options an LLM may derive from a prompt, validated with the same rules as the API. */
+const Derivable = CrawlRequest.pick({
+  includePaths: true,
+  excludePaths: true,
+  maxDiscoveryDepth: true,
+  crawlEntireDomain: true,
+  allowSubdomains: true,
+  allowExternalLinks: true,
+  sitemap: true,
+  limit: true,
+}).partial();
+const DERIVABLE_KEYS = Object.keys(Derivable.shape);
+const derivableFieldSchemas = Derivable.shape as Record<string, z.ZodType>;
+
+const isValidRegex = (p: string) => {
+  try {
+    new RegExp(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Keeps only derived options that have the right type; drops invalid regexes and logs what was discarded. */
+function validateDerived(out: Record<string, unknown>): Record<string, unknown> {
+  const valid: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(out)) {
+    if (!DERIVABLE_KEYS.includes(key)) continue;
+    const parsed = derivableFieldSchemas[key]?.safeParse(value);
+    if (!parsed?.success) {
+      log.debug("dropped prompt-derived crawl option", { key, reason: "invalid type" });
+      continue;
+    }
+    if (key === "includePaths" || key === "excludePaths") {
+      const patterns = (parsed.data as string[]).filter(isValidRegex);
+      if (patterns.length !== (parsed.data as string[]).length)
+        log.debug("dropped invalid regex from prompt-derived crawl option", { key });
+      valid[key] = patterns;
+    } else {
+      valid[key] = parsed.data;
+    }
+  }
+  return valid;
+}
 
 /** Uses the LLM to turn a natural-language prompt into crawl options. */
 export async function crawlParamsFromPrompt(engine: Engine, url: string, prompt: string): Promise<Record<string, unknown>> {
@@ -29,7 +65,7 @@ crawlEntireDomain (boolean, follow links outside the start path), allowSubdomain
 sitemap ("include" | "skip" | "only"), limit (integer, max pages).`,
     `Start URL: ${url}\nInstruction: ${prompt}`,
   )) as Record<string, unknown>;
-  return Object.fromEntries(Object.entries(out ?? {}).filter(([k]) => (DERIVABLE_KEYS as readonly string[]).includes(k)));
+  return validateDerived(out ?? {});
 }
 
 function compile(patterns: string[] | undefined, name: string): RegExp[] {
@@ -63,6 +99,17 @@ interface CrawlPlan {
   basePath: string;
 }
 
+/**
+ * The directory the crawl stays within. `/docs/` and `/docs` both mean the `/docs` section; `/docs/index.html`
+ * means the `/docs/` directory; `/` is the whole site.
+ */
+function basePathOf(pathname: string): string {
+  if (pathname.endsWith("/")) return pathname;
+  const lastSegment = pathname.slice(pathname.lastIndexOf("/") + 1);
+  if (lastSegment.includes(".")) return pathname.replace(/\/[^/]*$/, "/");
+  return `${pathname}/`;
+}
+
 const plans = new Map<string, CrawlPlan>();
 
 function planFor(job: JobRecord): CrawlPlan {
@@ -79,7 +126,7 @@ function planFor(job: JobRecord): CrawlPlan {
     excludes: compile(req.excludePaths, "excludePaths"),
     robots: job.robotsTxt ? parseRobots(job.robotsTxt, req.robotsUserAgent ?? "sex") : undefined,
     baseHost: stripWww(start.hostname),
-    basePath: start.pathname.endsWith("/") ? start.pathname : start.pathname.replace(/\/[^/]*$/, "/"),
+    basePath: basePathOf(start.pathname),
   };
   if (plans.size > 200) plans.delete(plans.keys().next().value as string);
   plans.set(job.id, plan);
@@ -97,17 +144,27 @@ function inScope(plan: CrawlPlan, url: URL): boolean {
   const host = stripWww(url.hostname);
   const sameSite = host === plan.baseHost || (!!plan.req.allowSubdomains && host.endsWith(`.${plan.baseHost}`));
   if (!sameSite) return !!plan.req.allowExternalLinks;
-  return !!plan.req.crawlEntireDomain || url.pathname.startsWith(plan.basePath) || url.href === plan.start.href;
+  return (
+    !!plan.req.crawlEntireDomain ||
+    url.pathname.startsWith(plan.basePath) ||
+    url.pathname === plan.basePath.slice(0, -1) ||
+    url.href === plan.start.href
+  );
 }
 
-export async function startCrawl(engine: Engine, input: CrawlRequest): Promise<JobRecord> {
+/** `defaults` apply only where neither the prompt nor the request sets an option. */
+export async function startCrawl(engine: Engine, input: CrawlRequest, defaults: Partial<CrawlRequest> = {}): Promise<JobRecord> {
   const start = parseHttpUrl(input.url.trim());
   await assertPublicUrl(start, engine.config.allowPrivateNetwork);
   assertScrapeCapabilities(engine, input.scrapeOptions);
   await validateWebhook(engine, input.webhook);
   const derived = input.prompt ? await crawlParamsFromPrompt(engine, start.href, input.prompt) : {};
-  // Explicit options win over prompt-derived ones.
-  const req = { ...derived, ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)) } as CrawlRequest;
+  // Explicit options win over prompt-derived ones, which win over defaults.
+  const req = {
+    ...defaults,
+    ...derived,
+    ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)),
+  } as CrawlRequest;
   compile(req.includePaths, "includePaths");
   compile(req.excludePaths, "excludePaths");
 
@@ -126,14 +183,16 @@ async function enqueueLinks(engine: Engine, job: JobRecord, plan: CrawlPlan, lin
   const ignoreQuery = req.ignoreQueryParameters ?? false;
   const dedupe = req.deduplicateSimilarURLs ?? true;
 
+  // ignoreQueryParameters only affects deduplication: the URL fetched keeps its query string.
   const candidates = new Map<string, string>();
   for (const raw of links) {
-    const normalized = normalizeUrl(raw, ignoreQuery);
-    if (!normalized) continue;
-    const url = new URL(normalized);
+    const fetchUrl = normalizeUrl(raw, false);
+    const keyUrl = normalizeUrl(raw, ignoreQuery);
+    if (!fetchUrl || !keyUrl) continue;
+    const url = new URL(fetchUrl);
     if (!isStart && (!inScope(plan, url) || !matchesFilters(plan, url))) continue;
-    const key = dedupe ? similarityKey(normalized) : normalized;
-    if (!candidates.has(key)) candidates.set(key, normalized);
+    const key = dedupe ? similarityKey(keyUrl) : keyUrl;
+    if (!candidates.has(key)) candidates.set(key, fetchUrl);
   }
   if (!candidates.size) return;
 
@@ -187,11 +246,12 @@ export async function handleCrawlStart(engine: Engine, jobId: string) {
       job = { ...job, robotsTxt };
     }
     const plan = planFor(job);
+    // The start URL is crawled in every mode; the root site and sitemapped pages have discovery depth 0.
     const mode = req.sitemap ?? "include";
-    if (mode !== "only") await enqueueLinks(engine, job, plan, [start.href], 0, true);
+    await enqueueLinks(engine, job, plan, [start.href], 0, true);
     if (mode !== "skip") {
       const urls = await sitemapUrls(engine, start.origin, plan.limit * 2).catch(() => []);
-      await enqueueLinks(engine, job, plan, urls, 1);
+      await enqueueLinks(engine, job, plan, urls, 0);
     }
   } catch (err) {
     const e = toAppError(err);
@@ -210,7 +270,7 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
     const plan = planFor(job);
     const { document, links } = await scrapeUrl(engine, url, plan.req.scrapeOptions, { collectLinks: true });
     if ((await store.get(job.id))?.status !== "scraping") return;
-    const start = normalizeUrl(plan.start.href, plan.req.ignoreQueryParameters ?? false);
+    const start = normalizeUrl(plan.start.href, false);
     // The start page always feeds discovery but only counts as a result if it passes the filters.
     if (url !== start || matchesFilters(plan, new URL(url))) {
       await store.pushDocument(job.id, document);

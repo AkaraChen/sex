@@ -9,6 +9,10 @@ import { VERSION } from "../version.ts";
 
 const EXTRACT_WAIT_MS = 5 * 60 * 1000;
 
+const McpCrawlRequest = CrawlRequest.extend({
+  limit: CrawlRequest.shape.limit.describe("Max pages. Defaults to 20 for this tool."),
+});
+
 const json = (value: unknown) => JSON.stringify(value, null, 2);
 
 /** Runs a tool body, reporting failures as MCP tool errors with the server's message. */
@@ -71,10 +75,11 @@ export function createMcpServer(engine: Engine): FastMCP {
     description:
       "Start an asynchronous crawl from a URL, following links within the site. Returns a job id; poll it with web_crawl_status. Keep `limit` small.",
     annotations: { title: "Start crawl", readOnlyHint: false, openWorldHint: true, destructiveHint: false },
-    parameters: CrawlRequest,
+    parameters: McpCrawlRequest,
     execute: (args) =>
       guard(async () => {
-        const job = await engine.crawl({ ...args, limit: args.limit ?? 20 });
+        // The tool's default limit sits below prompt-derived and explicit options.
+        const job = await engine.crawl(args, { limit: 20 });
         return json({ id: job.id, status: job.status, message: "Crawl started. Use web_crawl_status with this id." });
       }),
   });

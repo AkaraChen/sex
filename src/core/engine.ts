@@ -77,8 +77,8 @@ export class Engine {
     return mapSite(this, req, signal);
   }
 
-  crawl(req: CrawlRequest): Promise<JobRecord> {
-    return startCrawl(this, req);
+  crawl(req: CrawlRequest, defaults?: Partial<CrawlRequest>): Promise<JobRecord> {
+    return startCrawl(this, req, defaults);
   }
 
   crawlParamsPreview(url: string, prompt: string): Promise<Record<string, unknown>> {
