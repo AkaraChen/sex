@@ -3,7 +3,8 @@ import { decodeBody, safeFetch } from "./net.ts";
 
 interface Rule {
   allow: boolean;
-  pattern: RegExp;
+  pattern: string;
+  anchored: boolean;
   length: number;
 }
 
@@ -14,14 +15,35 @@ export interface Robots {
 
 const ALLOW_ALL: Robots = { isAllowed: () => true, sitemaps: [] };
 
-function toRegex(path: string): RegExp {
-  const anchored = path.endsWith("$");
-  const body = (anchored ? path.slice(0, -1) : path)
-    .split("*")
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-    .join(".*");
-  return new RegExp(`^${body}${anchored ? "$" : ""}`);
+/** Glob match where `*` matches any run of characters; every other character is literal. */
+function globMatch(pattern: string, text: string): boolean {
+  let p = 0,
+    t = 0,
+    star = -1,
+    mark = 0;
+  while (t < text.length) {
+    if (p < pattern.length && pattern[p] !== "*" && pattern[p] === text[t]) {
+      p++;
+      t++;
+    } else if (p < pattern.length && pattern[p] === "*") {
+      star = p++;
+      mark = t;
+    } else if (star !== -1) {
+      p = star + 1;
+      t = ++mark;
+    } else return false;
+  }
+  while (pattern[p] === "*") p++;
+  return p === pattern.length;
 }
+
+function toRule(allow: boolean, value: string): Rule {
+  const anchored = value.endsWith("$");
+  const body = (anchored ? value.slice(0, -1) : value).replace(/\*{2,}/g, "*");
+  return { allow, pattern: body, anchored, length: value.length };
+}
+
+const ruleMatches = (r: Rule, path: string) => globMatch(r.anchored ? r.pattern : `${r.pattern}*`, path);
 
 export function parseRobots(text: string, userAgent: string): Robots {
   const ua = userAgent.toLowerCase();
@@ -51,7 +73,7 @@ export function parseRobots(text: string, userAgent: string): Robots {
     lastWasAgent = false;
     if (!current || (key !== "allow" && key !== "disallow")) continue;
     if (key === "disallow" && value === "") continue;
-    current.rules.push({ allow: key === "allow", pattern: toRegex(value), length: value.length });
+    current.rules.push(toRule(key === "allow", value));
   }
   const specific = groups.filter((g) => g.agents.some((a) => a !== "*" && ua.includes(a)));
   const chosen = specific.length ? specific : groups.filter((g) => g.agents.includes("*"));
@@ -68,7 +90,7 @@ export function parseRobots(text: string, userAgent: string): Robots {
       }
       let best: Rule | undefined;
       for (const r of rules) {
-        if (!r.pattern.test(path)) continue;
+        if (!ruleMatches(r, path)) continue;
         if (!best || r.length > best.length || (r.length === best.length && r.allow)) best = r;
       }
       return !best || best.allow;
