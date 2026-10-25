@@ -1,3 +1,4 @@
+import pLimit from "p-limit";
 import { AppError, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import type { Document, SearchData, SearchRequest } from "../schemas.ts";
@@ -112,6 +113,8 @@ function sourceList(req: SearchRequest): Array<"web" | "news" | "images"> {
 
 export async function search(engine: Engine, req: SearchRequest, signal?: AbortSignal): Promise<{ data: SearchData; warning?: string }> {
   const limit = req.limit ?? 5;
+  // Caps the per-domain fan-out so one request cannot start an unbounded number of concurrent SearXNG queries.
+  const domainLimit = pLimit(4);
   const wantsScrape = !!req.scrapeOptions?.formats?.length;
   if (wantsScrape) assertScrapeCapabilities(engine, req.scrapeOptions);
   if (req.includeDomains?.length && req.excludeDomains?.length) {
@@ -149,7 +152,9 @@ export async function search(engine: Engine, req: SearchRequest, signal?: AbortS
     if (!req.includeDomains?.length) return collect(engine, { ...base, q, categories }, limit, accept, combined);
     // One site: query per domain, interleaved, since multi-site syntax is not portable across engines.
     const perDomain = await Promise.all(
-      req.includeDomains.map((d) => collect(engine, { ...base, q: `${q} site:${d}`, categories }, limit, accept, combined)),
+      req.includeDomains.map((d) =>
+        domainLimit(() => collect(engine, { ...base, q: `${q} site:${d}`, categories }, limit, accept, combined)),
+      ),
     );
     const merged: SearxResult[] = [];
     const seen = new Set<string>();
