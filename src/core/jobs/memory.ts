@@ -2,16 +2,7 @@ import { randomUUID } from "node:crypto";
 import pLimit from "p-limit";
 import { log } from "../../log.ts";
 import type { Document } from "../../schemas.ts";
-import {
-  JOB_TTL_MS,
-  type JobError,
-  type JobKind,
-  type JobPatch,
-  type JobRecord,
-  type JobStore,
-  type Task,
-  type TaskQueue,
-} from "./types.ts";
+import type { JobError, JobKind, JobPatch, JobRecord, JobStore, Task, TaskQueue } from "./types.ts";
 
 interface Entry {
   record: JobRecord;
@@ -21,12 +12,12 @@ interface Entry {
   seen: Set<string>;
 }
 
-/** Single-process job state; jobs expire after SEX_JOB_TTL_MS (24h). */
+/** Single-process job state; jobs expire after `ttlMs` (config.jobTtlMs, default 24h). */
 export class MemoryJobStore implements JobStore {
   private readonly jobs = new Map<string, Entry>();
   private readonly sweeper = setInterval(() => this.sweep(), 10 * 60 * 1000);
 
-  constructor() {
+  constructor(private readonly ttlMs: number) {
     this.sweeper.unref?.();
   }
 
@@ -41,7 +32,7 @@ export class MemoryJobStore implements JobStore {
       id: randomUUID(),
       status: "scraping",
       createdAt: now,
-      expiresAt: now + JOB_TTL_MS,
+      expiresAt: now + this.ttlMs,
       total: 0,
       completed: 0,
       pending: 0,

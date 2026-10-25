@@ -3,18 +3,7 @@ import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { log } from "../../log.ts";
 import type { Document } from "../../schemas.ts";
-import {
-  type CounterName,
-  JOB_TTL_MS,
-  type JobError,
-  type JobKind,
-  type JobPatch,
-  type JobRecord,
-  type JobState,
-  type JobStore,
-  type Task,
-  type TaskQueue,
-} from "./types.ts";
+import type { CounterName, JobError, JobKind, JobPatch, JobRecord, JobState, JobStore, Task, TaskQueue } from "./types.ts";
 
 const COUNTERS: CounterName[] = ["total", "completed", "pending", "scheduled", "slots"];
 const JSON_FIELDS = ["options", "result", "sources"] as const;
@@ -45,6 +34,8 @@ export class RedisJobStore implements JobStore {
   constructor(
     private readonly redis: IORedis,
     private readonly prefix: string,
+    /** How long a job's keys live, in ms. */
+    private readonly ttlMs: number,
   ) {}
 
   private key(id: string, suffix?: string) {
@@ -79,7 +70,7 @@ export class RedisJobStore implements JobStore {
       id: randomUUID(),
       status: "scraping",
       createdAt: now,
-      expiresAt: now + JOB_TTL_MS,
+      expiresAt: now + this.ttlMs,
       total: 0,
       completed: 0,
       pending: 0,

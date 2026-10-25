@@ -44,6 +44,7 @@ export async function sitemapUrls(engine: Engine, origin: string, max: number, s
         signal,
         allowPrivateNetwork: engine.config.allowPrivateNetwork,
         userAgent: engine.config.userAgent,
+        maxBodyBytes: engine.config.maxBodyBytes,
       });
       if (res.status >= 400) continue;
       const gz = res.body[0] === 0x1f && res.body[1] === 0x8b;

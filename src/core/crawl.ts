@@ -239,6 +239,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string) {
         timeout: 10_000,
         allowPrivateNetwork: engine.config.allowPrivateNetwork,
         userAgent: engine.config.userAgent,
+        maxBodyBytes: engine.config.maxBodyBytes,
       })
         .then((res) => (res.status < 400 ? decodeBody(res.body, res.contentType) : ""))
         .catch(() => "");

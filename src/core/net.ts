@@ -1,10 +1,10 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import ipaddr from "ipaddr.js";
+import { DEFAULT_MAX_BODY_BYTES } from "../config.ts";
 import { AppError, badRequest } from "../errors.ts";
 
 const MAX_REDIRECTS = 10;
-const MAX_BODY_BYTES = Number(process.env.SEX_MAX_BODY_BYTES ?? 25 * 1024 * 1024);
 
 export interface FetchOptions {
   headers?: Record<string, string>;
@@ -14,6 +14,8 @@ export interface FetchOptions {
   skipTlsVerification?: boolean;
   userAgent: string;
   method?: "GET" | "HEAD";
+  /** Body size cap; defaults to DEFAULT_MAX_BODY_BYTES. Callers pass engine.config.maxBodyBytes. */
+  maxBodyBytes?: number;
 }
 
 export interface FetchedResponse {
@@ -73,7 +75,7 @@ export async function assertPublicUrl(url: URL, allowPrivateNetwork: boolean): P
   }
 }
 
-async function readLimited(res: Response, signal: AbortSignal): Promise<Uint8Array> {
+async function readLimited(res: Response, signal: AbortSignal, maxBytes: number): Promise<Uint8Array> {
   if (!res.body) return new Uint8Array();
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -83,9 +85,9 @@ async function readLimited(res: Response, signal: AbortSignal): Promise<Uint8Arr
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
+    if (size > maxBytes) {
       await reader.cancel();
-      throw new AppError(413, "RESPONSE_TOO_LARGE", `Response body exceeds ${MAX_BODY_BYTES} bytes`);
+      throw new AppError(413, "RESPONSE_TOO_LARGE", `Response body exceeds ${maxBytes} bytes`);
     }
     chunks.push(value);
   }
@@ -126,7 +128,7 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
         url = parseHttpUrl(new URL(location, url).href);
         continue;
       }
-      const body = opts.method === "HEAD" ? new Uint8Array() : await readLimited(res, signal);
+      const body = opts.method === "HEAD" ? new Uint8Array() : await readLimited(res, signal, opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES);
       return {
         url: url.href,
         status: res.status,
