@@ -8,6 +8,15 @@ import { scrapeUrl } from "./scrape.ts";
 import { clean, searxng } from "./search.ts";
 
 const MAX_SITEMAPS = 50;
+const MAX_SITEMAP_BYTES = 25 * 1024 * 1024;
+
+const safeDecode = (s: string) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
 
 const decodeXml = (s: string) =>
   s
@@ -38,7 +47,9 @@ export async function sitemapUrls(engine: Engine, origin: string, max: number, s
       });
       if (res.status >= 400) continue;
       const gz = res.body[0] === 0x1f && res.body[1] === 0x8b;
-      const xml = gz ? gunzipSync(res.body).toString("utf8") : decodeBody(res.body, res.contentType);
+      const xml = gz
+        ? gunzipSync(res.body, { maxOutputLength: MAX_SITEMAP_BYTES }).toString("utf8")
+        : decodeBody(res.body, res.contentType);
       const isIndex = /<sitemapindex[\s>]/i.test(xml);
       for (const m of xml.matchAll(/<loc>([\s\S]*?)<\/loc>/gi)) {
         const loc = decodeXml(m[1] ?? "");
@@ -133,7 +144,7 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   if (req.search) {
     const tokens = req.search.toLowerCase().split(/\s+/).filter(Boolean);
     const score = (l: MapLink) => {
-      const hay = `${decodeURIComponent(l.url)} ${l.title ?? ""} ${l.description ?? ""}`.toLowerCase();
+      const hay = `${safeDecode(l.url)} ${l.title ?? ""} ${l.description ?? ""}`.toLowerCase();
       return tokens.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
     };
     const scored = links.map((l, i) => ({ l, s: score(l), i }));
