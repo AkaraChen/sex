@@ -67,7 +67,11 @@ export type FormatOption = z.infer<typeof FormatOption>;
 // ---------------------------------------------------------------- actions
 
 export const Action = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("wait"), milliseconds: z.number().int().nonnegative().optional(), selector: z.string().optional() }),
+  z.object({
+    type: z.literal("wait"),
+    milliseconds: z.number().int().nonnegative().max(60_000).optional().describe("Milliseconds to wait (max 60000)"),
+    selector: z.string().max(1000).optional(),
+  }),
   z.object({ type: z.literal("click"), selector: z.string(), all: z.boolean().optional() }),
   z.object({ type: z.literal("write"), text: z.string() }),
   z.object({ type: z.literal("press"), key: z.string() }),
@@ -92,17 +96,30 @@ export const LocationConfig = z.object({
 });
 
 export const ScrapeOptions = z.object({
-  formats: z.array(FormatOption).optional().describe('Output formats. Defaults to ["markdown"].'),
+  formats: z.array(FormatOption).max(20).optional().describe('Output formats. Defaults to ["markdown"]. At most 20.'),
   onlyMainContent: z.boolean().optional().describe("Return only the main content (Defuddle). Defaults to true."),
-  includeTags: z.array(z.string()).optional().describe("CSS selectors to keep; everything else is dropped"),
-  excludeTags: z.array(z.string()).optional().describe("CSS selectors to remove before extraction"),
-  headers: z.record(z.string(), z.string()).optional(),
-  waitFor: z.number().int().nonnegative().optional().describe("Extra milliseconds to wait after load (browser only)"),
+  includeTags: z
+    .array(z.string().max(1000))
+    .max(100)
+    .optional()
+    .describe("CSS selectors to keep; everything else is dropped (at most 100)"),
+  excludeTags: z.array(z.string().max(1000)).max(100).optional().describe("CSS selectors to remove before extraction (at most 100)"),
+  headers: z
+    .record(z.string(), z.string())
+    .refine((h) => Object.keys(h).length <= 50, "at most 50 headers")
+    .optional(),
+  waitFor: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(60_000)
+    .optional()
+    .describe("Extra milliseconds to wait after load (browser only, max 60000)"),
   mobile: z.boolean().optional(),
   skipTlsVerification: z.boolean().optional(),
-  timeout: z.number().int().positive().optional().describe("Timeout in milliseconds"),
+  timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
   parsers: z.array(z.union([z.string(), z.object({ type: z.string() }).loose()])).optional(),
-  actions: z.array(Action).optional().describe("Browser actions run before the page is captured (browser only)"),
+  actions: z.array(Action).max(50).optional().describe("Browser actions run before the page is captured (browser only, at most 50)"),
   location: LocationConfig.optional(),
   removeBase64Images: z.boolean().optional(),
   blockAds: z.boolean().optional(),
@@ -163,20 +180,20 @@ const SourceName = z.enum(["web", "news", "images"]);
 const CategoryName = z.enum(["github", "research", "pdf", "developer", "gov"]);
 
 export const SearchRequest = z.object({
-  query: z.string().min(1),
+  query: z.string().min(1).max(2000),
   limit: z.number().int().min(1).max(100).optional().describe("Max results per source. Defaults to 5."),
   sources: z
     .array(z.union([SourceName, z.object({ type: SourceName })]))
     .optional()
     .describe('Defaults to ["web"].'),
   categories: z.array(z.union([CategoryName, z.object({ type: CategoryName })])).optional(),
-  includeDomains: z.array(z.string()).optional(),
-  excludeDomains: z.array(z.string()).optional(),
+  includeDomains: z.array(z.string()).max(50).optional().describe("At most 50; each one costs a separate SearXNG query"),
+  excludeDomains: z.array(z.string()).max(50).optional(),
   tbs: z.string().optional().describe("Time filter: qdr:h, qdr:d, qdr:w, qdr:m, qdr:y"),
   location: z.string().optional(),
   country: z.string().optional(),
   lang: z.string().optional().describe("SearXNG language code, e.g. en, zh-CN (extension)"),
-  timeout: z.number().int().positive().optional(),
+  timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
   ignoreInvalidURLs: z.boolean().optional(),
   scrapeOptions: ScrapeOptions.optional().describe("If formats are given, every web/news result is scraped too"),
 });
@@ -219,12 +236,12 @@ export const SearchResponse = z.object({ success: z.literal(true), data: SearchD
 
 export const MapRequest = z.object({
   url: z.string(),
-  search: z.string().optional().describe("Rank/filter URLs by relevance to this term"),
+  search: z.string().max(2000).optional().describe("Rank/filter URLs by relevance to this term (max 2000 characters)"),
   sitemap: z.enum(["include", "skip", "only"]).optional().describe('Defaults to "include".'),
   includeSubdomains: z.boolean().optional().describe("Defaults to true."),
   ignoreQueryParameters: z.boolean().optional().describe("Defaults to true."),
   limit: z.number().int().min(1).max(100_000).optional().describe("Defaults to 5000."),
-  timeout: z.number().int().positive().optional(),
+  timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
   location: LocationConfig.optional(),
 });
 export type MapRequest = z.infer<typeof MapRequest>;
@@ -250,21 +267,25 @@ export const JobStatus = z.enum(["scraping", "completed", "failed", "cancelled"]
 
 export const CrawlRequest = z.object({
   url: z.string(),
-  prompt: z.string().optional().describe("Natural-language crawl instructions, turned into options by the LLM"),
-  includePaths: z.array(z.string()).optional().describe("Regexes; only matching paths are crawled"),
-  excludePaths: z.array(z.string()).optional().describe("Regexes; matching paths are skipped"),
-  maxDiscoveryDepth: z.number().int().nonnegative().optional(),
+  prompt: z
+    .string()
+    .max(5000)
+    .optional()
+    .describe("Natural-language crawl instructions, turned into options by the LLM (max 5000 characters)"),
+  includePaths: z.array(z.string().max(1000)).max(100).optional().describe("Regexes; only matching paths are crawled (at most 100)"),
+  excludePaths: z.array(z.string().max(1000)).max(100).optional().describe("Regexes; matching paths are skipped (at most 100)"),
+  maxDiscoveryDepth: z.number().int().nonnegative().max(100).optional(),
   sitemap: z.enum(["skip", "include", "only"]).optional().describe('Defaults to "include".'),
   ignoreQueryParameters: z.boolean().optional(),
   deduplicateSimilarURLs: z.boolean().optional(),
   regexOnFullURL: z.boolean().optional(),
-  limit: z.number().int().positive().optional().describe("Max pages. Defaults to 10000."),
+  limit: z.number().int().positive().max(100_000).optional().describe("Max pages. Defaults to 10000, at most 100000."),
   crawlEntireDomain: z.boolean().optional().describe("Also follow links outside the start URL's path"),
   allowExternalLinks: z.boolean().optional(),
   allowSubdomains: z.boolean().optional(),
   ignoreRobotsTxt: z.boolean().optional(),
   robotsUserAgent: z.string().optional(),
-  delay: z.number().nonnegative().optional().describe("Seconds between page fetches"),
+  delay: z.number().nonnegative().max(60).optional().describe("Seconds between page fetches (max 60)"),
   maxConcurrency: z.number().int().positive().optional(),
   webhook: WebhookConfig.optional(),
   scrapeOptions: ScrapeOptions.optional(),
@@ -308,7 +329,7 @@ export const CrawlParamsPreviewRequest = z.object({ url: z.string(), prompt: z.s
 export const CrawlParamsPreviewResponse = z.object({ success: z.literal(true), data: z.record(z.string(), z.unknown()) });
 
 export const BatchScrapeRequest = ScrapeOptions.extend({
-  urls: z.array(z.string()).min(1),
+  urls: z.array(z.string()).min(1).max(10_000),
   ignoreInvalidURLs: z.boolean().optional(),
   maxConcurrency: z.number().int().positive().optional(),
   appendToId: z.string().optional(),
@@ -317,10 +338,10 @@ export const BatchScrapeRequest = ScrapeOptions.extend({
 export type BatchScrapeRequest = z.infer<typeof BatchScrapeRequest>;
 
 export const ExtractRequest = z.object({
-  urls: z.array(z.string()).optional().describe("URLs to extract from; a trailing /* expands to the site's map"),
-  prompt: z.string().optional(),
+  urls: z.array(z.string()).max(100).optional().describe("URLs to extract from (at most 100); a trailing /* expands to the site's map"),
+  prompt: z.string().max(20_000).optional(),
   schema: z.record(z.string(), z.unknown()).optional(),
-  systemPrompt: z.string().optional(),
+  systemPrompt: z.string().max(20_000).optional(),
   enableWebSearch: z.boolean().optional().describe("Also search the web for the prompt and include top results"),
   allowExternalLinks: z.boolean().optional(),
   showSources: z.boolean().optional(),
