@@ -107,16 +107,17 @@ async function sexExtract(doc, opts, runDefuddle) {
       if (href && text && !linkTitles[href]) linkTitles[href] = text.slice(0, 200);
     }
   }
-  const images = opts.wantImages
-    ? Array.from(
-        new Set(
-          safeQueryAll(doc, "img")
-            .map((img) => abs(img.getAttribute("src") || img.getAttribute("data-src")))
-            .concat([abs(metadata.ogImage && String(metadata.ogImage))])
-            .filter(Boolean),
-        ),
-      )
-    : undefined;
+  // Lazy-loading pages keep a data: placeholder in `src` and the real URL in a data attribute.
+  const LAZY_ATTRS = ["data-src", "data-lazy-src", "data-original"];
+  const imageUrl = (img) => {
+    for (const attr of ["src", ...LAZY_ATTRS]) {
+      const url = abs(img.getAttribute(attr));
+      if (url) return url;
+    }
+    return null;
+  };
+  const ogImages = [].concat(metadata.ogImage || []).map((v) => abs(String(v)));
+  const images = opts.wantImages ? Array.from(new Set(safeQueryAll(doc, "img").map(imageUrl).concat(ogImages).filter(Boolean))) : undefined;
   const attributes = (opts.attributes || []).map(({ selector, attribute }) => ({
     selector,
     attribute,
@@ -127,7 +128,12 @@ async function sexExtract(doc, opts, runDefuddle) {
 
   // ---- pre-processing before Defuddle
   if (opts.removeBase64Images) {
-    for (const img of safeQueryAll(doc, 'img[src^="data:"]')) img.remove();
+    for (const img of safeQueryAll(doc, 'img[src^="data:"]')) {
+      // Keep lazy-loaded images: swap the inline placeholder for the real URL instead of dropping the image.
+      const real = LAZY_ATTRS.map((attr) => img.getAttribute(attr)).find((v) => abs(v));
+      if (real) img.setAttribute("src", real);
+      else img.remove();
+    }
   }
   for (const selector of opts.excludeTags || []) {
     for (const el of safeQueryAll(doc, selector)) el.remove();
