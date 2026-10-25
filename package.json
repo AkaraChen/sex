@@ -1,11 +1,15 @@
 {
   "name": "sex",
+  "private": true,
   "type": "module",
+  "packageManager": "bun@1.4.3",
   "scripts": {
     "dev": "bun src/cli.ts",
     "typecheck": "bun check",
     "lint": "biome check src test",
+    "format": "biome check --write src test",
     "test": "bun test",
+    "verify": "bun check && bun run lint && bun test",
     "build": "bun build --compile --minify --external effect --external sury --external @valibot/to-json-schema src/cli.ts --outfile dist/sex"
   },
   "devDependencies": {

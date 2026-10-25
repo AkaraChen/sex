@@ -16,11 +16,11 @@ for (const [name, redisUrl] of backends) {
     let llmEngine: Engine;
 
     beforeAll(() => {
-      process.env.SEX_REDIS_PREFIX = `sex-test-${Date.now()}`;
+      const prefix = `sex-test-${Date.now()}`;
       site = startFixtureSite();
       llm = startMockLlm(() => JSON.stringify({ title: "Doc A" }));
-      engine = testEngine({ redisUrl });
-      llmEngine = testEngine({ redisUrl, llmModel: "m", llmBaseUrl: llm.url });
+      engine = testEngine({ redisUrl, redisPrefix: `${prefix}-a` });
+      llmEngine = testEngine({ redisUrl, redisPrefix: `${prefix}-b`, llmModel: "m", llmBaseUrl: llm.url });
       if (redisUrl) {
         engine.startWorker();
         llmEngine.startWorker();

@@ -93,7 +93,9 @@ export function startMockSearxng(siteUrl: string) {
 }
 
 export function testEngine(overrides: ConfigOverrides = {}) {
-  return new Engine(resolveConfig({ allowPrivateNetwork: true, concurrency: 4, timeout: 10_000, ...overrides }));
+  return new Engine(
+    resolveConfig({ allowPrivateNetwork: true, concurrency: 4, timeout: 10_000, ...overrides }, { allowPrivateNetwork: true }, {}),
+  );
 }
 
 export async function waitFor<T>(fn: () => T | undefined | Promise<T | undefined>, timeoutMs = 15_000): Promise<T> {
