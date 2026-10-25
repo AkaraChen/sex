@@ -2,10 +2,19 @@
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40, silent: 100 } as const;
 type Level = keyof typeof LEVELS;
 
-let threshold: number = LEVELS[(process.env.SEX_LOG_LEVEL as Level) ?? "info"] ?? LEVELS.info;
+/** Case-insensitive level lookup; unknown names warn once on stderr and fall back to info. */
+function levelFrom(raw: string, source: string): number {
+  const name = raw.trim().toLowerCase();
+  if (Object.hasOwn(LEVELS, name)) return LEVELS[name as Level];
+  process.stderr.write(`${new Date().toISOString()} WARN unknown ${source} "${raw}", using info\n`);
+  return LEVELS.info;
+}
+
+const envLevel = process.env.SEX_LOG_LEVEL;
+let threshold: number = envLevel === undefined || envLevel.trim() === "" ? LEVELS.info : levelFrom(envLevel, "SEX_LOG_LEVEL");
 
 export function setLogLevel(level: string) {
-  if (level in LEVELS) threshold = LEVELS[level as Level];
+  threshold = levelFrom(level, "log level");
 }
 
 function emit(level: Level, msg: string, fields?: Record<string, unknown>) {

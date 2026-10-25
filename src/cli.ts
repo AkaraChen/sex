@@ -2,7 +2,7 @@
 import { defineCommand, runMain } from "citty";
 import { type ConfigOverrides, resolveConfig } from "./config.ts";
 import { Engine } from "./core/engine.ts";
-import { toAppError } from "./errors.ts";
+import { AppError, toAppError } from "./errors.ts";
 import { log, setLogLevel } from "./log.ts";
 import type { Document, FormatOption, ScrapeOptions, SearchRequest } from "./schemas.ts";
 import { VERSION } from "./version.ts";
@@ -24,7 +24,12 @@ const commonArgs = {
 
 type CommonArgs = { [K in keyof typeof commonArgs]?: (typeof commonArgs)[K]["type"] extends "boolean" ? boolean : string };
 
-const int = (v: string | undefined) => (v === undefined ? undefined : Number.parseInt(v, 10));
+/** Strict integer parse: `30s` or `abc` is an error, not a silent NaN. Empty means unset. */
+const int = (v: string | undefined, label: string): number | undefined => {
+  if (v === undefined || v.trim() === "") return undefined;
+  if (!/^\d+$/.test(v.trim())) throw new AppError(400, "CONFIG_INVALID", `${label} must be an integer (got ${JSON.stringify(v)})`);
+  return Number(v.trim());
+};
 const list = (v: string | undefined) =>
   v
     ?.split(",")
@@ -49,11 +54,23 @@ function engineFrom(args: CommonArgs & { "redis-url"?: string }, defaults: { all
     llmApiKey: args["llm-api-key"],
     allowPrivateNetwork: args["allow-private-network"],
     userAgent: args["user-agent"],
-    concurrency: int(args.concurrency),
-    timeout: int(args.timeout),
+    concurrency: int(args.concurrency, "--concurrency"),
+    timeout: int(args.timeout, "--timeout"),
     redisUrl: args["redis-url"],
   };
   return new Engine(resolveConfig(overrides, defaults));
+}
+
+/** Builds the engine, or prints a CONFIG_INVALID error and returns undefined with exit code 2. */
+function engineOrExit(args: CommonArgs & { "redis-url"?: string }, defaults: { allowPrivateNetwork: boolean }): Engine | undefined {
+  try {
+    return engineFrom(args, defaults);
+  } catch (err) {
+    if (!(err instanceof AppError) || err.code !== "CONFIG_INVALID") throw err;
+    process.stderr.write(`error: ${err.code}: ${err.message}\n`);
+    process.exitCode = 2;
+    return undefined;
+  }
 }
 
 /** Runs a one-shot command, printing errors as `error: CODE: message` and always shutting the engine down. */
@@ -106,12 +123,13 @@ const search = defineCommand({
     json: { type: "boolean", description: "Print the raw JSON response" },
   },
   run: async ({ args }) => {
-    const engine = engineFrom(args, { allowPrivateNetwork: true });
+    const engine = engineOrExit(args, { allowPrivateNetwork: true });
+    if (!engine) return;
     await oneShot(engine, async () => {
       const query = [args.query, ...args._.slice(1)].join(" ");
       const req: SearchRequest = {
         query,
-        limit: int(args.limit),
+        limit: int(args.limit, "--limit"),
         sources: list(args.sources) as SearchRequest["sources"],
         categories: list(args.categories) as SearchRequest["categories"],
         tbs: args.tbs,
@@ -171,7 +189,8 @@ const fetchCmd = defineCommand({
     json: { type: "boolean", description: "Print the full JSON document" },
   },
   run: async ({ args }) => {
-    const engine = engineFrom(args, { allowPrivateNetwork: true });
+    const engine = engineOrExit(args, { allowPrivateNetwork: true });
+    if (!engine) return;
     await oneShot(engine, async () => {
       const formats: FormatOption[] = (list(args.formats) ?? []) as FormatOption[];
       if (!formats.length && !args["json-prompt"] && !args["json-schema"]) formats.push("markdown");
@@ -190,7 +209,7 @@ const fetchCmd = defineCommand({
         onlyMainContent: args.full ? false : extra.onlyMainContent,
         includeTags: list(args["include-tags"]) ?? extra.includeTags,
         excludeTags: list(args["exclude-tags"]) ?? extra.excludeTags,
-        waitFor: int(args["wait-for"]) ?? extra.waitFor,
+        waitFor: int(args["wait-for"], "--wait-for") ?? extra.waitFor,
         mobile: args.mobile ?? extra.mobile,
       });
       const requested = new Set(formats.map((f) => (typeof f === "string" ? f : f.type)));
@@ -217,13 +236,14 @@ const http = defineCommand({
     host: { type: "string", description: "Bind address (env HOST, default 127.0.0.1)" },
   },
   run: async ({ args }) => {
-    const engine = engineFrom(args, { allowPrivateNetwork: false });
+    const engine = engineOrExit(args, { allowPrivateNetwork: false });
+    if (!engine) return;
     onShutdown(engine);
     await engine.browser.warmup();
     maybeStartWorker(engine, args.worker);
     const { serveHttp } = await import("./http/server.ts");
     serveHttp(engine, {
-      port: int(args.port) ?? int(process.env.PORT) ?? 3002,
+      port: int(args.port, "--port") ?? int(process.env.PORT, "PORT") ?? 3002,
       host: args.host ?? process.env.HOST ?? "127.0.0.1",
     });
   },
@@ -239,14 +259,15 @@ const mcp = defineCommand({
     stateless: { type: "boolean", description: "Stateless HTTP mode (no MCP sessions)" },
   },
   run: async ({ args }) => {
-    const engine = engineFrom(args, { allowPrivateNetwork: false });
+    const engine = engineOrExit(args, { allowPrivateNetwork: false });
+    if (!engine) return;
     onShutdown(engine);
     await engine.browser.warmup();
     maybeStartWorker(engine, args.worker);
     const { serveMcp } = await import("./mcp/server.ts");
     await serveMcp(engine, {
       transport: args.transport as "stdio" | "http",
-      port: int(args.port) ?? 3003,
+      port: int(args.port, "--port") ?? 3003,
       host: args.host ?? "127.0.0.1",
       stateless: !!args.stateless,
     });
@@ -257,7 +278,8 @@ const worker = defineCommand({
   meta: { name: "worker", description: "Process crawl/batch/extract jobs from Redis (BullMQ) without serving an API" },
   args: { ...serverArgs },
   run: async ({ args }) => {
-    const engine = engineFrom(args, { allowPrivateNetwork: false });
+    const engine = engineOrExit(args, { allowPrivateNetwork: false });
+    if (!engine) return;
     if (!engine.config.redisUrl) {
       process.stderr.write("error: worker needs --redis-url (or SEX_REDIS_URL); the in-memory queue only runs inside http/mcp\n");
       process.exit(1);

@@ -105,6 +105,7 @@ export async function fetchRobots(engine: Engine, origin: string, userAgent: str
       signal,
       allowPrivateNetwork: engine.config.allowPrivateNetwork,
       userAgent: engine.config.userAgent,
+      maxBodyBytes: engine.config.maxBodyBytes,
     });
     if (res.status >= 400) return ALLOW_ALL;
     return parseRobots(decodeBody(res.body, res.contentType), userAgent);

@@ -9,7 +9,6 @@ import { assertPublicUrl, parseHttpUrl } from "./net.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "./scrape.ts";
 import { search } from "./search.ts";
 
-const WILDCARD_PAGES = Number(process.env.SEX_EXTRACT_WILDCARD_PAGES ?? 25);
 const SEARCH_RESULTS = 5;
 
 export async function startExtract(engine: Engine, req: ExtractRequest): Promise<{ job: JobRecord; invalidURLs?: string[] }> {
@@ -57,7 +56,7 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
   const targets = new Set<string>();
   for (const u of urls) {
     if (u.endsWith("/*")) {
-      const links = await mapSite(engine, { url: u.slice(0, -1), limit: WILDCARD_PAGES, search: req.prompt });
+      const links = await mapSite(engine, { url: u.slice(0, -1), limit: engine.config.extractWildcardPages, search: req.prompt });
       for (const l of links) targets.add(l.url);
     } else targets.add(u);
   }

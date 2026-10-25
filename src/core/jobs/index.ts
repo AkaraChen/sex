@@ -20,7 +20,7 @@ export interface JobBackend {
 export function createJobBackend(config: Config): JobBackend {
   if (config.redisUrl) {
     const conn = redisConnection(config.redisUrl);
-    const store = new RedisJobStore(conn, config.redisPrefix);
+    const store = new RedisJobStore(conn, config.redisPrefix, config.jobTtlMs);
     const queue = new BullTaskQueue(conn, config.redisPrefix, config.concurrency);
     return {
       kind: "redis",
@@ -33,7 +33,7 @@ export function createJobBackend(config: Config): JobBackend {
       },
     };
   }
-  const store = new MemoryJobStore();
+  const store = new MemoryJobStore(config.jobTtlMs);
   const queue = new MemoryTaskQueue(config.concurrency);
   return {
     kind: "memory",

@@ -79,5 +79,3 @@ export interface TaskQueue {
   startWorker(handler: (task: Task) => Promise<void>): void;
   close(): Promise<void>;
 }
-
-export const JOB_TTL_MS = Number(process.env.SEX_JOB_TTL_MS ?? 24 * 60 * 60 * 1000);
