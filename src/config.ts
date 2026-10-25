@@ -31,6 +31,10 @@ export interface Config {
   extractWildcardPages: number;
   /** Worker threads for HTML/PDF extraction; 0 runs extraction on the main thread. */
   extractWorkers: number;
+  /** Browser origins allowed to call the HTTP API and MCP endpoint cross-origin (CORS). Empty disables CORS. */
+  corsOrigins: string[];
+  /** Host header hostnames accepted by the HTTP API and MCP endpoint; empty means only the bind-address check applies. */
+  allowedHosts: string[];
 }
 
 /** Values given on the command line; anything missing falls back to SEX_* env vars, then defaults. */
@@ -50,6 +54,10 @@ export interface ConfigOverrides {
   redisUrl?: string;
   redisPrefix?: string;
   llmMaxInputChars?: number;
+  /** Comma-separated origins, e.g. "https://app.example.com,https://other.example". */
+  corsOrigins?: string;
+  /** Comma-separated hostnames, e.g. "sex.example.com". */
+  allowedHosts?: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -69,6 +77,20 @@ const str = (v: string | undefined): string | undefined => (v === undefined || v
 
 const intField = (min: number) => z.coerce.number().int().min(min).optional();
 const urlField = z.url({ protocol: /^https?$/ }).optional();
+/** Splits a comma-separated value into trimmed, non-empty items. */
+const csv = (v: string | undefined): string[] =>
+  (v ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+/** A bare origin: scheme, host and optional port, no path, query or trailing slash. */
+const originField = z
+  .url({ protocol: /^https?$/ })
+  .refine((s) => new URL(s).origin === s.replace(/\/$/, "").toLowerCase(), "must be an origin without a path");
+const corsOriginsField = z.string().optional().transform(csv).pipe(z.array(originField));
+/** Hostnames only (no port, no scheme); IPv6 literals in brackets. */
+const hostnameField = z.string().regex(/^(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9._-]+)$/, "must be a hostname without a port");
+const allowedHostsField = z.string().optional().transform(csv).pipe(z.array(hostnameField));
 const TRUE_WORDS = ["1", "true", "yes", "on"];
 const FALSE_WORDS = ["0", "false", "no", "off"];
 const flagField = z
@@ -92,6 +114,8 @@ const RAW_SCHEMA = z.object({
   llmBaseUrl: urlField,
   lightpanda: flagField,
   allowPrivateNetwork: flagField,
+  corsOrigins: corsOriginsField,
+  allowedHosts: allowedHostsField,
 });
 
 /** Env name (or label) and the human description used in CONFIG_INVALID messages. */
@@ -108,6 +132,8 @@ const FIELD_RULES: Record<keyof z.infer<typeof RAW_SCHEMA>, [name: string, expec
   llmBaseUrl: ["SEX_LLM_BASE_URL", "an http(s) URL"],
   lightpanda: ["SEX_LIGHTPANDA", `one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(", ")}`],
   allowPrivateNetwork: ["SEX_ALLOW_PRIVATE_NETWORK", `one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(", ")}`],
+  corsOrigins: ["SEX_CORS_ORIGINS", "comma-separated origins like https://app.example.com (no path)"],
+  allowedHosts: ["SEX_ALLOWED_HOSTS", "comma-separated hostnames without a port"],
 };
 
 /** A boolean override arrives as a real boolean; normalise it to the same word form env values use. */
@@ -131,6 +157,8 @@ export function resolveConfig(
     llmBaseUrl: str(o.llmBaseUrl) ?? str(env.SEX_LLM_BASE_URL) ?? str(env.OPENAI_BASE_URL),
     lightpanda: flag(o.lightpanda, str(env.SEX_LIGHTPANDA)),
     allowPrivateNetwork: flag(o.allowPrivateNetwork, str(env.SEX_ALLOW_PRIVATE_NETWORK)),
+    corsOrigins: str(o.corsOrigins) ?? str(env.SEX_CORS_ORIGINS),
+    allowedHosts: str(o.allowedHosts) ?? str(env.SEX_ALLOWED_HOSTS),
   };
   const parsed = RAW_SCHEMA.safeParse(raw);
   if (!parsed.success) {
@@ -167,5 +195,7 @@ export function resolveConfig(
     jobTtlMs: v.jobTtlMs ?? 24 * 60 * 60 * 1000,
     extractWildcardPages: v.extractWildcardPages ?? 25,
     extractWorkers: v.extractWorkers ?? Math.max(1, Math.min(4, navigator.hardwareConcurrency - 1)),
+    corsOrigins: v.corsOrigins.map((o) => new URL(o).origin),
+    allowedHosts: v.allowedHosts.map((h) => h.toLowerCase()),
   };
 }

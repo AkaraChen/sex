@@ -37,7 +37,61 @@ function encodeError(error: { code: string; message: string; data: unknown; caus
   return { success: false, code: error.code, error: error.message, ...(error.data !== undefined ? { details: error.data } : {}) };
 }
 
-export function createApp(engine: Engine): Hono {
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const LOCALHOST_NAMES = ["localhost", "127.0.0.1", "[::1]"];
+
+/** Parses a Host header value (`host[:port]`) into its normalised host and hostname, or undefined when malformed. */
+function parseHost(hostHeader: string): { host: string; hostname: string } | undefined {
+  try {
+    const url = new URL(`http://${hostHeader}`);
+    return { host: url.host, hostname: url.hostname };
+  } catch {
+    return undefined;
+  }
+}
+
+const denied = (status: number, code: string, error: string) => Response.json({ success: false, code, error }, { status });
+
+/**
+ * DNS-rebinding and cross-site guard shared by the HTTP API and the MCP endpoint.
+ * Returns a 403 response when the request must be refused, otherwise undefined.
+ * - Host: when `allowedHosts` is set it must match; else on a loopback bind only localhost names pass.
+ * - Origin: absent (non-browser clients) is allowed; otherwise it must be in `corsOrigins` or same-host.
+ */
+export function checkBrowserAccess(
+  req: Request,
+  opts: { bindHost?: string; corsOrigins: string[]; allowedHosts: string[] },
+): Response | undefined {
+  // Host is normally always sent; fall back to the request URL's host for callers that build requests without it.
+  const hostHeader = req.headers.get("host") ?? new URL(req.url).host;
+  const parsedHost = parseHost(hostHeader);
+  if (opts.allowedHosts.length > 0) {
+    if (!parsedHost || !opts.allowedHosts.includes(parsedHost.hostname)) {
+      return denied(403, "HOST_NOT_ALLOWED", `Host header not allowed: ${hostHeader}`);
+    }
+  } else if (opts.bindHost && LOOPBACK_HOSTS.has(opts.bindHost)) {
+    if (!parsedHost || !LOCALHOST_NAMES.includes(parsedHost.hostname)) {
+      return denied(403, "HOST_NOT_ALLOWED", `Host header not allowed: ${hostHeader}`);
+    }
+  }
+
+  const origin = req.headers.get("origin");
+  if (origin !== null) {
+    if (opts.corsOrigins.includes(origin)) return undefined;
+    let originHost: string | undefined;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      originHost = undefined;
+    }
+    if (originHost === undefined || !parsedHost || originHost !== parsedHost.host) {
+      return denied(403, "ORIGIN_NOT_ALLOWED", `Origin not allowed: ${origin}`);
+    }
+  }
+  return undefined;
+}
+
+export function createApp(engine: Engine, opts: { bindHost?: string } = {}): Hono {
   const handler = new OpenAPIHandler(router, {
     customErrorResponseBodyEncoder: encodeError,
     plugins: [
@@ -59,7 +113,18 @@ export function createApp(engine: Engine): Hono {
   });
 
   const app = new Hono();
-  app.use("*", cors());
+  const { corsOrigins, allowedHosts } = engine.config;
+  app.use("*", async (c, next) => {
+    const refused = checkBrowserAccess(c.req.raw, { bindHost: opts.bindHost, corsOrigins, allowedHosts });
+    if (refused) return refused;
+    await next();
+  });
+  if (corsOrigins.length > 0) {
+    app.use(
+      "*",
+      cors({ origin: corsOrigins, allowHeaders: ["authorization", "content-type", "x-request-id"], exposeHeaders: ["x-request-id"] }),
+    );
+  }
   app.get("/", (c) => c.redirect("/docs"));
   app.get("/health", (c) => c.json({ status: "ok", version: VERSION, ...engine.describe() }));
   app.use("*", async (c, next) => {
@@ -87,7 +152,7 @@ export function createApp(engine: Engine): Hono {
 }
 
 export function serveHttp(engine: Engine, opts: { port: number; host: string }) {
-  const app = createApp(engine);
+  const app = createApp(engine, { bindHost: opts.host });
   const server = Bun.serve({
     port: opts.port,
     hostname: opts.host,
