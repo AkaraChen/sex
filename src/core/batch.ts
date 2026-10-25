@@ -30,25 +30,31 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
 
   const { store, queue } = engine.jobs;
   let job: JobRecord;
+  let taskOptions: Record<string, unknown> | undefined;
   if (appendToId) {
     const existing = await store.get(appendToId);
     if (existing?.kind !== "batch_scrape") throw notFound(`Job ${appendToId} not found`);
     if (existing.status === "cancelled") throw badRequest(`Batch ${appendToId} was cancelled`);
+    // Count the new pages before reopening: if the last in-flight page settles now, pending stays > 0
+    // and the job is not completed; if it already completed, reopen moves it back to scraping.
+    await store.incr(existing.id, "pending", valid.length);
     await store.reopen(appendToId);
     job = existing;
+    taskOptions = { ...rest };
   } else {
     job = await store.create({ kind: "batch_scrape", options: { ...rest, webhook } as Record<string, unknown> });
     sendWebhook(job, "started");
+    await store.incr(job.id, "pending", valid.length);
   }
   await store.incr(job.id, "total", valid.length);
-  await store.incr(job.id, "pending", valid.length);
-  await queue.add(valid.map((url) => ({ task: { type: "page" as const, jobId: job.id, url, depth: 0 } })));
+  await queue.add(valid.map((url) => ({ task: { type: "page" as const, jobId: job.id, url, depth: 0, options: taskOptions } })));
   return { job, invalidURLs: ignoreInvalidURLs ? invalid : undefined };
 }
 
-export async function handleBatchPage(engine: Engine, job: JobRecord, url: string) {
+export async function handleBatchPage(engine: Engine, job: JobRecord, url: string, taskOptions?: Record<string, unknown>) {
   const { store } = engine.jobs;
-  const { webhook: _webhook, maxConcurrency: _mc, ...options } = job.options as ScrapeOptions & Record<string, unknown>;
+  const source = taskOptions ?? job.options;
+  const { webhook: _webhook, maxConcurrency: _mc, ...options } = source as ScrapeOptions & Record<string, unknown>;
   try {
     const { document } = await scrapeUrl(engine, url, options);
     if ((await store.get(job.id))?.status !== "scraping") return;

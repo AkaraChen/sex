@@ -70,7 +70,7 @@ export interface JobStore {
 
 export type Task =
   | { type: "crawl-start"; jobId: string }
-  | { type: "page"; jobId: string; url: string; depth: number }
+  | { type: "page"; jobId: string; url: string; depth: number; options?: Record<string, unknown> }
   | { type: "extract"; jobId: string };
 
 export interface TaskQueue {
