@@ -122,7 +122,7 @@ describe("mcp (streamable http)", () => {
     const fetched = (await client.callTool({ name: "web_fetch", arguments: { url: `${site.url}/docs/a` } })) as {
       content: Array<{ type: string; text: string }>;
     };
-    expect(JSON.parse(fetched.content[0]?.text ?? "{}").markdown).toStartWith("# Doc A");
+    expect(fetched.content[0]?.text ?? "").toContain("# Doc A");
 
     const searched = (await client.callTool({ name: "web_search", arguments: { query: "docs", limit: 1 } })) as {
       content: Array<{ type: string; text: string }>;

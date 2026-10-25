@@ -2,19 +2,52 @@ import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 import type { Engine } from "../core/engine.ts";
-import { type JobRecord, PAGE_BUDGET_CHARS } from "../core/jobs/index.ts";
+import type { JobRecord } from "../core/jobs/index.ts";
 import { toAppError } from "../errors.ts";
 import { log } from "../log.ts";
-import { CrawlRequest, ExtractRequest, MapRequest, ScrapeRequest, SearchRequest } from "../schemas.ts";
+import { CrawlRequest, type Document, ExtractRequest, MapRequest, ScrapeRequest, SearchRequest } from "../schemas.ts";
 import { VERSION } from "../version.ts";
 
 const EXTRACT_WAIT_MS = 5 * 60 * 1000;
+// MCP results land in an LLM context, so they are sized well below the HTTP API's budgets.
+const MCP_PAGE_BUDGET_CHARS = 200_000;
+const MCP_MAP_DEFAULT_LIMIT = 200;
 
 const McpCrawlRequest = CrawlRequest.extend({
   limit: CrawlRequest.shape.limit.describe("Max pages. Defaults to 20 for this tool."),
 });
 
-const json = (value: unknown) => JSON.stringify(value, null, 2);
+const McpMapRequest = MapRequest.extend({
+  limit: MapRequest.shape.limit.describe(`Max links. Defaults to ${MCP_MAP_DEFAULT_LIMIT} for this tool.`),
+});
+
+const TEXT_FIELDS = ["markdown", "html", "rawHtml"] as const;
+
+const json = (value: unknown) => JSON.stringify(value);
+
+/** Returns a page as markdown with a short header when the caller asked for markdown only. */
+function fetchResult(args: ScrapeRequest, doc: Document): string {
+  const markdownOnly = !args.formats || (args.formats.length === 1 && args.formats[0] === "markdown");
+  if (!markdownOnly || typeof doc.markdown !== "string") return json(doc);
+  return `Title: ${doc.metadata?.title ?? ""}\nURL: ${doc.metadata?.url ?? ""}\n\n${doc.markdown}`;
+}
+
+/** Shortens a single oversized document's text fields until its serialized form fits `maxChars`. */
+function fitDocument(doc: Document, maxChars: number): { doc: Document; truncated: boolean } {
+  const out: Record<string, unknown> = { ...doc };
+  let truncated = false;
+  for (let size = json(out).length; size > maxChars; size = json(out).length) {
+    const fields = TEXT_FIELDS.filter((k) => typeof out[k] === "string" && (out[k] as string).length > 0);
+    if (fields.length === 0) break;
+    const share = Math.ceil((size - maxChars + 1_000) / fields.length);
+    for (const k of fields) {
+      const value = out[k] as string;
+      out[k] = value.slice(0, Math.max(0, value.length - share));
+    }
+    truncated = true;
+  }
+  return { doc: out as Document, truncated };
+}
 
 /** A failure whose message is shown to the client as-is (no error code prefix). */
 class ToolMessageError extends Error {}
@@ -47,7 +80,7 @@ export function buildServer(engine: Engine): McpServer {
       annotations: { title: "Fetch web page", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
       inputSchema: ScrapeRequest,
     },
-    (args, ctx) => guard(async () => json(await engine.scrape(args, ctx.mcpReq.signal))),
+    (args, ctx) => guard(async () => fetchResult(args, await engine.scrape(args, ctx.mcpReq.signal))),
   );
 
   server.registerTool(
@@ -71,9 +104,13 @@ export function buildServer(engine: Engine): McpServer {
       description:
         "List URLs of a website (sitemaps, on-page links and search index) without fetching their content. Use `search` to rank URLs by relevance.",
       annotations: { title: "Map website", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
-      inputSchema: MapRequest,
+      inputSchema: McpMapRequest,
     },
-    (args, ctx) => guard(async () => json({ links: await engine.map(args, ctx.mcpReq.signal) })),
+    (args, ctx) =>
+      guard(async () => {
+        const links = await engine.map({ ...args, limit: args.limit ?? MCP_MAP_DEFAULT_LIMIT }, ctx.mcpReq.signal);
+        return json({ links });
+      }),
   );
 
   server.registerTool(
@@ -103,9 +140,19 @@ export function buildServer(engine: Engine): McpServer {
     (args) =>
       guard(async () => {
         const job = await engine.getJob(args.id, "crawl");
-        const { data, nextSkip } = await engine.jobs.store.documents(job.id, args.skip ?? 0, PAGE_BUDGET_CHARS);
+        const page = await engine.jobs.store.documents(job.id, args.skip ?? 0, MCP_PAGE_BUDGET_CHARS);
+        const fitted = page.data.map((doc) => fitDocument(doc, MCP_PAGE_BUDGET_CHARS));
+        const truncated = fitted.some((f) => f.truncated);
         const errors = await engine.jobs.store.errors(job.id);
-        return json({ status: job.status, total: job.total, completed: job.completed, nextSkip, errors: errors.length, data });
+        return json({
+          status: job.status,
+          total: job.total,
+          completed: job.completed,
+          nextSkip: page.nextSkip,
+          errors: errors.length,
+          data: fitted.map((f) => f.doc),
+          ...(truncated ? { truncated: true } : {}),
+        });
       }),
   );
 
