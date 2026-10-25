@@ -3,10 +3,10 @@ import { badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import { CrawlRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
-import { type JobRecord, sendWebhook, validateWebhook } from "./jobs/index.ts";
+import { type JobRecord, type JobStore, sendWebhook, validateWebhook } from "./jobs/index.ts";
 import { normalizeUrl, sitemapUrls } from "./map.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
-import { parseRobots, type Robots } from "./robots.ts";
+import { parseRobots, type Robots, robotsTextFor } from "./robots.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "./scrape.ts";
 
 /** The crawl options an LLM may derive from a prompt, validated with the same rules as the API. */
@@ -112,10 +112,11 @@ function basePathOf(pathname: string): string {
 
 const plans = new Map<string, CrawlPlan>();
 
-function planFor(job: JobRecord): CrawlPlan {
+async function planFor(store: JobStore, job: JobRecord): Promise<CrawlPlan> {
   const cached = plans.get(job.id);
   // Plans are built after crawl-start stored robots.txt, so they never need refreshing.
   if (cached) return cached;
+  const robotsTxt = await store.robotsTxt(job.id);
   const req = job.options as unknown as CrawlRequest;
   const start = new URL(job.url as string);
   const plan: CrawlPlan = {
@@ -124,7 +125,7 @@ function planFor(job: JobRecord): CrawlPlan {
     limit: req.limit ?? 10_000,
     includes: compile(req.includePaths, "includePaths"),
     excludes: compile(req.excludePaths, "excludePaths"),
-    robots: job.robotsTxt ? parseRobots(job.robotsTxt, req.robotsUserAgent ?? "sex") : undefined,
+    robots: robotsTxt ? parseRobots(robotsTxt, req.robotsUserAgent ?? "sex") : undefined,
     baseHost: stripWww(start.hostname),
     basePath: basePathOf(start.pathname),
   };
@@ -167,6 +168,13 @@ export async function startCrawl(engine: Engine, input: CrawlRequest, defaults: 
   } as CrawlRequest;
   compile(req.includePaths, "includePaths");
   compile(req.excludePaths, "excludePaths");
+  // Pages are spaced `delay` seconds apart, so a crawl takes about delay x limit; it must finish before its job expires.
+  const durationMs = (req.delay ?? 0) * 1000 * (req.limit ?? 10_000);
+  if (durationMs > engine.config.jobTtlMs) {
+    throw badRequest(
+      `delay (${req.delay}s) x limit (${req.limit ?? 10_000} pages) would take longer than the job lifetime of ${Math.round(engine.config.jobTtlMs / 1000)}s; lower the delay or set a smaller limit`,
+    );
+  }
 
   const { store, queue } = engine.jobs;
   const job = await store.create({ kind: "crawl", url: start.href, options: req as unknown as Record<string, unknown> });
@@ -245,7 +253,7 @@ async function enqueueLinks(engine: Engine, job: JobRecord, plan: CrawlPlan, lin
 export async function handleCrawlStart(engine: Engine, jobId: string) {
   const { store } = engine.jobs;
   try {
-    let job = await store.get(jobId);
+    const job = await store.get(jobId);
     if (job?.status !== "scraping") return;
     const req = job.options as unknown as CrawlRequest;
     const start = new URL(job.url as string);
@@ -258,12 +266,11 @@ export async function handleCrawlStart(engine: Engine, jobId: string) {
         userAgent: engine.config.userAgent,
         maxBodyBytes: engine.config.maxBodyBytes,
       })
-        .then((res) => (res.status < 400 ? decodeBody(res.body, res.contentType) : ""))
+        .then((res) => robotsTextFor(res.status, () => decodeBody(res.body, res.contentType)))
         .catch(() => "");
-      await store.patch(jobId, { robotsTxt });
-      job = { ...job, robotsTxt };
+      await store.setRobotsTxt(jobId, robotsTxt);
     }
-    const plan = planFor(job);
+    const plan = await planFor(store, job);
     // The start URL is crawled in every mode; the root site and sitemapped pages have discovery depth 0.
     const mode = req.sitemap ?? "include";
     await enqueueLinks(engine, job, plan, [start.href], 0, true);
@@ -283,7 +290,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string) {
 export async function handleCrawlPage(engine: Engine, job: JobRecord, url: string, depth: number) {
   const { store } = engine.jobs;
   try {
-    const plan = planFor(job);
+    const plan = await planFor(store, job);
     const { document, links } = await scrapeUrl(engine, url, plan.req.scrapeOptions, { collectLinks: true });
     if ((await store.get(job.id))?.status !== "scraping") return;
     const start = normalizeUrl(plan.start.href, false);

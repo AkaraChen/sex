@@ -9,8 +9,9 @@ export interface PdfText {
 /** Plain text extraction; pages are separated by horizontal rules. */
 export async function pdfToMarkdown(data: Uint8Array): Promise<PdfText> {
   const { extractText, getDocumentProxy, getMeta } = await import("unpdf");
+  let pdf: Awaited<ReturnType<typeof getDocumentProxy>> | undefined;
   try {
-    const pdf = await getDocumentProxy(new Uint8Array(data));
+    pdf = await getDocumentProxy(new Uint8Array(data));
     const [{ text, totalPages }, meta] = await Promise.all([
       extractText(pdf, { mergePages: false }),
       getMeta(pdf).catch(() => ({ info: {} as Record<string, unknown> })),
@@ -23,5 +24,8 @@ export async function pdfToMarkdown(data: Uint8Array): Promise<PdfText> {
     };
   } catch (err) {
     throw new AppError(422, "PDF_PARSE_FAILED", `Failed to parse PDF: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    // unpdf leaves the lifecycle of a proxy we created to us; this frees the document's pages and loading task.
+    await pdf?.loadingTask.destroy().catch(() => {});
   }
 }

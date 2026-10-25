@@ -24,8 +24,6 @@ export interface JobMeta {
   /** Extract result. */
   result?: unknown;
   sources?: Record<string, unknown>;
-  /** robots.txt body fetched once per crawl and shared by all workers ("" = none). */
-  robotsTxt?: string;
 }
 
 export interface JobCounters {
@@ -43,7 +41,7 @@ export interface JobCounters {
 
 export type CounterName = keyof JobCounters;
 export type JobRecord = JobMeta & JobCounters;
-export type JobPatch = Partial<Pick<JobMeta, "error" | "result" | "sources" | "robotsTxt">>;
+export type JobPatch = Partial<Pick<JobMeta, "error" | "result" | "sources">>;
 
 /** Where job state lives: process memory or Redis. All methods are safe to call from many workers. */
 export interface JobStore {
@@ -55,8 +53,8 @@ export interface JobStore {
   /** Moves a completed job back to "scraping" (batch appendToId). */
   reopen(id: string): Promise<void>;
   incr(id: string, counter: CounterName, by?: number): Promise<number>;
-  /** Decrements `pending` once for this task; returns the new value, or null if `taskId` was already settled. Without a taskId it behaves like `incr(id, "pending", -1)`. */
-  settle(id: string, taskId: string | undefined): Promise<number | null>;
+  /** Decrements `pending` once for this task; returns the new value, or null if `taskId` was already settled. With `countCompleted` the same step also increments `completed`, so a redelivered task is not counted twice. Without a taskId it behaves like `incr(id, "pending", -1)`. */
+  settle(id: string, taskId: string | undefined, countCompleted?: boolean): Promise<number | null>;
   /** Reserves `count` fetch slots spaced `intervalMs` apart, starting no earlier than `now` or the end of the previous reservation. Returns the start time (ms) of the first slot. */
   reserveSlots(id: string, count: number, intervalMs: number, now: number): Promise<number>;
   pushDocument(id: string, doc: Document): Promise<void>;
@@ -64,6 +62,10 @@ export interface JobStore {
   documents(id: string, skip: number, maxChars: number): Promise<{ data: Document[]; nextSkip: number | null }>;
   pushError(id: string, error: JobError): Promise<void>;
   errors(id: string): Promise<JobError[]>;
+  /** Stores the robots.txt body fetched once per crawl and shared by all workers ("" = none). Kept out of the job record so status reads stay small. */
+  setRobotsTxt(id: string, text: string): Promise<void>;
+  /** The crawl's robots.txt body, or "" if none was stored. */
+  robotsTxt(id: string): Promise<string>;
   pushRobotsBlocked(id: string, url: string): Promise<void>;
   robotsBlocked(id: string): Promise<string[]>;
   /** Adds keys to the job's seen-set; returns true for each key that was new. */

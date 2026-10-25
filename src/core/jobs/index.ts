@@ -19,9 +19,10 @@ export interface JobBackend {
 /** Redis + BullMQ when a Redis URL is configured, otherwise an in-process store and queue. */
 export function createJobBackend(config: Config): JobBackend {
   if (config.redisUrl) {
-    const conn = redisConnection(config.redisUrl);
+    const url = config.redisUrl;
+    const conn = redisConnection(url);
     const store = new RedisJobStore(conn, config.redisPrefix, config.jobTtlMs);
-    const queue = new BullTaskQueue(conn, config.redisPrefix, config.concurrency);
+    const queue = new BullTaskQueue(conn, config.redisPrefix, config.concurrency, () => redisConnection(url, { blocking: true }));
     return {
       kind: "redis",
       store,
@@ -85,10 +86,11 @@ export function sendWebhook(
 
 /**
  * Marks one task of a job done; whoever finishes the last task completes the job. Each taskId settles at most once,
- * so a redelivered task cannot complete the job early.
+ * so a redelivered task cannot complete the job early or be counted twice. `countCompleted` also adds the task's page
+ * to `completed`, in the same step.
  */
-export async function settleTask(engine: Engine, jobId: string, taskId?: string): Promise<void> {
-  const left = await engine.jobs.store.settle(jobId, taskId);
+export async function settleTask(engine: Engine, jobId: string, taskId?: string, countCompleted = false): Promise<void> {
+  const left = await engine.jobs.store.settle(jobId, taskId, countCompleted);
   if (left === null || left > 0) return;
   if (await engine.jobs.store.finish(jobId, "completed")) {
     const job = await engine.jobs.store.get(jobId);

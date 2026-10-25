@@ -24,14 +24,31 @@ local start = math.max(now, next)
 redis.call('HSET', KEYS[1], 'nextSlotAt', start + count * interval)
 return start`;
 
-// KEYS: job hash, settled-task set. ARGV: taskId ("" = none). Returns nil when the job is gone or the task was already settled.
+// KEYS: job hash, settled-task set. ARGV: taskId ("" = none), "1" to also count the task in `completed`.
+// Returns nil when the job is gone or the task was already settled.
 const SETTLE_SCRIPT = `
 if redis.call('HEXISTS', KEYS[1], 'kind') == 0 then return nil end
 if ARGV[1] ~= '' then
   if redis.call('SADD', KEYS[2], ARGV[1]) == 0 then return nil end
   redis.call('PEXPIREAT', KEYS[2], redis.call('HGET', KEYS[1], 'expiresAt'))
 end
+if ARGV[2] == '1' then redis.call('HINCRBY', KEYS[1], 'completed', 1) end
 return redis.call('HINCRBY', KEYS[1], 'pending', -1)`;
+
+// KEYS: document list. ARGV: skip, max bytes. Returns {nextSkip or -1, items...}: items are read in small chunks and
+// stop before the one that would exceed the budget (the first item is always returned), so nothing is read twice.
+const DOCUMENTS_SCRIPT = `
+local skip = tonumber(ARGV[1]); local max = tonumber(ARGV[2])
+local len = redis.call('LLEN', KEYS[1])
+local out = {-1}; local size = 0; local i = skip
+while i < len do
+  local chunk = redis.call('LRANGE', KEYS[1], i, i + 9)
+  for _, item in ipairs(chunk) do
+    if #out > 1 and size + #item > max then out[1] = i; return out end
+    out[#out + 1] = item; size = size + #item; i = i + 1
+  end
+end
+return out`;
 
 const REOPEN_SCRIPT = `
 if redis.call('HGET', KEYS[1], 'status') ~= 'completed' then return 0 end
@@ -39,9 +56,13 @@ redis.call('HSET', KEYS[1], 'status', 'scraping')
 redis.call('SADD', KEYS[2], ARGV[1])
 return 1`;
 
-export function redisConnection(url: string): IORedis {
+/**
+ * Connection for the job store and the BullMQ Queue: commands fail after a few retries during an outage instead of
+ * hanging, so API calls (job status etc.) return an error. The Worker gets its own unlimited-retry connection.
+ */
+export function redisConnection(url: string, opts: { blocking?: boolean } = {}): IORedis {
   // BullMQ workers need maxRetriesPerRequest: null for their blocking connection.
-  const conn = new IORedis(url, { maxRetriesPerRequest: null, lazyConnect: false });
+  const conn = new IORedis(url, { maxRetriesPerRequest: opts.blocking ? null : 3, lazyConnect: false });
   conn.on("error", (err) => log.error("redis error", { error: err.message }));
   return conn;
 }
@@ -137,8 +158,8 @@ export class RedisJobStore implements JobStore {
     return this.redis.hincrby(this.key(id), counter, by);
   }
 
-  async settle(id: string, taskId: string | undefined) {
-    const res = await this.redis.eval(SETTLE_SCRIPT, 2, this.key(id), this.key(id, "settled"), taskId ?? "");
+  async settle(id: string, taskId: string | undefined, countCompleted = false) {
+    const res = await this.redis.eval(SETTLE_SCRIPT, 2, this.key(id), this.key(id, "settled"), taskId ?? "", countCompleted ? "1" : "0");
     return res === null ? null : Number(res);
   }
 
@@ -160,25 +181,9 @@ export class RedisJobStore implements JobStore {
   }
 
   async documents(id: string, skip: number, maxChars: number) {
-    const key = this.key(id, "docs");
-    const data: Document[] = [];
-    let size = 0;
-    let index = skip;
-    const batch = 50;
-    while (true) {
-      const raw = await this.redis.lrange(key, index, index + batch - 1);
-      if (!raw.length) return { data, nextSkip: null };
-      for (const item of raw) {
-        if (data.length > 0 && size + item.length > maxChars) return { data, nextSkip: index };
-        data.push(JSON.parse(item));
-        size += item.length;
-        index++;
-      }
-      if (raw.length < batch) {
-        const len = await this.redis.llen(key);
-        return { data, nextSkip: index < len ? index : null };
-      }
-    }
+    const res = (await this.redis.eval(DOCUMENTS_SCRIPT, 1, this.key(id, "docs"), skip, maxChars)) as [number, ...string[]];
+    const [next, ...raw] = res;
+    return { data: raw.map((item) => JSON.parse(item) as Document), nextSkip: next < 0 ? null : next };
   }
 
   async pushError(id: string, error: JobError) {
@@ -187,6 +192,16 @@ export class RedisJobStore implements JobStore {
 
   async errors(id: string) {
     return (await this.redis.lrange(this.key(id, "errors"), 0, -1)).map((e) => JSON.parse(e) as JobError);
+  }
+
+  async setRobotsTxt(id: string, text: string) {
+    const expiresAt = await this.redis.hget(this.key(id), "expiresAt");
+    if (!expiresAt) return;
+    await this.redis.set(this.key(id, "robotstxt"), text, "PXAT", Number(expiresAt));
+  }
+
+  async robotsTxt(id: string) {
+    return (await this.redis.get(this.key(id, "robotstxt"))) ?? "";
   }
 
   async pushRobotsBlocked(id: string, url: string) {
@@ -226,11 +241,14 @@ export class RedisJobStore implements JobStore {
 export class BullTaskQueue implements TaskQueue {
   private readonly queue: Queue;
   private worker?: Worker;
+  private ownedWorkerConnection?: IORedis;
 
   constructor(
     private readonly connection: IORedis,
     private readonly prefix: string,
     private readonly concurrency: number,
+    /** Connection options for the worker only; created lazily because it must retry forever (BullMQ requirement). */
+    private readonly workerConnection?: () => IORedis,
   ) {
     this.queue = new Queue("tasks", { connection, prefix });
   }
@@ -252,8 +270,9 @@ export class BullTaskQueue implements TaskQueue {
 
   startWorker(handler: (task: Task) => Promise<void>) {
     if (this.worker) return;
+    if (this.workerConnection) this.ownedWorkerConnection = this.workerConnection();
     this.worker = new Worker("tasks", (job) => handler(job.data as Task), {
-      connection: this.connection,
+      connection: this.ownedWorkerConnection ?? this.connection,
       prefix: this.prefix,
       concurrency: this.concurrency,
     });
@@ -272,5 +291,6 @@ export class BullTaskQueue implements TaskQueue {
   async close() {
     await this.worker?.close();
     await this.queue.close();
+    this.ownedWorkerConnection?.disconnect();
   }
 }
