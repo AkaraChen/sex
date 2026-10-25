@@ -34,18 +34,20 @@ export interface ConfigOverrides {
   concurrency?: number;
   timeout?: number;
   redisUrl?: string;
+  redisPrefix?: string;
+  llmMaxInputChars?: number;
 }
 
 const DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
-function envBool(name: string): boolean | undefined {
-  const v = process.env[name];
+function envBool(env: Record<string, string | undefined>, name: string): boolean | undefined {
+  const v = env[name];
   if (v === undefined || v === "") return undefined;
   return ["1", "true", "yes", "on"].includes(v.toLowerCase());
 }
 
-function envInt(name: string): number | undefined {
-  const v = process.env[name];
+function envInt(env: Record<string, string | undefined>, name: string): number | undefined {
+  const v = env[name];
   if (!v) return undefined;
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) ? n : undefined;
@@ -54,13 +56,13 @@ function envInt(name: string): number | undefined {
 export function resolveConfig(
   o: ConfigOverrides = {},
   defaults: { allowPrivateNetwork: boolean } = { allowPrivateNetwork: false },
+  env: Record<string, string | undefined> = process.env,
 ): Config {
-  const env = process.env;
   const llmModel = o.llmModel ?? env.SEX_LLM_MODEL;
   return {
     searxngUrl: (o.searxngUrl ?? env.SEX_SEARXNG_URL ?? "http://127.0.0.1:8080").replace(/\/+$/, ""),
     cdpUrl: o.cdpUrl ?? (env.SEX_CDP_URL || undefined),
-    lightpanda: o.lightpanda ?? envBool("SEX_LIGHTPANDA") ?? false,
+    lightpanda: o.lightpanda ?? envBool(env, "SEX_LIGHTPANDA") ?? false,
     lightpandaPath: o.lightpandaPath ?? (env.SEX_LIGHTPANDA_PATH || env.LIGHTPANDA_EXECUTABLE_PATH || undefined),
     llm: llmModel
       ? {
@@ -69,12 +71,12 @@ export function resolveConfig(
           model: llmModel,
         }
       : undefined,
-    allowPrivateNetwork: o.allowPrivateNetwork ?? envBool("SEX_ALLOW_PRIVATE_NETWORK") ?? defaults.allowPrivateNetwork,
+    allowPrivateNetwork: o.allowPrivateNetwork ?? envBool(env, "SEX_ALLOW_PRIVATE_NETWORK") ?? defaults.allowPrivateNetwork,
     userAgent: o.userAgent ?? env.SEX_USER_AGENT ?? DEFAULT_UA,
-    concurrency: o.concurrency ?? envInt("SEX_CONCURRENCY") ?? 8,
-    timeout: o.timeout ?? envInt("SEX_TIMEOUT") ?? 30_000,
+    concurrency: o.concurrency ?? envInt(env, "SEX_CONCURRENCY") ?? 8,
+    timeout: o.timeout ?? envInt(env, "SEX_TIMEOUT") ?? 30_000,
     redisUrl: o.redisUrl ?? (env.SEX_REDIS_URL || undefined),
-    redisPrefix: env.SEX_REDIS_PREFIX || "sex",
-    llmMaxInputChars: envInt("SEX_LLM_MAX_INPUT_CHARS") ?? 200_000,
+    redisPrefix: o.redisPrefix ?? (env.SEX_REDIS_PREFIX || "sex"),
+    llmMaxInputChars: o.llmMaxInputChars ?? envInt(env, "SEX_LLM_MAX_INPUT_CHARS") ?? 200_000,
   };
 }
