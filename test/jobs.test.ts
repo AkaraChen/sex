@@ -67,8 +67,9 @@ for (const [name, redisUrl] of backends) {
 
       const fromSitemap = await finished(engine, await engine.crawl({ url: `${site.url}/`, sitemap: "only" }), "crawl");
       const pages = (await docs(engine, fromSitemap.id)).map((d) => [d.metadata?.sourceURL, d.metadata?.statusCode]).sort();
-      // Only sitemap URLs, no link following; a 404 is still a document carrying its status code.
+      // The start URL plus sitemap URLs, no link following; a 404 is still a document carrying its status code.
       expect(pages).toEqual([
+        [`${site.url}/`, 200],
         [`${site.url}/docs/b`, 200],
         [`${site.url}/docs/c`, 404],
       ]);
