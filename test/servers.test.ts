@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { FastMCP } from "fastmcp";
 import type { Engine } from "../src/core/engine.ts";
 import { createApp } from "../src/http/server.ts";
-import { serveMcp } from "../src/mcp/server.ts";
+import { type McpRunning, serveMcp } from "../src/mcp/server.ts";
 import { startFixtureSite, startMockSearxng, testEngine } from "./helpers.ts";
 
 let site: ReturnType<typeof startFixtureSite>;
@@ -98,7 +98,7 @@ describe("http", () => {
 });
 
 describe("mcp (streamable http)", () => {
-  let server: FastMCP;
+  let server: McpRunning;
   let client: Client;
 
   beforeAll(async () => {
@@ -137,5 +137,32 @@ describe("mcp (streamable http)", () => {
     };
     expect(res.isError).toBe(true);
     expect(res.content[0]?.text).toContain("LLM_NOT_CONFIGURED");
+  });
+});
+
+describe("mcp (stdio)", () => {
+  test("lists tools over stdio", async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["src/cli.ts", "mcp"],
+      cwd: new URL("..", import.meta.url).pathname,
+      env: { PATH: process.env.PATH ?? "", SEX_SEARXNG_URL: searx.url },
+      stderr: "ignore",
+    });
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(transport);
+    try {
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name).sort()).toEqual([
+        "web_crawl",
+        "web_crawl_status",
+        "web_extract",
+        "web_fetch",
+        "web_map",
+        "web_search",
+      ]);
+    } finally {
+      await client.close();
+    }
   });
 });

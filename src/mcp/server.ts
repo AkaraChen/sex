@@ -1,4 +1,5 @@
-import { FastMCP, UserError } from "fastmcp";
+import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 import type { Engine } from "../core/engine.ts";
 import { type JobRecord, PAGE_BUDGET_CHARS } from "../core/jobs/index.ts";
@@ -15,126 +16,159 @@ const McpCrawlRequest = CrawlRequest.extend({
 
 const json = (value: unknown) => JSON.stringify(value, null, 2);
 
+/** A failure whose message is shown to the client as-is (no error code prefix). */
+class ToolMessageError extends Error {}
+
+type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: true };
+
 /** Runs a tool body, reporting failures as MCP tool errors with the server's message. */
-async function guard<T>(fn: () => Promise<T>): Promise<T> {
+async function guard(fn: () => Promise<string>): Promise<ToolResult> {
   try {
-    return await fn();
+    return { content: [{ type: "text", text: await fn() }] };
   } catch (err) {
-    if (err instanceof UserError) throw err;
+    if (err instanceof ToolMessageError) return { content: [{ type: "text", text: err.message }], isError: true };
     const e = toAppError(err);
     log.warn("mcp tool failed", { code: e.code, error: e.message });
-    throw new UserError(`${e.code}: ${e.message}`);
+    return { content: [{ type: "text", text: `${e.code}: ${e.message}` }], isError: true };
   }
 }
 
-export function createMcpServer(engine: Engine): FastMCP {
-  const server = new FastMCP({
-    name: "sex",
-    version: VERSION as `${number}.${number}.${number}`,
-    instructions:
-      "Web search (SearXNG) and page fetching (Defuddle). Use web_search to find pages, web_fetch to read one page as markdown, web_map to list a site's URLs, web_crawl/web_crawl_status to collect many pages, web_extract for LLM-structured data.",
-    // Never write to stdout: it carries the stdio transport.
-    logger: { debug: log.debug, info: log.info, log: log.info, warn: log.warn, error: log.error },
-  });
+const INSTRUCTIONS =
+  "Web search (SearXNG) and page fetching (Defuddle). Use web_search to find pages, web_fetch to read one page as markdown, web_map to list a site's URLs, web_crawl/web_crawl_status to collect many pages, web_extract for LLM-structured data.";
 
-  server.addTool({
-    name: "web_fetch",
-    description:
-      'Fetch one URL and return its main content as markdown (default). Other formats: "html", "rawHtml", "links", "images", "summary" / {type:"json",prompt,schema} (LLM). Set onlyMainContent:false for the whole page.',
-    annotations: { title: "Fetch web page", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
-    parameters: ScrapeRequest,
-    execute: (args, { signal: abortSignal }) =>
-      guard(async () => {
-        return json(await engine.scrape(args, abortSignal));
-      }),
-  });
+export function buildServer(engine: Engine): McpServer {
+  const server = new McpServer({ name: "sex", version: VERSION }, { instructions: INSTRUCTIONS });
 
-  server.addTool({
-    name: "web_search",
-    description:
-      'Search the web. Returns ranked results (url, title, description) grouped by source ("web", "news", "images"). Add scrapeOptions:{formats:["markdown"]} to also fetch each result\'s content; usually prefer web_fetch on the few URLs you need.',
-    annotations: { title: "Web search", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
-    parameters: SearchRequest,
-    execute: (args, { signal: abortSignal }) =>
+  server.registerTool(
+    "web_fetch",
+    {
+      description:
+        'Fetch one URL and return its main content as markdown (default). Other formats: "html", "rawHtml", "links", "images", "summary" / {type:"json",prompt,schema} (LLM). Set onlyMainContent:false for the whole page.',
+      annotations: { title: "Fetch web page", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
+      inputSchema: ScrapeRequest,
+    },
+    (args, ctx) => guard(async () => json(await engine.scrape(args, ctx.mcpReq.signal))),
+  );
+
+  server.registerTool(
+    "web_search",
+    {
+      description:
+        'Search the web. Returns ranked results (url, title, description) grouped by source ("web", "news", "images"). Add scrapeOptions:{formats:["markdown"]} to also fetch each result\'s content; usually prefer web_fetch on the few URLs you need.',
+      annotations: { title: "Web search", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
+      inputSchema: SearchRequest,
+    },
+    (args, ctx) =>
       guard(async () => {
-        const { data, warning } = await engine.search(args, abortSignal);
+        const { data, warning } = await engine.search(args, ctx.mcpReq.signal);
         return json(warning ? { ...data, warning } : data);
       }),
-  });
+  );
 
-  server.addTool({
-    name: "web_map",
-    description:
-      "List URLs of a website (sitemaps, on-page links and search index) without fetching their content. Use `search` to rank URLs by relevance.",
-    annotations: { title: "Map website", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
-    parameters: MapRequest,
-    execute: (args, { signal: abortSignal }) => guard(async () => json({ links: await engine.map(args, abortSignal) })),
-  });
+  server.registerTool(
+    "web_map",
+    {
+      description:
+        "List URLs of a website (sitemaps, on-page links and search index) without fetching their content. Use `search` to rank URLs by relevance.",
+      annotations: { title: "Map website", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
+      inputSchema: MapRequest,
+    },
+    (args, ctx) => guard(async () => json({ links: await engine.map(args, ctx.mcpReq.signal) })),
+  );
 
-  server.addTool({
-    name: "web_crawl",
-    description:
-      "Start an asynchronous crawl from a URL, following links within the site. Returns a job id; poll it with web_crawl_status. Keep `limit` small.",
-    annotations: { title: "Start crawl", readOnlyHint: false, openWorldHint: true, destructiveHint: false },
-    parameters: McpCrawlRequest,
-    execute: (args) =>
+  server.registerTool(
+    "web_crawl",
+    {
+      description:
+        "Start an asynchronous crawl from a URL, following links within the site. Returns a job id; poll it with web_crawl_status. Keep `limit` small.",
+      annotations: { title: "Start crawl", readOnlyHint: false, openWorldHint: true, destructiveHint: false },
+      inputSchema: McpCrawlRequest,
+    },
+    (args) =>
       guard(async () => {
         // The tool's default limit sits below prompt-derived and explicit options.
         const job = await engine.crawl(args, { limit: 20 });
         return json({ id: job.id, status: job.status, message: "Crawl started. Use web_crawl_status with this id." });
       }),
-  });
+  );
 
-  server.addTool({
-    name: "web_crawl_status",
-    description:
-      "Get the status and scraped pages of a crawl started with web_crawl. Large results are paginated; pass `skip` from the previous response.",
-    annotations: { title: "Crawl status", readOnlyHint: true, openWorldHint: false, destructiveHint: false },
-    parameters: z.object({ id: z.string(), skip: z.number().int().nonnegative().optional() }),
-    execute: (args) =>
+  server.registerTool(
+    "web_crawl_status",
+    {
+      description:
+        "Get the status and scraped pages of a crawl started with web_crawl. Large results are paginated; pass `skip` from the previous response.",
+      annotations: { title: "Crawl status", readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+      inputSchema: z.object({ id: z.string(), skip: z.number().int().nonnegative().optional() }),
+    },
+    (args) =>
       guard(async () => {
         const job = await engine.getJob(args.id, "crawl");
         const { data, nextSkip } = await engine.jobs.store.documents(job.id, args.skip ?? 0, PAGE_BUDGET_CHARS);
         const errors = await engine.jobs.store.errors(job.id);
         return json({ status: job.status, total: job.total, completed: job.completed, nextSkip, errors: errors.length, data });
       }),
-  });
+  );
 
-  server.addTool({
-    name: "web_extract",
-    description:
-      "Extract structured data from one or more URLs with an LLM, following a prompt and/or JSON schema. A trailing /* on a URL covers the whole site. Waits for the result.",
-    annotations: { title: "Extract structured data", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
-    parameters: ExtractRequest,
-    execute: (args, { signal: abortSignal }) =>
+  server.registerTool(
+    "web_extract",
+    {
+      description:
+        "Extract structured data from one or more URLs with an LLM, following a prompt and/or JSON schema. A trailing /* on a URL covers the whole site. Waits for the result.",
+      annotations: { title: "Extract structured data", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
+      inputSchema: ExtractRequest,
+    },
+    (args, ctx) =>
       guard(async () => {
+        const abortSignal = ctx.mcpReq.signal;
         const { job: started } = await engine.extract(args);
         const deadline = Date.now() + EXTRACT_WAIT_MS;
         let job: JobRecord = started;
-        while (job.status === "scraping" && Date.now() < deadline && !abortSignal?.aborted) {
+        while (job.status === "scraping" && Date.now() < deadline && !abortSignal.aborted) {
           await Bun.sleep(500);
           job = await engine.getJob(started.id, "extract");
         }
         if (job.status === "scraping") await engine.cancelJob(job).catch(() => {});
-        if (job.status !== "completed") throw new UserError(`Extract ${job.status}: ${job.error ?? "timed out"}`);
+        if (job.status !== "completed") throw new ToolMessageError(`Extract ${job.status}: ${job.error ?? "timed out"}`);
         return json({ data: job.result, ...(job.sources ? { sources: job.sources } : {}) });
       }),
-  });
+  );
 
   return server;
 }
 
-export async function serveMcp(engine: Engine, opts: { transport: "stdio" | "http"; port: number; host: string; stateless: boolean }) {
-  const server = createMcpServer(engine);
+export type McpRunning = { stop: () => Promise<void> };
+
+export async function serveMcp(
+  engine: Engine,
+  opts: { transport: "stdio" | "http"; port: number; host: string; stateless: boolean },
+): Promise<McpRunning> {
   if (opts.transport === "stdio") {
-    await server.start({ transportType: "stdio" });
+    // Never write to stdout: it carries the stdio transport.
+    await buildServer(engine).connect(new StdioServerTransport());
     log.info("mcp server on stdio", engine.describe());
-  } else {
-    await server.start({
-      transportType: "httpStream",
-      httpStream: { port: opts.port, host: opts.host, endpoint: "/mcp", stateless: opts.stateless },
-    });
-    log.info("mcp server listening", { url: `http://${opts.host}:${opts.port}/mcp`, ...engine.describe() });
+    return { stop: async () => {} };
   }
-  return server;
+
+  if (!opts.stateless) {
+    log.info("MCP over HTTP is always stateless with SDK v2; --stateless is now the default");
+  }
+  const handler = createMcpHandler(() => buildServer(engine));
+  const srv = Bun.serve({
+    port: opts.port,
+    hostname: opts.host,
+    idleTimeout: 255,
+    fetch(req) {
+      const { pathname } = new URL(req.url);
+      if (pathname === "/mcp") return handler.fetch(req);
+      if (pathname === "/health") return new Response("ok");
+      return new Response("Not found", { status: 404 });
+    },
+  });
+  log.info("mcp server listening", { url: `http://${opts.host}:${opts.port}/mcp`, ...engine.describe() });
+  return {
+    stop: async () => {
+      await handler.close();
+      srv.stop(true);
+    },
+  };
 }

@@ -10,7 +10,7 @@
     "format": "biome check --write src test",
     "test": "bun test",
     "verify": "bun check && bun run lint && bun test",
-    "build": "bun build --compile --minify --external effect --external sury --external @valibot/to-json-schema src/cli.ts --outfile dist/sex"
+    "build": "bun build --compile --minify src/cli.ts --outfile dist/sex"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.3",
@@ -22,13 +22,13 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
     "@orpc/openapi": "^1.16.1",
     "@orpc/server": "^1.16.1",
     "@orpc/zod": "^1.16.1",
     "bullmq": "^6.4.2",
     "citty": "^0.2.2",
     "defuddle": "^0.19.6",
-    "fastmcp": "^4.23.7",
     "hono": "^4.13.14",
     "ioredis": "^6.0.0",
     "ipaddr.js": "^2",
