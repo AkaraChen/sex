@@ -5,6 +5,7 @@ import { DEFAULT_MAX_BODY_BYTES } from "../config.ts";
 import { AppError, badRequest } from "../errors.ts";
 
 const MAX_REDIRECTS = 10;
+const MAX_PINNED_ADDRESSES = 4;
 
 export interface FetchOptions {
   headers?: Record<string, string>;
@@ -59,14 +60,19 @@ export function isPrivateIp(ip: string): boolean {
   return range !== "unicast"; // teredo, ULA, link-local, multicast, reserved, ...
 }
 
-/** Rejects URLs that point at loopback/private/link-local hosts unless allowed. */
-export async function assertPublicUrl(url: URL, allowPrivateNetwork: boolean): Promise<void> {
-  if (allowPrivateNetwork) return;
+/**
+ * Resolves the URL's host and rejects it if any address is loopback/private/link-local (unless allowed). Returns the
+ * validated addresses of a DNS name so the caller can connect to exactly those; empty for IP literals, or when private
+ * networks are allowed or the name does not resolve.
+ */
+export async function resolvePublicAddresses(url: URL, allowPrivateNetwork: boolean): Promise<string[]> {
+  if (allowPrivateNetwork) return [];
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (host === "localhost" || host.endsWith(".localhost")) {
     throw new AppError(403, "PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${url.href}`);
   }
-  const addresses = isIP(host) ? [host] : (await lookup(host, { all: true }).catch(() => [])).map((a) => a.address);
+  const literal = isIP(host) !== 0;
+  const addresses = literal ? [host] : (await lookup(host, { all: true }).catch(() => [])).map((a) => a.address);
   if (addresses.some(isPrivateIp)) {
     throw new AppError(
       403,
@@ -74,6 +80,22 @@ export async function assertPublicUrl(url: URL, allowPrivateNetwork: boolean): P
       `Refusing to fetch private address: ${url.href} (start with --allow-private-network to permit)`,
     );
   }
+  return literal ? [] : addresses;
+}
+
+/** Rejects URLs that point at loopback/private/link-local hosts unless allowed. */
+export async function assertPublicUrl(url: URL, allowPrivateNetwork: boolean): Promise<void> {
+  await resolvePublicAddresses(url, allowPrivateNetwork);
+}
+
+/**
+ * Rewrites a request to connect to an already-validated IP, so a second DNS lookup (DNS rebinding) cannot send it
+ * elsewhere. The original host stays in the Host header and, for https, in the TLS SNI / certificate check.
+ */
+export function pinToAddress(url: URL, address: string): { url: URL; host: string; serverName?: string } {
+  const pinned = new URL(url);
+  pinned.hostname = address.includes(":") ? `[${address}]` : address;
+  return { url: pinned, host: url.host, ...(url.protocol === "https:" ? { serverName: url.hostname } : {}) };
 }
 
 async function readLimited(res: Response, signal: AbortSignal, maxBytes: number): Promise<Uint8Array> {
@@ -116,16 +138,38 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
   };
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      await assertPublicUrl(url, opts.allowPrivateNetwork);
-      const res = await fetch(url, {
-        method,
-        ...(body !== undefined ? { body } : {}),
-        headers,
-        redirect: "manual",
-        signal,
-        // Bun-specific TLS option; ignored by other runtimes.
-        ...(opts.skipTlsVerification ? { tls: { rejectUnauthorized: false } } : {}),
-      } as RequestInit);
+      const addresses = await resolvePublicAddresses(url, opts.allowPrivateNetwork);
+      // Connect to the validated addresses themselves (first one that connects wins), not to a fresh DNS answer.
+      // Without a lookup result (IP literal, private networks allowed) the URL is fetched as is.
+      const targets = addresses.length ? addresses.slice(0, MAX_PINNED_ADDRESSES) : [undefined];
+      let res: Response | undefined;
+      let connectError: unknown;
+      for (const address of targets) {
+        const pin = address ? pinToAddress(url, address) : undefined;
+        try {
+          res = await fetch(pin?.url ?? url, {
+            method,
+            ...(body !== undefined ? { body } : {}),
+            headers: pin ? { host: pin.host, ...headers } : headers,
+            redirect: "manual",
+            signal,
+            // Bun-specific TLS options; ignored by other runtimes.
+            ...(opts.skipTlsVerification || pin?.serverName
+              ? {
+                  tls: {
+                    ...(opts.skipTlsVerification ? { rejectUnauthorized: false } : {}),
+                    ...(pin?.serverName ? { serverName: pin.serverName } : {}),
+                  },
+                }
+              : {}),
+          } as RequestInit);
+          break;
+        } catch (err) {
+          if (signal.aborted) throw err;
+          connectError = err;
+        }
+      }
+      if (!res) throw connectError;
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {
         await res.body?.cancel();
