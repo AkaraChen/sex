@@ -165,6 +165,16 @@ async function scrapeInner(
       waitFor: options.waitFor,
       actions: options.actions,
       extract: extractOpts,
+      requestGuard: config.allowPrivateNetwork
+        ? undefined
+        : async (u) => {
+            try {
+              await assertPublicUrl(new URL(u), false);
+              return true;
+            } catch {
+              return false;
+            }
+          },
     });
     ({ url: finalUrl, status, contentType } = browserResult);
     rawHtml = browserResult.rawHtml;
