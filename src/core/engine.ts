@@ -16,6 +16,7 @@ import { startBatchScrape } from "./batch.ts";
 import { BrowserPool } from "./browser.ts";
 import { crawlParamsFromPrompt, startCrawl } from "./crawl.ts";
 import { startExtract } from "./extract.ts";
+import { ExtractPool } from "./extract-pool.ts";
 import { createJobBackend, type JobBackend, type JobKind, type JobRecord } from "./jobs/index.ts";
 import { Llm } from "./llm.ts";
 import { mapSite } from "./map.ts";
@@ -28,11 +29,14 @@ export class Engine {
   readonly browser: BrowserPool;
   readonly llm: Llm;
   readonly scrapeLimit: ReturnType<typeof pLimit>;
+  /** HTML and PDF parsing, off the main thread. */
+  readonly extractPool: ExtractPool;
 
   constructor(readonly config: Config) {
     this.browser = new BrowserPool(config);
     this.llm = new Llm(config);
     this.scrapeLimit = pLimit(config.concurrency);
+    this.extractPool = new ExtractPool(config.extractWorkers, Math.max(10_000, config.timeout));
   }
 
   private backend?: JobBackend;
@@ -106,5 +110,6 @@ export class Engine {
   async close(): Promise<void> {
     await this.backend?.close();
     await this.browser.close();
+    await this.extractPool.close();
   }
 }

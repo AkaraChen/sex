@@ -29,6 +29,8 @@ export interface Config {
   jobTtlMs: number;
   /** Pages mapped for an extract URL ending in `/*`. */
   extractWildcardPages: number;
+  /** Worker threads for HTML/PDF extraction; 0 runs extraction on the main thread. */
+  extractWorkers: number;
 }
 
 /** Values given on the command line; anything missing falls back to SEX_* env vars, then defaults. */
@@ -84,6 +86,7 @@ const RAW_SCHEMA = z.object({
   maxBodyBytes: intField(1024),
   jobTtlMs: intField(60_000),
   extractWildcardPages: intField(1),
+  extractWorkers: intField(0),
   llmMaxInputChars: intField(1000),
   searxngUrl: urlField,
   llmBaseUrl: urlField,
@@ -99,6 +102,7 @@ const FIELD_RULES: Record<keyof z.infer<typeof RAW_SCHEMA>, [name: string, expec
   maxBodyBytes: ["SEX_MAX_BODY_BYTES", "an integer >= 1024"],
   jobTtlMs: ["SEX_JOB_TTL_MS", "an integer >= 60000 (milliseconds)"],
   extractWildcardPages: ["SEX_EXTRACT_WILDCARD_PAGES", "an integer >= 1"],
+  extractWorkers: ["SEX_EXTRACT_WORKERS", "an integer >= 0"],
   llmMaxInputChars: ["SEX_LLM_MAX_INPUT_CHARS", "an integer >= 1000"],
   searxngUrl: ["SEX_SEARXNG_URL", "an http(s) URL"],
   llmBaseUrl: ["SEX_LLM_BASE_URL", "an http(s) URL"],
@@ -121,6 +125,7 @@ export function resolveConfig(
     maxBodyBytes: str(env.SEX_MAX_BODY_BYTES),
     jobTtlMs: str(env.SEX_JOB_TTL_MS),
     extractWildcardPages: str(env.SEX_EXTRACT_WILDCARD_PAGES),
+    extractWorkers: str(env.SEX_EXTRACT_WORKERS),
     llmMaxInputChars: o.llmMaxInputChars ?? str(env.SEX_LLM_MAX_INPUT_CHARS),
     searxngUrl: str(o.searxngUrl) ?? str(env.SEX_SEARXNG_URL),
     llmBaseUrl: str(o.llmBaseUrl) ?? str(env.SEX_LLM_BASE_URL) ?? str(env.OPENAI_BASE_URL),
@@ -161,5 +166,6 @@ export function resolveConfig(
     maxBodyBytes: v.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
     jobTtlMs: v.jobTtlMs ?? 24 * 60 * 60 * 1000,
     extractWildcardPages: v.extractWildcardPages ?? 25,
+    extractWorkers: v.extractWorkers ?? Math.max(1, Math.min(4, navigator.hardwareConcurrency - 1)),
   };
 }

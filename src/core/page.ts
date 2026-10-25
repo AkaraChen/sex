@@ -46,8 +46,11 @@ type PageFn = (
 
 let compiled: PageFn | undefined;
 
-/** Node engine: parse with linkedom and run the same page script + Defuddle's Node build. */
-export async function extractFromHtml(html: string, opts: PageExtractOptions): Promise<PageExtractResult> {
+/**
+ * Node engine: parse with linkedom and run the same page script + Defuddle's Node build, on the calling thread.
+ * Use `ExtractPool` (extract-pool.ts) from request code; this is what the worker and the pool's inline mode call.
+ */
+export async function extractFromHtmlInline(html: string, opts: PageExtractOptions): Promise<PageExtractResult> {
   compiled ??= new Function(`return (${PAGE_SCRIPT})`)() as PageFn;
   const { document } = parseHTML(html);
   return compiled(document, opts, (doc, options) => Defuddle(doc as Parameters<typeof Defuddle>[0], opts.url, options));

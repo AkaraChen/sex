@@ -4,8 +4,7 @@ import type { Document, FormatOption, ScrapeOptions } from "../schemas.ts";
 import type { BrowserScrapeResult } from "./browser.ts";
 import type { Engine } from "./engine.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
-import { extractFromHtml, type PageExtractResult } from "./page.ts";
-import { pdfToMarkdown } from "./pdf.ts";
+import type { PageExtractResult } from "./page.ts";
 
 export interface NormalizedFormats {
   markdown: boolean;
@@ -207,13 +206,13 @@ async function scrapeInner(
     const pdfDisabled = options.parsers !== undefined && !options.parsers.some((p) => (typeof p === "string" ? p : p.type) === "pdf");
     if (isPdf) {
       if (pdfDisabled) throw new AppError(415, "UNSUPPORTED_FILE", "PDF parsing is disabled by the parsers option");
-      const pdf = await pdfToMarkdown(res.body);
+      const pdf = await engine.extractPool.pdf(res.body);
       plainMarkdown = pdf.markdown;
       pdfMeta = { title: pdf.title, numPages: pdf.numPages };
       contentType ||= "application/pdf";
     } else if (!contentType || /html|xml/i.test(contentType)) {
       rawHtml = decodeBody(res.body, contentType);
-      extracted = await extractFromHtml(rawHtml, { ...extractOpts, url: finalUrl });
+      extracted = await engine.extractPool.html(rawHtml, { ...extractOpts, url: finalUrl });
     } else if (/^(text\/|application\/(json|javascript|x-ndjson))/i.test(contentType)) {
       const text = decodeBody(res.body, contentType);
       plainMarkdown = /json/i.test(contentType) ? `\`\`\`json\n${text}\n\`\`\`` : text;
