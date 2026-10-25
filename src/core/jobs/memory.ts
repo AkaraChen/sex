@@ -10,6 +10,8 @@ interface Entry {
   errors: JobError[];
   robots: string[];
   seen: Set<string>;
+  /** Start time (ms) of the next free crawl politeness slot. */
+  nextSlotAt: number;
 }
 
 /** Single-process job state; jobs expire after `ttlMs` (config.jobTtlMs, default 24h). */
@@ -39,7 +41,7 @@ export class MemoryJobStore implements JobStore {
       scheduled: 0,
       slots: 0,
     };
-    this.jobs.set(record.id, { record, docs: [], errors: [], robots: [], seen: new Set() });
+    this.jobs.set(record.id, { record, docs: [], errors: [], robots: [], seen: new Set(), nextSlotAt: 0 });
     return { ...record };
   }
 
@@ -70,6 +72,14 @@ export class MemoryJobStore implements JobStore {
     if (!e) return 0;
     e.record[counter] += by;
     return e.record[counter];
+  }
+
+  async reserveSlots(id: string, count: number, intervalMs: number, now: number) {
+    const e = this.entry(id);
+    if (!e) return now;
+    const start = Math.max(now, e.nextSlotAt);
+    e.nextSlotAt = start + count * intervalMs;
+    return start;
   }
 
   async pushDocument(id: string, doc: Document) {
