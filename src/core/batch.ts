@@ -54,12 +54,23 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
       })),
     );
   } catch (err) {
-    await store.incr(job.id, "pending", -valid.length);
+    // Nothing will run or settle these tasks: undo the counts, and if nothing else is in flight finish the job
+    // (an appended batch goes back to completed, a new one fails) instead of leaving it "scraping" until the TTL.
+    await store.incr(job.id, "total", -valid.length);
+    const left = await store.incr(job.id, "pending", -valid.length);
+    if (left <= 0) {
+      if (appendToId) {
+        if (await store.finish(job.id, "completed")) sendWebhook(engine.config, job, "completed");
+      } else if (await store.finish(job.id, "failed", { error: toAppError(err).message })) {
+        sendWebhook(engine.config, job, "failed", [], toAppError(err).message);
+      }
+    }
     throw err;
   }
   return { job, invalidURLs: ignoreInvalidURLs ? invalid : undefined };
 }
 
+/** Scrapes one batch page. The page is counted in `completed` when its task settles (see runTask), exactly once per task. */
 export async function handleBatchPage(engine: Engine, job: JobRecord, url: string, taskOptions?: Record<string, unknown>) {
   const { store } = engine.jobs;
   const source = taskOptions ?? job.options;
@@ -71,7 +82,5 @@ export async function handleBatchPage(engine: Engine, job: JobRecord, url: strin
     sendWebhook(engine.config, job, "page", [document]);
   } catch (err) {
     await store.pushError(job.id, { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: toAppError(err).message });
-  } finally {
-    await store.incr(job.id, "completed", 1);
   }
 }

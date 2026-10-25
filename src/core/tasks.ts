@@ -17,14 +17,16 @@ export async function runTask(engine: Engine, task: Task): Promise<void> {
     if (job?.status === "scraping") await handleExtract(engine, job);
     return;
   }
+  let countCompleted = false;
   try {
     if (task.type === "crawl-start") return await handleCrawlStart(engine, task.jobId);
     const job = await store.get(task.jobId);
     // Cancelled or failed jobs still drain their queued pages.
     if (job?.status !== "scraping") return;
     if (job.kind === "crawl") return await handleCrawlPage(engine, job, task.url, task.depth);
+    countCompleted = true;
     return await handleBatchPage(engine, job, task.url, task.options);
   } finally {
-    await settleTask(engine, task.jobId, task.taskId);
+    await settleTask(engine, task.jobId, task.taskId, countCompleted);
   }
 }

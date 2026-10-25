@@ -24,13 +24,15 @@ local start = math.max(now, next)
 redis.call('HSET', KEYS[1], 'nextSlotAt', start + count * interval)
 return start`;
 
-// KEYS: job hash, settled-task set. ARGV: taskId ("" = none). Returns nil when the job is gone or the task was already settled.
+// KEYS: job hash, settled-task set. ARGV: taskId ("" = none), "1" to also count the task in `completed`.
+// Returns nil when the job is gone or the task was already settled.
 const SETTLE_SCRIPT = `
 if redis.call('HEXISTS', KEYS[1], 'kind') == 0 then return nil end
 if ARGV[1] ~= '' then
   if redis.call('SADD', KEYS[2], ARGV[1]) == 0 then return nil end
   redis.call('PEXPIREAT', KEYS[2], redis.call('HGET', KEYS[1], 'expiresAt'))
 end
+if ARGV[2] == '1' then redis.call('HINCRBY', KEYS[1], 'completed', 1) end
 return redis.call('HINCRBY', KEYS[1], 'pending', -1)`;
 
 // KEYS: document list. ARGV: skip, max bytes. Returns {nextSkip or -1, items...}: items are read in small chunks and
@@ -156,8 +158,8 @@ export class RedisJobStore implements JobStore {
     return this.redis.hincrby(this.key(id), counter, by);
   }
 
-  async settle(id: string, taskId: string | undefined) {
-    const res = await this.redis.eval(SETTLE_SCRIPT, 2, this.key(id), this.key(id, "settled"), taskId ?? "");
+  async settle(id: string, taskId: string | undefined, countCompleted = false) {
+    const res = await this.redis.eval(SETTLE_SCRIPT, 2, this.key(id), this.key(id, "settled"), taskId ?? "", countCompleted ? "1" : "0");
     return res === null ? null : Number(res);
   }
 

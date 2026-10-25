@@ -97,13 +97,14 @@ export class MemoryJobStore implements JobStore {
     return e.record[counter];
   }
 
-  async settle(id: string, taskId: string | undefined) {
+  async settle(id: string, taskId: string | undefined, countCompleted = false) {
     const e = this.entry(id);
     if (!e) return null;
     if (taskId !== undefined) {
       if (e.settled.has(taskId)) return null;
       e.settled.add(taskId);
     }
+    if (countCompleted) e.record.completed += 1;
     e.record.pending -= 1;
     return e.record.pending;
   }
