@@ -1,4 +1,4 @@
-// All logs go to stderr so stdout stays clean for CLI output and MCP stdio.
+// All logs go to stderr so stdout stays clean for CLI output.
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40, silent: 100 } as const;
 type Level = keyof typeof LEVELS;
 

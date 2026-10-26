@@ -65,3 +65,12 @@ describe("sex search validation", () => {
     expect(parsed.data.web).toHaveLength(1);
   }, 20_000);
 });
+
+describe("sex mcp", () => {
+  test("is no longer a command: MCP is served by `sex serve` at /mcp", async () => {
+    const { code, stderr } = await cli(["mcp"]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("Unknown command");
+    expect(stderr).toContain("mcp");
+  }, 20_000);
+});

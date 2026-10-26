@@ -286,20 +286,6 @@ const serve = defineCommand({
   },
 });
 
-const mcp = defineCommand({
-  meta: { name: "mcp", description: "Run the MCP server on stdio (MCP over HTTP is served at /mcp by `sex serve`)" },
-  args: serverArgs,
-  run: async ({ args }) => {
-    const engine = engineOrExit(args, { allowPrivateNetwork: false });
-    if (!engine) return;
-    onShutdown(engine);
-    await engine.browser.warmup();
-    maybeStartWorker(engine, args.worker);
-    const { serveMcp } = await import("./mcp/server.ts");
-    await serveMcp(engine);
-  },
-});
-
 const worker = defineCommand({
   meta: { name: "worker", description: "Process crawl/batch/extract jobs from Redis (BullMQ) without serving an API" },
   args: { ...commonArgs, "redis-url": serverArgs["redis-url"] },
@@ -307,7 +293,7 @@ const worker = defineCommand({
     const engine = engineOrExit(args, { allowPrivateNetwork: false });
     if (!engine) return;
     if (!engine.config.redisUrl) {
-      process.stderr.write("error: worker needs --redis-url (or SEX_REDIS_URL); the in-memory queue only runs inside serve/mcp\n");
+      process.stderr.write("error: worker needs --redis-url (or SEX_REDIS_URL); the in-memory queue only runs inside serve\n");
       process.exit(1);
     }
     onShutdown(engine);
@@ -319,7 +305,7 @@ const worker = defineCommand({
 
 const main = defineCommand({
   meta: { name: "sex", version: VERSION, description: "Self-hosted, Firecrawl-compatible web search + fetch" },
-  subCommands: { search, fetch: fetchCmd, serve, http: serve, mcp, worker },
+  subCommands: { search, fetch: fetchCmd, serve, http: serve, worker },
 });
 
 runMain(main);

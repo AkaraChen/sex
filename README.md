@@ -8,7 +8,7 @@
 - **LLM（可选）**：任意 OpenAI 兼容的 `/chat/completions` 接口
 - **任务队列（可选）**：配置了 Redis 时，crawl / batch scrape / extract 跑在 [BullMQ](https://bullmq.io) 上，可以开多个 worker 一起处理；不配就用进程内的内存队列
 
-一个二进制，四个主要子命令：`search`、`fetch`、`serve`、`mcp`，另外有个 `worker`，用于在 Redis 模式下单独起消费进程。`serve` 在同一个端口上同时提供 HTTP API 和 MCP（`/mcp`），`mcp` 只走 stdio；`http` 是 `serve` 的旧名，目前仍作为别名保留。
+一个二进制，三个主要子命令：`search`、`fetch`、`serve`，另外有个 `worker`，用于在 Redis 模式下单独起消费进程。`serve` 在同一个端口上同时提供 HTTP API 和 MCP（`/mcp`，只有 streamable HTTP，没有 stdio）；`http` 是 `serve` 的旧名，目前仍作为别名保留。
 
 ## 快速开始
 
@@ -20,7 +20,6 @@ export SEX_SEARXNG_URL=http://127.0.0.1:8080
 bun src/cli.ts search "defuddle"
 bun src/cli.ts fetch https://stephango.com/saw
 bun src/cli.ts serve                 # HTTP API: http://127.0.0.1:3002/docs，MCP: http://127.0.0.1:3002/mcp
-bun src/cli.ts mcp                   # MCP over stdio
 
 bun run build                        # 单文件可执行：dist/sex
 ```
@@ -44,7 +43,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 |---|---|---|
 | 浏览器 | `--lightpanda`（启动本地 Lightpanda 子进程，二进制从 PATH / `--lightpanda-path` 找）或 `--cdp-url ws://...` | `actions`、JS 渲染页面；`waitFor` 无浏览器时忽略并给 warning |
 | LLM | `--llm-model`（+ `--llm-base-url`、`--llm-api-key`） | `json` / `summary` / `question` / `highlights` 格式、`/v2/extract`、crawl 的 `prompt`、`/v2/crawl/params-preview` |
-| Redis | `--redis-url redis://...`（`serve` / `mcp` / `worker`） | 任务持久化、多进程/多机分担 crawl 和 batch；不配时任务存在内存里，只在当前进程执行 |
+| Redis | `--redis-url redis://...`（`serve` / `worker`） | 任务持久化、多进程/多机分担 crawl 和 batch；不配时任务存在内存里，只在当前进程执行 |
 
 没开启却用到了对应功能时，直接报 `501 BROWSER_NOT_CONFIGURED` / `501 LLM_NOT_CONFIGURED`。
 
@@ -69,7 +68,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 | `SEX_LLM_API_KEY`（回退 `OPENAI_API_KEY`） | `--llm-api-key` | 无 | LLM API key |
 | `SEX_LLM_TIMEOUT` | — | `120000`（毫秒，最小 1000） | 单次 LLM 请求的超时 |
 | `SEX_LLM_MAX_INPUT_CHARS` | — | `200000`（最小 1000） | 单次 LLM 调用最多发送的页面字符数 |
-| `SEX_ALLOW_PRIVATE_NETWORK` | `--allow-private-network` | `search`/`fetch`：`true`；`serve`/`mcp`/`worker`：`false` | 是否允许抓取回环、内网、link-local 地址 |
+| `SEX_ALLOW_PRIVATE_NETWORK` | `--allow-private-network` | `search`/`fetch`：`true`；`serve`/`worker`：`false` | 是否允许抓取回环、内网、link-local 地址 |
 | `SEX_USER_AGENT` | `--user-agent` | Chrome 桌面 UA | 页面抓取使用的 User-Agent |
 | `SEX_CONCURRENCY` | `--concurrency` | `8` | 单进程内同时进行的页面抓取数 |
 | `SEX_TIMEOUT` | `--timeout` | `30000`（毫秒，最小 1） | 单页默认超时 |
@@ -83,14 +82,14 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 | `SEX_CORS_ORIGINS` | `--cors-origin` | 空（CORS 关闭） | 允许跨域调用 HTTP API 和 MCP 端点的浏览器 origin，逗号分隔，不带路径 |
 | `SEX_ALLOWED_HOSTS` | `--allowed-host` | 绑定回环地址时只接受 `localhost` / `127.0.0.1` / `[::1]` | 允许的 `Host` 头主机名，逗号分隔，不带端口 |
 
-其它 flag：`--worker` / `--no-worker`（`serve`、`mcp`：是否在本进程消费任务，默认消费）。
+其它 flag：`--worker` / `--no-worker`（`serve`：是否在本进程消费任务，默认消费）。
 
 ## 任务队列
 
 crawl、batch scrape、extract 都是异步任务。任务按页拆分：crawl 先跑一个 `crawl-start` 任务（读 robots.txt 和 sitemap），之后每个页面是一个 `page` 任务，抓完后再把新发现的链接入队；batch 每个 URL 一个任务；extract 整体是一个任务。
 
-- **不配 Redis**：任务状态和队列都在进程内存里，`serve` / `mcp` 进程自己执行，重启后丢失。文档内容总量超过 512 MiB 时，会淘汰最早结束的任务。
-- **配了 Redis**：任务状态存在 Redis 里（hash、list、set，按 `SEX_JOB_TTL_MS` 过期），任务通过 BullMQ 分发。`serve` / `mcp` 默认也会消费任务，加 `--no-worker` 则只负责入队；`sex worker` 是纯消费进程，可以开任意多个。同一个 crawl 的页面会分散到所有 worker 上并行处理，limit、去重和 robots 规则都通过 Redis 原子操作在 worker 之间共享。Redis 故障时，普通存取命令在有限次重试后报错，不会无限挂起；BullMQ 的阻塞消费连接与之分开。
+- **不配 Redis**：任务状态和队列都在进程内存里，`serve` 进程自己执行，重启后丢失。文档内容总量超过 512 MiB 时，会淘汰最早结束的任务。
+- **配了 Redis**：任务状态存在 Redis 里（hash、list、set，按 `SEX_JOB_TTL_MS` 过期），任务通过 BullMQ 分发。`serve` 默认也会消费任务，加 `--no-worker` 则只负责入队；`sex worker` 是纯消费进程，可以开任意多个。同一个 crawl 的页面会分散到所有 worker 上并行处理，limit、去重和 robots 规则都通过 Redis 原子操作在 worker 之间共享。Redis 故障时，普通存取命令在有限次重试后报错，不会无限挂起；BullMQ 的阻塞消费连接与之分开。
 - 所有 worker 应使用相同的配置（浏览器、LLM 等），因为页面实际在哪个 worker 上执行是不确定的。
 - `worker` 命令同样默认拒绝内网地址。在 Redis 模式下，如果需要抓取内网站点，要在每个 worker 上都加 `--allow-private-network`，不能只加在 `serve` 上。
 
@@ -126,7 +125,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
 - 任务取消后，正在执行的页面会跑完，但结果会被丢弃；还在队列里的任务会被跳过。
 - 不支持 SDK 的 `watcher()`（WebSocket 推送任务进度），只能轮询。
-- 出于 SSRF 防护，`serve` 和 `mcp` 默认拒绝抓取内网和回环地址，可以用 `--allow-private-network` 放开。`search` 和 `fetch` 这两个 CLI 命令默认允许。
+- 出于 SSRF 防护，`serve` 默认拒绝抓取内网和回环地址，可以用 `--allow-private-network` 放开。`search` 和 `fetch` 这两个 CLI 命令默认允许。
   - 域名解析后，连接只使用已经通过检查的 IP，因此 DNS rebinding 无法在检查后把请求转到内网。每次重定向都会重新检查。
   - 浏览器模式下，页面发出的子请求同样经过检查（request interception），指向内网的请求会被拦截。
   - 绑定到非回环地址时（如 Docker 里的 `--host 0.0.0.0`），默认不做 Host 检查，需要自己设置 `SEX_ALLOWED_HOSTS`。
@@ -140,25 +139,28 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 
 工具：`web_fetch`、`web_search`、`web_map`、`web_crawl`、`web_crawl_status`、`web_extract`。参数沿用 firecrawl-mcp，只是把 `firecrawl_` 前缀换成了 `web_`（例如 `firecrawl_scrape` → `web_fetch`）。服务端基于 `@modelcontextprotocol/server` v2。
 
-有两种传输方式：`sex mcp` 走 stdio，由客户端拉起子进程；`sex serve` 在 HTTP API 的同一个端口上提供 streamable HTTP，端点是 `http://host:3002/mcp`，不需要单独的 MCP 进程或端口。
+MCP 只通过 streamable HTTP 提供：先运行 `sex serve`，端点就是 `http://host:3002/mcp`（默认 `http://127.0.0.1:3002/mcp`），和 HTTP API 在同一个进程、同一个端口上。没有 stdio 传输，也没有 `sex mcp` 命令。
 
-用 stdio 时，`sex` 不会自动出现在 PATH 上，配置时用以下任一方式：
+客户端配置，以 Claude Code 为例：
 
-- 构建后写绝对路径：`bun run build` 生成 `dist/sex`，Docker 镜像里则是 `/usr/local/bin/sex`。
-- 直接用源码：`bun /绝对路径/src/cli.ts mcp`。
-- 在仓库里执行 `bun link`，把 `sex` 链接到 PATH（读取 `package.json` 的 `bin` 字段）。
+```bash
+claude mcp add --transport http sex http://127.0.0.1:3002/mcp
+```
+
+或者写进 JSON 配置（例如 Claude Code 项目里的 `.mcp.json`）：
 
 ```json
 {
   "mcpServers": {
     "sex": {
-      "command": "/绝对路径/dist/sex",
-      "args": ["mcp"],
-      "env": { "SEX_SEARXNG_URL": "http://127.0.0.1:8080" }
+      "type": "http",
+      "url": "http://127.0.0.1:3002/mcp"
     }
   }
 }
 ```
+
+只支持 stdio 的客户端（例如 Claude Desktop 的配置文件）需要用 `mcp-remote` 这类 stdio 转 HTTP 的桥接，或者改用客户端自带的远程 / 自定义 connector 功能。
 
 MCP 工具的默认值比 HTTP API 保守，因为结果会进入 LLM 上下文：
 
