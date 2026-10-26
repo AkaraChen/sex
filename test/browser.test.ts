@@ -1,21 +1,33 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ConfigOverrides } from "../src/config.ts";
+import { pdeathsigWrapper } from "../src/core/browser.ts";
 import type { Engine } from "../src/core/engine.ts";
-import { testEngine } from "./helpers.ts";
+import { testEngine, waitFor } from "./helpers.ts";
 
-// Opt-in: needs a CDP browser, e.g. SEX_TEST_CDP_URL=http://127.0.0.1:9333 bun test test/browser.test.ts
+// Opt-in, needs a browser. Either an already running CDP browser:
+//   SEX_TEST_CDP_URL=http://127.0.0.1:9333 bun test test/browser.test.ts
+// or a Lightpanda binary that sex spawns itself (also runs the child process lifecycle tests below):
+//   SEX_TEST_LIGHTPANDA_PATH=/path/to/lightpanda bun test test/browser.test.ts
 const CDP = process.env.SEX_TEST_CDP_URL;
+const LIGHTPANDA = process.env.SEX_TEST_LIGHTPANDA_PATH;
+
+const variants: Array<[name: string, overrides: ConfigOverrides]> = [];
+if (CDP) variants.push(["cdp", { cdpUrl: CDP }]);
+if (LIGHTPANDA) variants.push(["spawned lightpanda", { lightpanda: true, lightpandaPath: LIGHTPANDA }]);
 
 const html = (body: string) =>
   `<!doctype html><html lang="en"><head><title>Browser Fixture</title></head><body><main><article>${body}</article></main></body></html>`;
+const extract = { onlyMainContent: true, removeBase64Images: true, wantLinks: false, wantImages: false };
 
-describe.skipIf(!CDP)("browser", () => {
+describe.each(variants)("browser (%s)", (_name, overrides) => {
   let a: ReturnType<typeof Bun.serve>;
   let b: ReturnType<typeof Bun.serve>;
   let bHits: string[] = [];
   let engine: Engine;
   const origin = () => `http://127.0.0.1:${a.port}`;
   const guardA = async (u: string) => new URL(u).port === String(a.port);
-  const extract = { onlyMainContent: true, removeBase64Images: true, wantLinks: false, wantImages: false };
 
   beforeAll(() => {
     // Server B stands in for an internal address: every hit is recorded.
@@ -52,7 +64,7 @@ describe.skipIf(!CDP)("browser", () => {
         }
       },
     });
-    engine = testEngine({ cdpUrl: CDP });
+    engine = testEngine(overrides);
   });
 
   afterAll(async () => {
@@ -96,5 +108,126 @@ describe.skipIf(!CDP)("browser", () => {
     });
     expect(result.rawHtml).toContain("Image page");
     expect(bHits).toEqual([]);
+  });
+});
+
+/** True while the process exists and is not a zombie. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return true; // no /proc (macOS): the signal check above is all there is
+  }
+}
+
+describe.skipIf(!LIGHTPANDA)("spawned lightpanda process", () => {
+  let site: ReturnType<typeof Bun.serve>;
+  let hits = 0;
+  let engine: Engine | undefined;
+  const spawning = (overrides: ConfigOverrides = {}) =>
+    (engine = testEngine({ lightpanda: true, lightpandaPath: LIGHTPANDA, ...overrides }));
+  const scrape = (e: Engine) => e.scrape({ url: `http://127.0.0.1:${site.port}/`, formats: ["markdown"] });
+
+  beforeAll(() => {
+    site = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch() {
+        hits++;
+        return new Response(html("<h1>Lifecycle</h1><p>Hello from the lifecycle fixture.</p>"), {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      },
+    });
+  });
+
+  afterEach(async () => {
+    await engine?.close();
+    engine = undefined;
+  });
+
+  afterAll(() => site.stop(true));
+
+  test("the first browser scrape spawns the child", async () => {
+    const e = spawning();
+    expect(e.browser.pid).toBeUndefined();
+    const doc = await scrape(e);
+    expect(doc.markdown).toContain("Hello from the lifecycle fixture");
+    const pid = e.browser.pid;
+    expect(pid).toBeNumber();
+    expect(alive(pid!)).toBe(true);
+  });
+
+  test("killing the child makes the next scrape spawn a new one", async () => {
+    const e = spawning();
+    await scrape(e);
+    const first = e.browser.pid!;
+    process.kill(first, "SIGKILL");
+    await waitFor(() => (e.browser.pid === undefined ? true : undefined));
+    expect((await scrape(e)).markdown).toContain("Hello from the lifecycle fixture");
+    const second = e.browser.pid!;
+    expect(second).not.toBe(first);
+    expect(alive(second)).toBe(true);
+    expect(alive(first)).toBe(false);
+  });
+
+  test("engine.close() leaves no child process", async () => {
+    const e = spawning();
+    await scrape(e);
+    const pid = e.browser.pid!;
+    await e.close();
+    expect(e.browser.pid).toBeUndefined();
+    expect(alive(pid)).toBe(false);
+  });
+
+  test.skipIf(!pdeathsigWrapper())(
+    "the child exits when sex is killed with SIGKILL",
+    async () => {
+      const script = `
+        import { testEngine } from ${JSON.stringify(join(import.meta.dir, "helpers.ts"))};
+        const engine = testEngine({ lightpanda: true, lightpandaPath: ${JSON.stringify(LIGHTPANDA)} });
+        await engine.browser.warmup();
+        console.log(engine.browser.pid);
+        await Bun.sleep(60_000);
+      `;
+      const parent = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "ignore" });
+      let pid = 0;
+      try {
+        // The first line the script prints is the PID of its Lightpanda child.
+        const reader = parent.stdout.getReader();
+        const decoder = new TextDecoder();
+        let out = "";
+        while (!out.includes("\n")) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          out += decoder.decode(value, { stream: true });
+        }
+        pid = Number(out.trim());
+        expect(alive(pid)).toBe(true);
+        parent.kill("SIGKILL");
+        await parent.exited;
+        await waitFor(() => (alive(pid) ? undefined : true), 5_000);
+      } finally {
+        parent.kill("SIGKILL");
+        if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+      }
+    },
+    20_000,
+  );
+
+  test("lightpanda itself refuses private addresses when they are not allowed", async () => {
+    const e = spawning({ allowPrivateNetwork: false });
+    hits = 0;
+    // No requestGuard: only the child's --block-private-networks stands between the page and the loopback fixture.
+    const err = await e.browser
+      .scrape({ url: `http://127.0.0.1:${site.port}/`, timeout: 10_000, userAgent: "t", extract })
+      .catch((x: unknown) => x);
+    expect(err).toMatchObject({ code: "FETCH_FAILED" });
+    expect(hits).toBe(0);
   });
 });

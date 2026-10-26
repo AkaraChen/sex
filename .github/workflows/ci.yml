@@ -33,3 +33,22 @@ jobs:
       - run: bun test test/jobs.test.ts
         env:
           SEX_TEST_REDIS_URL: redis://localhost:6379
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      # The same binary the Docker image ships: the image is pinned by digest in the Dockerfile.
+      - name: Extract Lightpanda from its image
+        run: |
+          image=$(sed -n 's/^ARG LIGHTPANDA_IMAGE=//p' Dockerfile)
+          id=$(docker create "$image")
+          docker cp "$id:/bin/lightpanda" "$RUNNER_TEMP/lightpanda"
+          docker rm "$id"
+      - run: bun test test/browser.test.ts
+        env:
+          SEX_TEST_LIGHTPANDA_PATH: ${{ runner.temp }}/lightpanda

@@ -4,7 +4,7 @@
 
 - **搜索**：[SearXNG](https://github.com/searxng/searxng)
 - **抓取/清洗**：[Defuddle](https://github.com/kepano/defuddle)（无浏览器时用 linkedom 跑它的 Node 版；有浏览器时把同一份浏览器 bundle 注入页面执行）。HTML 和 PDF 的解析在 worker 线程池里进行（`SEX_EXTRACT_WORKERS`）
-- **浏览器（可选）**：[Lightpanda](https://github.com/lightpanda-io/browser)，或任意 CDP 浏览器（Chrome 等）
+- **浏览器（可选）**：[Lightpanda](https://github.com/lightpanda-io/browser)（作为 sex 的子进程运行，Docker 镜像自带），或任意 CDP 浏览器（Chrome 等）
 - **LLM（可选）**：任意 OpenAI 兼容的 `/chat/completions` 接口
 - **任务队列（可选）**：配置了 Redis 时，crawl / batch scrape / extract 跑在 [BullMQ](https://bullmq.io) 上，可以开多个 worker 一起处理；不配就用进程内的内存队列
 
@@ -28,7 +28,7 @@ bun run build                        # 单文件可执行：dist/sex
 
 需要 LLM 功能时，先 `cp .env.example .env`，取消注释并填写 `SEX_LLM_MODEL`、`SEX_LLM_API_KEY` 等。
 
-一键起全套（SearXNG + Lightpanda + Redis + HTTP API + MCP + worker）：
+一键起全套（SearXNG + Redis + HTTP API + MCP + worker；Lightpanda 在 sex 镜像里，由每个 sex 进程自己启动）：
 
 ```bash
 docker compose up -d
@@ -39,15 +39,34 @@ docker compose up -d --scale sex-worker=4   # 加 worker
 
 compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` 变量（如 `SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`）不会自动传入容器，需要加到 `compose.yaml` 的 `x-sex` 的 `environment` 里。
 
+镜像自带 Lightpanda（`/usr/local/bin/lightpanda`），compose 给每个 sex 服务设了 `SEX_LIGHTPANDA=1`，所以没有单独的 `lightpanda` 服务：每个 sex 进程（包括每个 `sex-worker`）各自启动、管理一个子进程，空闲时约 13 MB 内存。二进制在镜像里不等于开启，是否使用仍由 `SEX_LIGHTPANDA` 决定；镜像因此大约增大 77 MB。Lightpanda 目前只有 nightly，`Dockerfile` 里的 `LIGHTPANDA_IMAGE` 按 digest 固定了版本，升级时手动改 digest（或 `docker build --build-arg LIGHTPANDA_IMAGE=...`）。详见[浏览器](#浏览器)。
+
 ## 可选能力
 
 | 能力 | 开启方式 | 依赖它的功能 |
 |---|---|---|
-| 浏览器 | `--lightpanda`（启动本地 Lightpanda 子进程，二进制从 PATH / `--lightpanda-path` 找）或 `--cdp-url ws://...` | `actions`、JS 渲染页面；`waitFor` 无浏览器时忽略并给 warning |
+| 浏览器 | `--lightpanda`（启动本地 Lightpanda 子进程，二进制从 PATH / `--lightpanda-path` 找；Docker 镜像自带，compose 已开启）或 `--cdp-url ws://...` | `actions`、JS 渲染页面；`waitFor` 无浏览器时忽略并给 warning |
 | LLM | `--llm-model`（+ `--llm-base-url`、`--llm-api-key`） | `json` / `summary` / `question` / `highlights` 格式、`/v2/extract`、crawl 的 `prompt`、`/v2/crawl/params-preview` |
 | Redis | `--redis-url redis://...`（`http` / `mcp` / `worker`） | 任务持久化、多进程/多机分担 crawl 和 batch；不配时任务存在内存里，只在当前进程执行 |
 
 没开启却用到了对应功能时，直接报 `501 BROWSER_NOT_CONFIGURED` / `501 LLM_NOT_CONFIGURED`。
+
+### 浏览器
+
+- **`--lightpanda`**（`SEX_LIGHTPANDA=1`）：sex 自己 spawn 一个 Lightpanda 子进程。`http` / `mcp` / `worker` 启动时预热，其它命令在第一次用到浏览器时才启动；子进程退出后，下一次请求会自动重新启动；sex 退出时一起退出。连续启动失败（60 秒内 3 次，例如二进制起不来）后，30 秒内直接返回 `502 BROWSER_UNAVAILABLE`，不会对着坏掉的二进制反复 spawn。
+- **`--cdp-url ws://...`**（`SEX_CDP_URL`）：连接已经在运行的 CDP 浏览器，比如 Chrome，或者单独部署的 Lightpanda。sex 不启动任何进程；和 `--lightpanda` 同时设置时以 `--cdp-url` 为准。
+- 都不设：不用浏览器。
+
+Docker 镜像已经带了二进制。在本机用 `--lightpanda`，需要自己把二进制放到 PATH 上，或用 `--lightpanda-path`（`SEX_LIGHTPANDA_PATH`）指定；可以从镜像里取出来，也可以从 [GitHub Releases](https://github.com/lightpanda-io/browser/releases) 下载：
+
+```bash
+id=$(docker create lightpanda/browser:nightly) && docker cp "$id:/bin/lightpanda" ./lightpanda && docker rm "$id"
+bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightpanda
+```
+
+**子进程的回收**：`SIGINT` / `SIGTERM` 时 sex 会先关掉子进程再退出，但 `SIGKILL` 无法被捕获。所以在 Linux 上，sex 用 `setpriv --pdeathsig TERM -- lightpanda serve ...` 启动子进程（`setpriv` 属于 util-linux ≥ 2.33，Debian / Ubuntu 和 Docker 镜像里都有）：sex 被 `kill -9` 后，内核会给子进程发 `SIGTERM`，不会留下孤儿。macOS 没有对应机制（pdeathsig 是 Linux 特有的），Linux 上没有 `setpriv` 时也一样，sex 只能直接 spawn，此时 `kill -9` sex 会留下孤儿 Lightpanda 进程，需要自己清理。`lightpanda started` 日志里的 `spawn=setpriv` / `spawn=direct` 标明了实际用的是哪种方式。
+
+**内网保护**：`--allow-private-network` 关闭时（`http` / `mcp` / `worker` 默认），子进程会带上 `--block-private-networks`，Lightpanda 在 DNS 解析后再拦一次内网地址，作为 request interception 之外的第二道防线。`--cdp-url` 接外部浏览器时没有这一层，只有 request interception。
 
 ### 配置
 
@@ -62,9 +81,9 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 | `PORT` | `http --port`（`-p`） | `3002` | 只有 `http` 读取；`mcp` 的端口用 `--port`，默认 `3003` |
 | `HOST` | `http --host` | `127.0.0.1` | 只有 `http` 读取；`mcp --host` 默认 `127.0.0.1` |
 | `SEX_SEARXNG_URL` | `--searxng-url` | `http://127.0.0.1:8080` | SearXNG 地址 |
-| `SEX_LIGHTPANDA` | `--lightpanda` | `false` | 启动本地 Lightpanda 子进程 |
-| `SEX_LIGHTPANDA_PATH`（回退 `LIGHTPANDA_EXECUTABLE_PATH`） | `--lightpanda-path` | 从 PATH 查找 | Lightpanda 可执行文件 |
-| `SEX_CDP_URL` | `--cdp-url` | 无 | 已有 CDP 浏览器的地址，如 `ws://127.0.0.1:9222` |
+| `SEX_LIGHTPANDA` | `--lightpanda` | `false` | 启动本地 Lightpanda 子进程；compose 里已设为 `1` |
+| `SEX_LIGHTPANDA_PATH`（回退 `LIGHTPANDA_EXECUTABLE_PATH`） | `--lightpanda-path` | 从 PATH 查找 | Lightpanda 可执行文件；Docker 镜像里是 `/usr/local/bin/lightpanda`，已在 PATH 上 |
+| `SEX_CDP_URL` | `--cdp-url` | 无 | 已有 CDP 浏览器的地址，如 `ws://127.0.0.1:9222`；和 `SEX_LIGHTPANDA` 同时设置时以它为准 |
 | `SEX_LLM_MODEL` | `--llm-model` | 无（LLM 关闭） | 设置后开启 LLM 功能 |
 | `SEX_LLM_BASE_URL`（回退 `OPENAI_BASE_URL`） | `--llm-base-url` | `https://api.openai.com/v1` | OpenAI 兼容接口 |
 | `SEX_LLM_API_KEY`（回退 `OPENAI_API_KEY`） | `--llm-api-key` | 无 | LLM API key |
@@ -129,7 +148,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - 不支持 SDK 的 `watcher()`（WebSocket 推送任务进度），只能轮询。
 - 出于 SSRF 防护，`http` 和 `mcp` 默认拒绝抓取内网和回环地址，可以用 `--allow-private-network` 放开。`search` 和 `fetch` 这两个 CLI 命令默认允许。
   - 域名解析后，连接只使用已经通过检查的 IP，因此 DNS rebinding 无法在检查后把请求转到内网。每次重定向都会重新检查。
-  - 浏览器模式下，页面发出的子请求同样经过检查（request interception），指向内网的请求会被拦截。
+  - 浏览器模式下，页面发出的子请求同样经过检查（request interception），指向内网的请求会被拦截。Lightpanda 子进程还会带上 `--block-private-networks` 作为第二道防线（见[浏览器](#浏览器)）。
   - 绑定到非回环地址时（如 Docker 里的 `--host 0.0.0.0`），默认不做 Host 检查，需要自己设置 `SEX_ALLOWED_HOSTS`。
 - 跨域和 Host 检查：
   - CORS 默认关闭。只有设置 `SEX_CORS_ORIGINS` 后，列出的 origin 才能跨域调用。
@@ -183,6 +202,7 @@ docker compose up -d redis
 SEX_TEST_REDIS_URL=redis://127.0.0.1:6379 bun test    # 任务存储和队列的 Redis/BullMQ 后端
 
 SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test test/browser.test.ts   # 需要一个正在运行的 CDP 浏览器（如 Lightpanda 或 Chrome）
+SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
 ```
 
 其它检查：`bun check`（类型检查），`bun run lint`（Biome）。
