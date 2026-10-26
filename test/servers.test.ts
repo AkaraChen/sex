@@ -3,8 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Engine } from "../src/core/engine.ts";
-import { createApp } from "../src/http/server.ts";
-import { type McpRunning, serveMcp } from "../src/mcp/server.ts";
+import { createApp, serveHttp } from "../src/http/server.ts";
 import { startFixtureSite, startMockSearxng, testEngine } from "./helpers.ts";
 
 let site: ReturnType<typeof startFixtureSite>;
@@ -25,7 +24,7 @@ afterAll(async () => {
 
 describe("http", () => {
   const call = async (method: string, path: string, body?: unknown) => {
-    const app = createApp(engine);
+    const { app } = createApp(engine);
     const res = await app.fetch(
       new Request(`http://sex.test${path}`, {
         method,
@@ -88,7 +87,7 @@ describe("http", () => {
   });
 
   test("OpenAPI spec and docs", async () => {
-    const app = createApp(engine);
+    const { app } = createApp(engine);
     const spec = (await (await app.fetch(new Request("http://sex.test/openapi.json"))).json()) as { paths: Record<string, unknown> };
     expect(Object.keys(spec.paths)).toContain("/v2/scrape");
     expect(Object.keys(spec.paths)).toContain("/v2/crawl/{id}");
@@ -97,15 +96,16 @@ describe("http", () => {
   });
 });
 
-describe("mcp (streamable http)", () => {
-  let server: McpRunning;
+describe("mcp (streamable http at /mcp)", () => {
+  let server: ReturnType<typeof serveHttp>;
+  let base: string;
   let client: Client;
 
   beforeAll(async () => {
-    const port = 41000 + Math.floor(Math.random() * 1000);
-    server = await serveMcp(engine, { transport: "http", port, host: "127.0.0.1", stateless: false });
+    server = serveHttp(engine, { port: 0, host: "127.0.0.1" });
+    base = `http://127.0.0.1:${server.server.port}`;
     client = new Client({ name: "test", version: "1.0.0" });
-    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
   });
 
   afterAll(async () => {
@@ -137,6 +137,24 @@ describe("mcp (streamable http)", () => {
     };
     expect(res.isError).toBe(true);
     expect(res.content[0]?.text).toContain("LLM_NOT_CONFIGURED");
+  });
+
+  test("the REST API and MCP are served from the same port", async () => {
+    const health = await fetch(`${base}/health`);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({ status: "ok" });
+
+    const scraped = await fetch(`${base}/v2/scrape`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: `${site.url}/docs/a`, formats: ["markdown"] }),
+    });
+    expect(scraped.status).toBe(200);
+    expect(((await scraped.json()) as { data: { markdown: string } }).data.markdown).toStartWith("# Doc A");
+
+    // The MCP client from beforeAll is connected to this same base URL.
+    const { tools } = await client.listTools();
+    expect(tools).toHaveLength(6);
   });
 });
 

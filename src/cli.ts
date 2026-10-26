@@ -114,8 +114,14 @@ function maybeStartWorker(engine: Engine, enabled: boolean) {
   else log.info("job worker disabled; jobs run on other `sex worker` processes");
 }
 
-function onShutdown(engine: Engine) {
+/** Closes the engine on SIGINT/SIGTERM, after `beforeClose` (e.g. stopping the server whose requests use the engine). */
+function onShutdown(engine: Engine, beforeClose?: () => Promise<void> | void) {
   const stop = async () => {
+    try {
+      await beforeClose?.();
+    } catch (err) {
+      log.warn("shutdown step failed", { error: toAppError(err).message });
+    }
     await engine.close();
     process.exit(0);
   };
@@ -255,8 +261,11 @@ const fetchCmd = defineCommand({
   },
 });
 
-const http = defineCommand({
-  meta: { name: "http", description: "Run the Firecrawl-compatible HTTP API (docs at /docs, spec at /openapi.json)" },
+const serve = defineCommand({
+  meta: {
+    name: "serve",
+    description: "Run the Firecrawl-compatible HTTP API and MCP over HTTP (docs at /docs, spec at /openapi.json, MCP at /mcp)",
+  },
   args: {
     ...serverArgs,
     port: { type: "string", alias: "p", description: "Port (env PORT, default 3002)" },
@@ -265,26 +274,21 @@ const http = defineCommand({
   run: async ({ args }) => {
     const engine = engineOrExit(args, { allowPrivateNetwork: false });
     if (!engine) return;
-    onShutdown(engine);
+    let stopServer: (() => Promise<void>) | undefined;
+    onShutdown(engine, () => stopServer?.());
     await engine.browser.warmup();
     maybeStartWorker(engine, args.worker);
     const { serveHttp } = await import("./http/server.ts");
-    serveHttp(engine, {
+    stopServer = serveHttp(engine, {
       port: int(args.port, "--port") ?? int(process.env.PORT, "PORT") ?? 3002,
       host: args.host ?? process.env.HOST ?? "127.0.0.1",
-    });
+    }).stop;
   },
 });
 
 const mcp = defineCommand({
-  meta: { name: "mcp", description: "Run the MCP server (stdio or streamable HTTP)" },
-  args: {
-    ...serverArgs,
-    transport: { type: "enum", options: ["stdio", "http"], default: "stdio", description: "stdio | http" },
-    port: { type: "string", alias: "p", description: "HTTP port (default 3003)" },
-    host: { type: "string", description: "HTTP bind address (default 127.0.0.1)" },
-    stateless: { type: "boolean", description: "Stateless HTTP mode (no MCP sessions)" },
-  },
+  meta: { name: "mcp", description: "Run the MCP server on stdio (MCP over HTTP is served at /mcp by `sex serve`)" },
+  args: serverArgs,
   run: async ({ args }) => {
     const engine = engineOrExit(args, { allowPrivateNetwork: false });
     if (!engine) return;
@@ -292,12 +296,7 @@ const mcp = defineCommand({
     await engine.browser.warmup();
     maybeStartWorker(engine, args.worker);
     const { serveMcp } = await import("./mcp/server.ts");
-    await serveMcp(engine, {
-      transport: args.transport as "stdio" | "http",
-      port: int(args.port, "--port") ?? 3003,
-      host: args.host ?? "127.0.0.1",
-      stateless: !!args.stateless,
-    });
+    await serveMcp(engine);
   },
 });
 
@@ -308,7 +307,7 @@ const worker = defineCommand({
     const engine = engineOrExit(args, { allowPrivateNetwork: false });
     if (!engine) return;
     if (!engine.config.redisUrl) {
-      process.stderr.write("error: worker needs --redis-url (or SEX_REDIS_URL); the in-memory queue only runs inside http/mcp\n");
+      process.stderr.write("error: worker needs --redis-url (or SEX_REDIS_URL); the in-memory queue only runs inside serve/mcp\n");
       process.exit(1);
     }
     onShutdown(engine);
@@ -320,7 +319,7 @@ const worker = defineCommand({
 
 const main = defineCommand({
   meta: { name: "sex", version: VERSION, description: "Self-hosted, Firecrawl-compatible web search + fetch" },
-  subCommands: { search, fetch: fetchCmd, http, mcp, worker },
+  subCommands: { search, fetch: fetchCmd, serve, http: serve, mcp, worker },
 });
 
 runMain(main);

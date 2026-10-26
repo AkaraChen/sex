@@ -35,7 +35,7 @@ describe("observability", () => {
       webhook: { url: "http://127.0.0.1:1/hook", headers: { authorization: "Bearer t" } },
     });
 
-    const app = createApp(engine);
+    const { app } = createApp(engine);
     const res = await app.request("/v2/crawl/active");
     expect(res.status).toBe(200);
     const text = await res.text();
@@ -46,7 +46,7 @@ describe("observability", () => {
   });
 
   test("responses carry an x-request-id, echoing a valid incoming one", async () => {
-    const app = createApp(engine);
+    const { app } = createApp(engine);
 
     const generated = await app.request(`/v2/crawl/${crypto.randomUUID()}`);
     expect(generated.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
