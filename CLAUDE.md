@@ -4,7 +4,7 @@ Firecrawl v2 compatible web search (SearXNG) + fetch (Defuddle) as a CLI, HTTP A
 
 ## Layout
 
-- `src/cli.ts` — citty CLI: `search`, `fetch`, `http`, `mcp`, `worker`
+- `src/cli.ts` — citty CLI: `search`, `fetch`, `serve` (alias `http`), `worker`
 - `src/config.ts` — zod-validated config (`resolveConfig`). Precedence: CLI flag → `SEX_*` env → default. Empty values count as unset; invalid values throw `CONFIG_INVALID`. Tests pass an explicit env object instead of `process.env`.
 - `src/errors.ts` — `AppError` and helpers (`badRequest`, `unsupported`, `browserRequired`, `llmRequired`). Throw these, not plain `Error`s.
 - `src/log.ts` — leveled logger, stderr only.
@@ -14,8 +14,8 @@ Firecrawl v2 compatible web search (SearXNG) + fetch (Defuddle) as a CLI, HTTP A
 - `src/core/page-script.js` — page-side extractor, imported as text. Runs inside the browser (injected next to Defuddle's bundle) and in Node (via `new Function` on a linkedom document). Keep it a single self-contained function expression.
 - `src/core/browser.ts` — `BrowserPool`: CDP connections to a Lightpanda child process (`--lightpanda`) or an external browser (`--cdp-url`). The child is spawned lazily, spawned again after it exits, and not respawned for a cooldown after repeated failed starts (`BROWSER_UNAVAILABLE`). On Linux with `setpriv` it runs as `setpriv --pdeathsig TERM -- lightpanda serve ...` so it dies with sex even on SIGKILL (no equivalent on macOS; plain spawn otherwise), and gets `--block-private-networks` unless private networks are allowed (a second line of defence behind the `requestGuard` interception, which stays primary because `--cdp-url` browsers have no such flag).
 - `src/core/jobs/` — `JobStore` + `TaskQueue` interfaces with memory and Redis/BullMQ implementations; `src/core/tasks.ts` dispatches tasks to the crawl/batch/extract handlers. Job logic must only go through these interfaces (no in-process job state), so it works across workers.
-- `src/http/router.ts` — oRPC procedures; `src/http/server.ts` — Hono app (Host/Origin checks, CORS, `/health`, `/docs`)
-- `src/mcp/server.ts` — MCP tools (`web_*`)
+- `src/http/router.ts` — oRPC procedures; `src/http/server.ts` — Hono app (Host/Origin checks, CORS, `/health`, `/docs`, MCP over HTTP at `/mcp`)
+- `src/mcp/server.ts` — MCP tools (`web_*`) only, mounted at `/mcp` by `src/http/server.ts`; there is no stdio transport, and this module must not import from `src/http/`
 - `src/schemas.ts` — Zod schemas mirroring Firecrawl v2 (OpenAPI + MCP params)
 - `test/helpers.ts` — fixture site, mock SearXNG and mock LLM servers, `testEngine()`
 
@@ -26,7 +26,7 @@ Firecrawl v2 compatible web search (SearXNG) + fetch (Defuddle) as a CLI, HTTP A
 - The Docker image ships Lightpanda (digest-pinned by `LIGHTPANDA_IMAGE` in the Dockerfile) and compose has no browser service, but the binary being present enables nothing: `SEX_LIGHTPANDA` decides.
 - Screenshots (format and action) and the pdf action are deliberately unsupported (501), even with a browser.
 - User-supplied URLs must only be fetched through `safeFetch` / `assertPublicUrl` (or the browser with its `requestGuard`), never with a bare `fetch`.
-- Logs go to stderr only (stdout carries MCP stdio and CLI output).
+- Logs go to stderr only (stdout carries CLI output).
 - BullMQ needs `ioredis`; don't swap it for Bun's built-in Redis client.
 - There is no frontend. HTTP endpoints are oRPC procedures in `src/http/router.ts` mounted in Hono; don't add a frontend bundle or a second routing layer.
 - When settings change, update the README env table and this Layout in the same change.

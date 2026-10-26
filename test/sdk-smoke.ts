@@ -1,4 +1,4 @@
-// Manual smoke test: drives a running `sex http` server with the official Firecrawl SDK.
+// Manual smoke test: drives a running `sex serve` server with the official Firecrawl SDK.
 // Usage: bun test/sdk-smoke.ts [apiUrl]
 import Firecrawl from "@mendable/firecrawl-js";
 

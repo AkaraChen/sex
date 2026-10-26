@@ -22,6 +22,6 @@ COPY --from=lightpanda /bin/lightpanda /usr/local/bin/lightpanda
 ENV HOME=/tmp
 USER nobody
 ENV HOST=0.0.0.0
-EXPOSE 3002 3003
+EXPOSE 3002
 ENTRYPOINT ["sex"]
-CMD ["http"]
+CMD ["serve"]

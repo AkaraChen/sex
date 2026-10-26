@@ -1,10 +1,8 @@
-import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
-import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Engine } from "../core/engine.ts";
 import type { JobRecord } from "../core/jobs/index.ts";
 import { toAppError } from "../errors.ts";
-import { checkBrowserAccess } from "../http/server.ts";
 import { log } from "../log.ts";
 import { CrawlRequest, type Document, ExtractRequest, MapRequest, ScrapeRequest, SearchRequest } from "../schemas.ts";
 import { VERSION } from "../version.ts";
@@ -70,6 +68,10 @@ async function guard(fn: () => Promise<string>): Promise<ToolResult> {
 const INSTRUCTIONS =
   "Web search (SearXNG) and page fetching (Defuddle). Use web_search to find pages, web_fetch to read one page as markdown, web_map to list a site's URLs, web_crawl/web_crawl_status to collect many pages, web_extract for LLM-structured data.";
 
+/**
+ * The MCP tools (`web_*`). They are served over streamable HTTP at `/mcp` by `src/http/server.ts`; there is no stdio transport.
+ * Keep this module free of imports from `../http` so the two do not form a cycle.
+ */
 export function buildServer(engine: Engine): McpServer {
   const server = new McpServer({ name: "sex", version: VERSION }, { instructions: INSTRUCTIONS });
 
@@ -182,48 +184,4 @@ export function buildServer(engine: Engine): McpServer {
   );
 
   return server;
-}
-
-export type McpRunning = { stop: () => Promise<void> };
-
-export async function serveMcp(
-  engine: Engine,
-  opts: { transport: "stdio" | "http"; port: number; host: string; stateless: boolean },
-): Promise<McpRunning> {
-  if (opts.transport === "stdio") {
-    // Never write to stdout: it carries the stdio transport.
-    await buildServer(engine).connect(new StdioServerTransport());
-    log.info("mcp server on stdio", engine.describe());
-    return { stop: async () => {} };
-  }
-
-  if (!opts.stateless) {
-    log.info("MCP over HTTP is always stateless with SDK v2; --stateless is now the default");
-  }
-  const handler = createMcpHandler(() => buildServer(engine));
-  const srv = Bun.serve({
-    port: opts.port,
-    hostname: opts.host,
-    idleTimeout: 255,
-    fetch(req) {
-      const { pathname } = new URL(req.url);
-      if (pathname === "/mcp") {
-        const refused = checkBrowserAccess(req, {
-          bindHost: opts.host,
-          corsOrigins: engine.config.corsOrigins,
-          allowedHosts: engine.config.allowedHosts,
-        });
-        return refused ?? handler.fetch(req);
-      }
-      if (pathname === "/health") return new Response("ok");
-      return new Response("Not found", { status: 404 });
-    },
-  });
-  log.info("mcp server listening", { url: `http://${opts.host}:${opts.port}/mcp`, ...engine.describe() });
-  return {
-    stop: async () => {
-      await handler.close();
-      srv.stop(true);
-    },
-  };
 }
