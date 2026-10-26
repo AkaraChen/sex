@@ -1,3 +1,4 @@
+import { createMcpHandler } from "@modelcontextprotocol/server";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { OpenAPIReferencePlugin } from "@orpc/openapi/plugins";
 import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
@@ -5,6 +6,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Engine } from "../core/engine.ts";
 import { log } from "../log.ts";
+import { buildServer } from "../mcp/server.ts";
 import { VERSION } from "../version.ts";
 import { router } from "./router.ts";
 
@@ -91,7 +93,11 @@ export function checkBrowserAccess(
   return undefined;
 }
 
-export function createApp(engine: Engine, opts: { bindHost?: string } = {}): Hono {
+/**
+ * The Hono app for the REST API (oRPC) and MCP over streamable HTTP at `/mcp`, both behind the same Host/Origin checks and CORS.
+ * `close` aborts in-flight MCP exchanges; call it on shutdown.
+ */
+export function createApp(engine: Engine, opts: { bindHost?: string } = {}): { app: Hono; close: () => Promise<void> } {
   const handler = new OpenAPIHandler(router, {
     customErrorResponseBodyEncoder: encodeError,
     plugins: [
@@ -112,6 +118,8 @@ export function createApp(engine: Engine, opts: { bindHost?: string } = {}): Hon
     ],
   });
 
+  const mcp = createMcpHandler(() => buildServer(engine));
+
   const app = new Hono();
   const { corsOrigins, allowedHosts } = engine.config;
   app.use("*", async (c, next) => {
@@ -127,6 +135,8 @@ export function createApp(engine: Engine, opts: { bindHost?: string } = {}): Hon
   }
   app.get("/", (c) => c.redirect("/docs"));
   app.get("/health", (c) => c.json({ status: "ok", version: VERSION, ...engine.describe() }));
+  // Registered before the oRPC middleware below, so the router never sees (or reads the body of) MCP requests.
+  app.all("/mcp", (c) => mcp.fetch(c.req.raw));
   app.use("*", async (c, next) => {
     const proto = c.req.header("x-forwarded-proto") ?? new URL(c.req.url).protocol.replace(":", "");
     const host = c.req.header("x-forwarded-host") ?? c.req.header("host") ?? new URL(c.req.url).host;
@@ -148,11 +158,11 @@ export function createApp(engine: Engine, opts: { bindHost?: string } = {}): Hon
     await next();
   });
   app.notFound((c) => c.json({ success: false, code: "NOT_FOUND", error: `No route for ${c.req.method} ${c.req.path}` }, 404));
-  return app;
+  return { app, close: mcp.close };
 }
 
 export function serveHttp(engine: Engine, opts: { port: number; host: string }) {
-  const app = createApp(engine, { bindHost: opts.host });
+  const { app, close } = createApp(engine, { bindHost: opts.host });
   const server = Bun.serve({
     port: opts.port,
     hostname: opts.host,
@@ -160,10 +170,14 @@ export function serveHttp(engine: Engine, opts: { port: number; host: string }) 
     // Scrapes, searches with scrapeOptions and maps can legitimately take minutes.
     idleTimeout: 255,
   });
-  log.info("http server listening", {
-    url: `http://${opts.host}:${server.port}`,
-    docs: `http://${opts.host}:${server.port}/docs`,
-    ...engine.describe(),
-  });
-  return server;
+  const url = `http://${opts.host}:${server.port}`;
+  log.info("http server listening", { url, docs: `${url}/docs`, mcp: `${url}/mcp`, ...engine.describe() });
+  return {
+    server,
+    /** Aborts in-flight MCP exchanges, then closes the listener and its open connections. */
+    stop: async () => {
+      await close();
+      await server.stop(true);
+    },
+  };
 }

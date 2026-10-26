@@ -4,8 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { resolveConfig } from "../src/config.ts";
 import type { Engine } from "../src/core/engine.ts";
 import { AppError } from "../src/errors.ts";
-import { createApp } from "../src/http/server.ts";
-import { type McpRunning, serveMcp } from "../src/mcp/server.ts";
+import { createApp, serveHttp } from "../src/http/server.ts";
 import { testEngine } from "./helpers.ts";
 
 const engines: Engine[] = [];
@@ -18,6 +17,14 @@ const make = (overrides: Parameters<typeof testEngine>[0] = {}) => {
 afterAll(async () => {
   await Promise.all(engines.map((e) => e.close()));
 });
+
+/** A JSON-RPC `tools/list` POST to /mcp, as a bare request for `app.fetch`. */
+const mcpRequest = (url: string, headers: Record<string, string>) =>
+  new Request(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
 
 describe("config", () => {
   test("CORS and Host allowlists default to empty", () => {
@@ -46,7 +53,7 @@ describe("config", () => {
 });
 
 describe("http origin and host checks", () => {
-  const app = createApp(make());
+  const { app } = createApp(make());
 
   test("a cross-site Origin is refused", async () => {
     const res = await app.fetch(new Request("http://sex.test/v2/crawl/x", { headers: { origin: "https://evil.example" } }));
@@ -68,7 +75,7 @@ describe("http origin and host checks", () => {
 });
 
 describe("http cors allowlist", () => {
-  const app = createApp(make({ corsOrigins: "https://app.example" }));
+  const { app } = createApp(make({ corsOrigins: "https://app.example" }));
 
   test("preflight from an allowed origin gets that origin back", async () => {
     const res = await app.fetch(
@@ -90,10 +97,17 @@ describe("http cors allowlist", () => {
     expect(res.status).toBe(403);
     expect(res.headers.get("access-control-allow-origin")).toBeNull();
   });
+
+  test("an allowed origin reaches /mcp and gets the CORS headers", async () => {
+    const res = await app.fetch(mcpRequest("http://sex.test/mcp", { origin: "https://app.example" }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://app.example");
+    await res.text();
+  });
 });
 
 describe("http host checks", () => {
-  const app = createApp(make(), { bindHost: "127.0.0.1" });
+  const { app } = createApp(make(), { bindHost: "127.0.0.1" });
 
   test("a foreign Host is refused when bound to loopback", async () => {
     const res = await app.fetch(new Request("http://127.0.0.1:3002/v2/crawl/x", { headers: { host: "attacker.example" } }));
@@ -106,8 +120,14 @@ describe("http host checks", () => {
     expect(res.status).toBe(404);
   });
 
+  test("/mcp gets the same Host check", async () => {
+    const res = await app.fetch(mcpRequest("http://127.0.0.1:3002/mcp", { host: "attacker.example" }));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ success: false, code: "HOST_NOT_ALLOWED" });
+  });
+
   test("allowedHosts replaces the loopback default", async () => {
-    const custom = createApp(make({ allowedHosts: "sex.example.com" }), { bindHost: "127.0.0.1" });
+    const { app: custom } = createApp(make({ allowedHosts: "sex.example.com" }), { bindHost: "127.0.0.1" });
     const ok = await custom.fetch(new Request("http://sex.example.com/v2/crawl/x", { headers: { host: "sex.example.com" } }));
     expect(ok.status).toBe(404);
     const bad = await custom.fetch(new Request("http://localhost:3002/v2/crawl/x", { headers: { host: "localhost:3002" } }));
@@ -117,12 +137,12 @@ describe("http host checks", () => {
 });
 
 describe("mcp origin check", () => {
-  let server: McpRunning;
+  let server: ReturnType<typeof serveHttp>;
   let port: number;
 
-  beforeAll(async () => {
-    port = 42000 + Math.floor(Math.random() * 1000);
-    server = await serveMcp(make(), { transport: "http", port, host: "127.0.0.1", stateless: true });
+  beforeAll(() => {
+    server = serveHttp(make(), { port: 0, host: "127.0.0.1" });
+    port = server.server.port!;
   });
 
   afterAll(async () => {

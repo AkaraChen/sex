@@ -14,7 +14,7 @@ afterAll(async () => {
 });
 
 const post = async (path: string, body: unknown) => {
-  const app = createApp(engine);
+  const { app } = createApp(engine);
   const res = await app.fetch(
     new Request(`http://sex.test${path}`, {
       method: "POST",

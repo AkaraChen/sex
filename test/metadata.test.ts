@@ -48,7 +48,7 @@ afterAll(async () => {
 
 describe("metadata arrays", () => {
   const call = async (method: string, path: string, reqBody?: unknown) => {
-    const app = createApp(engine);
+    const { app } = createApp(engine);
     const res = await app.fetch(
       new Request(`http://sex.test${path}`, {
         method,

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { type McpRunning, serveMcp } from "../src/mcp/server.ts";
+import { serveHttp } from "../src/http/server.ts";
 import { testEngine } from "./helpers.ts";
 
 type ToolText = { content: Array<{ type: string; text: string }> };
@@ -54,17 +54,16 @@ function startBigSite() {
 describe("mcp output limits", () => {
   let links: ReturnType<typeof startLinkSite>;
   let big: ReturnType<typeof startBigSite>;
-  let server: McpRunning;
+  let server: ReturnType<typeof serveHttp>;
   let client: Client;
 
   beforeAll(async () => {
     links = startLinkSite();
     big = startBigSite();
     const engine = testEngine();
-    const port = 42000 + Math.floor(Math.random() * 1000);
-    server = await serveMcp(engine, { transport: "http", port, host: "127.0.0.1", stateless: false });
+    server = serveHttp(engine, { port: 0, host: "127.0.0.1" });
     client = new Client({ name: "test", version: "1.0.0" });
-    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.server.port}/mcp`)));
   });
 
   afterAll(async () => {
