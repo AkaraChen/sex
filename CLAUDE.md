@@ -12,6 +12,7 @@ Firecrawl v2 compatible web search (SearXNG) + fetch (Defuddle) as a CLI, HTTP A
 - `src/core/net.ts` — SSRF guard: `isPrivateIp` / `resolvePublicAddresses` / `assertPublicUrl` (ipaddr.js). `safeFetch` re-checks every redirect hop and connects to the DNS-validated IP (`pinToAddress`) so a second lookup cannot rebind.
 - `src/core/extract-pool.ts` + `src/core/extract-worker.ts` — HTML/PDF extraction in a worker-thread pool (`SEX_EXTRACT_WORKERS`, 0 = main thread). `bun run build` embeds the worker as an extra entrypoint.
 - `src/core/page-script.js` — page-side extractor, imported as text. Runs inside the browser (injected next to Defuddle's bundle) and in Node (via `new Function` on a linkedom document). Keep it a single self-contained function expression.
+- `src/core/browser.ts` — `BrowserPool`: CDP connections to a Lightpanda child process (`--lightpanda`) or an external browser (`--cdp-url`). The child is spawned lazily, spawned again after it exits, and not respawned for a cooldown after repeated failed starts (`BROWSER_UNAVAILABLE`). On Linux with `setpriv` it runs as `setpriv --pdeathsig TERM -- lightpanda serve ...` so it dies with sex even on SIGKILL (no equivalent on macOS; plain spawn otherwise), and gets `--block-private-networks` unless private networks are allowed (a second line of defence behind the `requestGuard` interception, which stays primary because `--cdp-url` browsers have no such flag).
 - `src/core/jobs/` — `JobStore` + `TaskQueue` interfaces with memory and Redis/BullMQ implementations; `src/core/tasks.ts` dispatches tasks to the crawl/batch/extract handlers. Job logic must only go through these interfaces (no in-process job state), so it works across workers.
 - `src/http/router.ts` — oRPC procedures; `src/http/server.ts` — Hono app (Host/Origin checks, CORS, `/health`, `/docs`, MCP over HTTP at `/mcp`)
 - `src/mcp/server.ts` — MCP tools (`web_*`) only, mounted at `/mcp` by `src/http/server.ts`; there is no stdio transport, and this module must not import from `src/http/`
@@ -22,6 +23,7 @@ Firecrawl v2 compatible web search (SearXNG) + fetch (Defuddle) as a CLI, HTTP A
 
 - Never pass JS *functions* to `page.evaluate`: Bun's bundler can rename globals like `document` inside them. Pass strings.
 - Browser and LLM are optional; features needing them must fail with `browserRequired()` / `llmRequired()` (501).
+- The Docker image ships Lightpanda (digest-pinned by `LIGHTPANDA_IMAGE` in the Dockerfile) and compose has no browser service, but the binary being present enables nothing: `SEX_LIGHTPANDA` decides.
 - Screenshots (format and action) and the pdf action are deliberately unsupported (501), even with a browser.
 - User-supplied URLs must only be fetched through `safeFetch` / `assertPublicUrl` (or the browser with its `requestGuard`), never with a bare `fetch`.
 - Logs go to stderr only (stdout carries CLI output).
@@ -35,5 +37,5 @@ Firecrawl v2 compatible web search (SearXNG) + fetch (Defuddle) as a CLI, HTTP A
 - `bun install`
 - `bun run verify` — `bun check && bun run lint && bun test`
 - `bun run format` — Biome write
-- Opt-in suites: `SEX_TEST_REDIS_URL=redis://127.0.0.1:6379 bun test` (job store/queue on Redis) and `SEX_TEST_CDP_URL=http://127.0.0.1:9222` (browser tests)
+- Opt-in suites: `SEX_TEST_REDIS_URL=redis://127.0.0.1:6379 bun test` (job store/queue on Redis), `SEX_TEST_CDP_URL=http://127.0.0.1:9222` (browser tests against a running CDP browser) and `SEX_TEST_LIGHTPANDA_PATH=/path/to/lightpanda` (the same browser tests through the spawn path, plus child process lifecycle tests; `bun test test/browser.test.ts`)
 - `bun run build` — single binary at `dist/sex`

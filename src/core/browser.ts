@@ -15,6 +15,13 @@ import { PAGE_SCRIPT, type PageExtractOptions, type PageExtractResult } from "./
 const MOBILE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
 
+/** How long a freshly spawned Lightpanda gets to answer on its CDP port. */
+const STARTUP_TIMEOUT_MS = 15_000;
+/** This many failed starts within START_FAILURE_WINDOW_MS stop further spawn attempts for START_COOLDOWN_MS. */
+const START_FAILURE_LIMIT = 3;
+const START_FAILURE_WINDOW_MS = 60_000;
+const START_COOLDOWN_MS = 30_000;
+
 export interface BrowserScrapeOptions {
   url: string;
   timeout: number;
@@ -77,14 +84,64 @@ function findLightpanda(explicit?: string): string {
   return found;
 }
 
+/**
+ * Command prefix that makes the kernel send the child SIGTERM when sex dies, even on SIGKILL (`setpriv` from util-linux >= 2.33
+ * sets PR_SET_PDEATHSIG and then execs, so the child keeps the spawned PID). Linux only: macOS has no such mechanism, and a
+ * Linux host without `setpriv` falls back to a plain spawn, which leaves the child orphaned if sex is SIGKILLed.
+ * The kernel ties the signal to the thread that spawned the child, so spawn from the main thread, not from a worker.
+ */
+export function pdeathsigWrapper(): string[] | undefined {
+  if (process.platform !== "linux") return undefined;
+  const setpriv = Bun.which("setpriv");
+  return setpriv ? [setpriv, "--pdeathsig", "TERM", "--"] : undefined;
+}
+
+/** The `lightpanda serve` command line for this config, optionally behind a wrapper such as `pdeathsigWrapper()`. */
+export function lightpandaArgv(
+  bin: string,
+  port: number,
+  config: Pick<Config, "concurrency" | "allowPrivateNetwork">,
+  wrapper: string[] = [],
+): string[] {
+  return [
+    ...wrapper,
+    bin,
+    "serve",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    "--log-level",
+    "warn",
+    "--cdp-max-connections",
+    String(Math.max(16, config.concurrency * 2)),
+    "--cdp-max-message-size",
+    String(64 * 1024 * 1024),
+    // Second line of defence: Lightpanda refuses private addresses after DNS resolution. The request interception in
+    // scrapeInner stays the primary guard, because an external --cdp-url browser has no such flag.
+    ...(config.allowPrivateNetwork ? [] : ["--block-private-networks"]),
+  ];
+}
+
+const startFailed = (reason: string) => new AppError(502, "BROWSER_UNAVAILABLE", `Lightpanda did not start: ${reason}`);
+
 /** Hands out short-lived CDP connections to a Lightpanda child process or an external browser. */
 export class BrowserPool {
   private proc?: Subprocess;
   private endpoint?: Promise<string>;
   private readonly limit: ReturnType<typeof pLimit>;
+  /** Timestamps of recent failed Lightpanda starts, and the end of the resulting spawn pause. */
+  private startFailures: number[] = [];
+  private cooldownUntil = 0;
+  private lastStartError = "";
 
   constructor(private readonly config: Config) {
     this.limit = pLimit(config.concurrency);
+  }
+
+  /** PID of the Lightpanda child process, while there is one. */
+  get pid(): number | undefined {
+    return this.proc?.pid;
   }
 
   get enabled(): boolean {
@@ -114,45 +171,78 @@ export class BrowserPool {
     return this.spawnLightpanda();
   }
 
+  /**
+   * Spawns the child on demand; it is spawned again after it exits. A binary that keeps failing to start is not retried in a
+   * tight loop: after START_FAILURE_LIMIT failed starts within START_FAILURE_WINDOW_MS, spawning pauses for START_COOLDOWN_MS.
+   */
   private async spawnLightpanda(): Promise<string> {
+    const now = Date.now();
+    if (now < this.cooldownUntil) {
+      throw new AppError(
+        502,
+        "BROWSER_UNAVAILABLE",
+        `Not starting Lightpanda for another ${Math.ceil((this.cooldownUntil - now) / 1000)}s after ${START_FAILURE_LIMIT} failed starts. Last error: ${this.lastStartError}`,
+      );
+    }
     const bin = findLightpanda(this.config.lightpandaPath);
+    try {
+      const endpoint = await this.startLightpanda(bin);
+      this.startFailures = [];
+      return endpoint;
+    } catch (err) {
+      const failure = err instanceof AppError ? err : startFailed(err instanceof Error ? err.message : String(err));
+      this.recordStartFailure(failure.message);
+      throw failure;
+    }
+  }
+
+  private recordStartFailure(message: string): void {
+    const now = Date.now();
+    this.lastStartError = message;
+    this.startFailures = [...this.startFailures.filter((t) => now - t < START_FAILURE_WINDOW_MS), now];
+    if (this.startFailures.length < START_FAILURE_LIMIT) return;
+    this.startFailures = [];
+    this.cooldownUntil = now + START_COOLDOWN_MS;
+    log.error("lightpanda keeps failing to start; pausing restarts", {
+      failures: START_FAILURE_LIMIT,
+      pauseMs: START_COOLDOWN_MS,
+      error: message,
+    });
+  }
+
+  private async startLightpanda(bin: string): Promise<string> {
     const port = await freePort();
-    const proc = Bun.spawn(
-      [
-        bin,
-        "serve",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        String(port),
-        "--log-level",
-        "warn",
-        "--cdp-max-connections",
-        String(Math.max(16, this.config.concurrency * 2)),
-        "--cdp-max-message-size",
-        String(64 * 1024 * 1024),
-      ],
-      {
+    const wrapper = pdeathsigWrapper();
+    const argv = lightpandaArgv(bin, port, this.config, wrapper);
+    log.debug("spawning lightpanda", { argv });
+    let proc: Subprocess;
+    try {
+      proc = Bun.spawn(argv, {
         stdout: "ignore",
         stderr: "inherit",
         env: { ...process.env, LIGHTPANDA_DISABLE_TELEMETRY: "true" },
-      },
-    );
+      });
+    } catch (err) {
+      throw startFailed(`cannot execute ${bin}: ${err instanceof Error ? err.message : String(err)}`);
+    }
     this.proc = proc;
     proc.exited.then((code) => {
       if (this.proc === proc) {
-        log.warn("lightpanda exited", { code });
+        log.warn("lightpanda exited", { code, signal: proc.signalCode });
         this.proc = undefined;
         this.endpoint = undefined;
       }
     });
     const endpoint = `ws://127.0.0.1:${port}`;
-    const deadline = Date.now() + 15_000;
+    const deadline = Date.now() + STARTUP_TIMEOUT_MS;
     while (Date.now() < deadline) {
+      if (proc.exitCode !== null || proc.signalCode !== null) {
+        throw startFailed(`exited with ${proc.signalCode ? `signal ${proc.signalCode}` : `code ${proc.exitCode}`}`);
+      }
       try {
-        const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+        const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(2_000) });
         if (res.ok) {
-          log.info("lightpanda started", { bin, endpoint });
+          log.info("lightpanda started", { bin, endpoint, spawn: wrapper ? "setpriv" : "direct" });
           return endpoint;
         }
       } catch {
@@ -160,16 +250,18 @@ export class BrowserPool {
       }
       await Bun.sleep(100);
     }
-    proc.kill();
-    throw new Error("Lightpanda did not start within 15s");
+    proc.kill("SIGKILL");
+    throw startFailed(`no answer on ${endpoint} within ${STARTUP_TIMEOUT_MS / 1000}s`);
   }
 
   private getEndpoint(): Promise<string> {
     if (!this.endpoint) {
-      this.endpoint = this.resolveEndpoint().catch((err) => {
-        this.endpoint = undefined;
+      const attempt: Promise<string> = this.resolveEndpoint().catch((err) => {
+        // The exit handler may already have started a newer attempt; only clear our own.
+        if (this.endpoint === attempt) this.endpoint = undefined;
         throw err;
       });
+      this.endpoint = attempt;
     }
     return this.endpoint;
   }

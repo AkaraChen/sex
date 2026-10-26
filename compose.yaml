@@ -1,4 +1,4 @@
-# SearXNG + Lightpanda + Redis + sex (HTTP API on :3002, MCP over HTTP at :3002/mcp).
+# SearXNG + Redis + sex (HTTP API on :3002, MCP over HTTP at :3002/mcp; Lightpanda runs inside each sex container).
 # Crawl/batch/extract jobs run on BullMQ in Redis; every sex process is also a worker.
 # Scale workers with: docker compose up -d --scale sex-worker=4
 # LLM features: set SEX_LLM_MODEL (and SEX_LLM_BASE_URL / SEX_LLM_API_KEY) in .env.
@@ -6,10 +6,11 @@ x-sex: &sex
   build: .
   image: sex:latest
   restart: unless-stopped
-  depends_on: [searxng, lightpanda, redis]
+  depends_on: [searxng, redis]
   environment:
     SEX_SEARXNG_URL: http://searxng:8080
-    SEX_CDP_URL: ws://lightpanda:9222
+    # The image ships Lightpanda; every sex process runs its own as a child process, so there is no browser service.
+    SEX_LIGHTPANDA: "1"
     SEX_REDIS_URL: redis://redis:6379
     SEX_LLM_MODEL: ${SEX_LLM_MODEL:-}
     SEX_LLM_BASE_URL: ${SEX_LLM_BASE_URL:-}
@@ -31,7 +32,7 @@ services:
     ports: ["127.0.0.1:${REDIS_PORT:-6379}:6379"]
     volumes: [redis-data:/data]
 
-  # Pin to a tested tag or digest in production (set SEARXNG_IMAGE / LIGHTPANDA_IMAGE).
+  # Pin to a tested tag or digest in production (set SEARXNG_IMAGE).
   searxng:
     image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
     restart: unless-stopped
@@ -40,30 +41,6 @@ services:
       - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:
       SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me}
-
-  # Pin to a tested tag or digest in production (set SEARXNG_IMAGE / LIGHTPANDA_IMAGE).
-  lightpanda:
-    image: ${LIGHTPANDA_IMAGE:-lightpanda/browser:nightly}
-    restart: unless-stopped
-    environment:
-      LIGHTPANDA_DISABLE_TELEMETRY: "true"
-    # --advertise-host lets other containers connect with Host: lightpanda. The CDP limits default to 16 connections and
-    # 1 MB messages; three sex services at concurrency 8 and pages up to 25 MB need more.
-    command:
-      - /bin/lightpanda
-      - serve
-      - --host
-      - 0.0.0.0
-      - --port
-      - "9222"
-      - --advertise-host
-      - lightpanda
-      - --log-level
-      - warn
-      - --cdp-max-connections
-      - "64"
-      - --cdp-max-message-size
-      - "67108864"
 
 volumes:
   redis-data:
