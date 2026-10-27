@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { resolveConfig } from "../src/config.ts";
 import { Engine } from "../src/core/engine.ts";
-import { MemoryTaskQueue } from "../src/core/jobs/memory.ts";
+import { BunqueueTaskQueue } from "../src/core/jobs/queue.ts";
 import type { Task } from "../src/core/jobs/types.ts";
 
-describe("memory queue long delays", () => {
+describe("task queue delays", () => {
   test("a delay beyond the 2^31-1 ms timer limit does not fire immediately", async () => {
-    const queue = new MemoryTaskQueue(1);
+    const queue = new BunqueueTaskQueue(":memory:", 1);
     const ran: Task[] = [];
     queue.startWorker(async (t) => {
       ran.push(t);
@@ -18,7 +18,7 @@ describe("memory queue long delays", () => {
   });
 
   test("a short delay still fires on time", async () => {
-    const queue = new MemoryTaskQueue(1);
+    const queue = new BunqueueTaskQueue(":memory:", 1);
     const ran: Task[] = [];
     queue.startWorker(async (t) => {
       ran.push(t);

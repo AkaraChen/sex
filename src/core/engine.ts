@@ -45,19 +45,13 @@ export class Engine {
 
   private backend?: JobBackend;
 
-  /** Job store + task queue, created on first use (one-shot CLI commands never touch Redis). */
+  /** Job store + task queue, created on first use (one-shot CLI commands never open the database). Tasks run in this process. */
   get jobs(): JobBackend {
     if (!this.backend) {
       this.backend = createJobBackend(this.config);
-      // The in-memory queue only exists in this process, so it always needs a local worker.
-      if (this.backend.kind === "memory") this.startWorker();
+      this.backend.queue.startWorker((task) => runTask(this, task));
     }
     return this.backend;
-  }
-
-  /** Consume queued crawl/batch/extract tasks in this process. */
-  startWorker(): void {
-    this.jobs.queue.startWorker((task) => runTask(this, task));
   }
 
   async getJob(id: string, kind: JobKind): Promise<JobRecord> {
@@ -108,7 +102,7 @@ export class Engine {
       browser: this.browser.enabled ? (this.config.cdpUrl ?? "lightpanda") : "off (Defuddle/linkedom)",
       llm: this.config.llm ? `${this.config.llm.model} @ ${this.config.llm.baseUrl}` : "off",
       docs: this.docs.enabled ? "here-docs (structured PDF/office, OCR)" : "off (unpdf text only)",
-      jobs: this.config.redisUrl ? "redis (bullmq)" : "memory",
+      jobs: this.config.dataDir ? `sqlite (${this.config.dataDir})` : "memory",
     };
   }
 

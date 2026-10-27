@@ -124,7 +124,16 @@ describe("settlement", () => {
   });
 
   test("a page task whose store.get throws still settles, so the job completes", async () => {
-    const { store } = engine.jobs;
+    const { store, queue } = engine.jobs;
+    // Hold the task back from the queue and run it here, so the injected failure hits the task, not a status poll.
+    const held: Task[] = [];
+    const realAdd = queue.add.bind(queue);
+    queue.add = async (tasks) => {
+      held.push(...tasks.map((t) => t.task));
+    };
+    const { job } = await engine.batchScrape({ urls: [`${site.url}/page`] }).finally(() => {
+      queue.add = realAdd;
+    });
     const realGet = store.get.bind(store);
     let failures = 1;
     store.get = async (id: string) => {
@@ -135,14 +144,14 @@ describe("settlement", () => {
       return realGet(id);
     };
     try {
-      const { job } = await engine.batchScrape({ urls: [`${site.url}/page`] });
-      const done = await finished(engine, job.id);
-      expect(failures).toBe(0);
-      expect(done.status).toBe("completed");
-      expect(done.pending).toBe(0);
+      await expect(runTask(engine, held[0] as Task)).rejects.toThrow("transient store failure");
     } finally {
       store.get = realGet;
     }
+    expect(failures).toBe(0);
+    const done = await finished(engine, job.id);
+    expect(done.status).toBe("completed");
+    expect(done.pending).toBe(0);
   });
 
   test("a failed enqueue rolls back pending and rethrows", async () => {

@@ -6,11 +6,11 @@
   "scripts": {
     "dev": "bun src/cli.ts",
     "typecheck": "bun check",
-    "lint": "biome check src test",
-    "format": "biome check --write src test",
+    "lint": "biome check src test scripts",
+    "format": "biome check --write src test scripts",
     "test": "bun test",
     "verify": "bun check && bun run lint && bun test",
-    "build": "bun build --compile --minify --external here-docs src/cli.ts src/core/extract-worker.ts --outfile dist/sex"
+    "build": "bun scripts/build.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.3",
@@ -27,12 +27,11 @@
     "@orpc/server": "^1.16.1",
     "@orpc/zod": "^1.16.1",
     "ajv": "^8.20.0",
-    "bullmq": "^6.4.2",
+    "bunqueue": "2.9.20",
     "citty": "^0.2.2",
     "defuddle": "^0.19.6",
     "here-docs": "github:AkaraChen/here-docs#40febc7",
     "hono": "^4.13.14",
-    "ioredis": "^6.0.0",
     "ipaddr.js": "^2",
     "linkedom": "^0.18.14",
     "p-limit": "^7.3.3",

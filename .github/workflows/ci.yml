@@ -17,22 +17,25 @@ jobs:
       - run: bun run lint
       - run: bun test
 
-  redis:
+  binary:
     runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
-      - run: bun test test/jobs.test.ts
-        env:
-          SEX_TEST_REDIS_URL: redis://localhost:6379
+      - run: bun run build
+      - name: The binary converts documents on its own (here-docs embedded, nothing beside it)
+        run: |
+          mkdir "$RUNNER_TEMP/alone" && cp dist/sex "$RUNNER_TEMP/alone/"
+          (cd test/fixtures && python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          sleep 1
+          cd "$RUNNER_TEMP/alone"
+          export XDG_CACHE_HOME="$RUNNER_TEMP/cache"
+          ./sex fetch http://127.0.0.1:8765/report.docx --docs | tee out.md
+          grep -q "| EMEA | 42 |" out.md
+          ./sex fetch http://127.0.0.1:8765/scan.pdf --docs | grep -q "Scanned invoice 4711"
 
   browser:
     runs-on: ubuntu-latest

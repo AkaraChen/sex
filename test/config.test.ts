@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { resolveConfig } from "../src/config.ts";
+import { defaultDataDir, resolveConfig } from "../src/config.ts";
 import { testEngine } from "./helpers.ts";
 
 test("resolveConfig reads from an explicit env object", () => {
@@ -24,7 +24,22 @@ test("test engines ignore the process environment", async () => {
 });
 
 test("overrides win over the env object", () => {
-  expect(resolveConfig({ redisPrefix: "x" }, undefined, { SEX_REDIS_PREFIX: "y" }).redisPrefix).toBe("x");
+  expect(resolveConfig({ dataDir: "/x" }, undefined, { SEX_DATA_DIR: "/y" }).dataDir).toBe("/x");
+});
+
+test("SEX_DATA_DIR falls back to the per-command default; none keeps jobs in memory", () => {
+  expect(resolveConfig({}, { allowPrivateNetwork: false, dataDir: "/d" }, {}).dataDir).toBe("/d");
+  expect(resolveConfig({}, undefined, { SEX_DATA_DIR: "/e" }).dataDir).toBe("/e");
+  expect(resolveConfig({}, undefined, {}).dataDir).toBeUndefined();
+  expect(defaultDataDir({ XDG_DATA_HOME: "/xdg" })).toBe("/xdg/sex");
+});
+
+test("the removed Redis settings are rejected instead of silently ignored", () => {
+  for (const name of ["SEX_REDIS_URL", "SEX_REDIS_PREFIX"]) {
+    const err = configError(() => resolveConfig({}, undefined, { [name]: "redis://localhost:6379" }));
+    expect(err.code).toBe("CONFIG_INVALID");
+    expect(err.message).toContain(name);
+  }
 });
 
 const configError = (fn: () => unknown): { code: string; message: string } => {

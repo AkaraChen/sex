@@ -1,5 +1,4 @@
 // Batch bookkeeping: a failed enqueue never strands a job in "scraping", and a redelivered page task counts once.
-// The Redis variant runs when SEX_TEST_REDIS_URL is set.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Engine } from "../src/core/engine.ts";
 import type { Task } from "../src/core/jobs/index.ts";
@@ -8,11 +7,8 @@ import { testEngine, waitFor } from "./helpers.ts";
 
 const body = Array.from({ length: 4 }, (_, i) => `<p>Paragraph ${i + 1}. ${"Lorem ipsum dolor sit amet. ".repeat(8)}</p>`).join("");
 
-const backends: Array<[string, string | undefined]> = [["memory", undefined]];
-if (process.env.SEX_TEST_REDIS_URL) backends.push(["redis", process.env.SEX_TEST_REDIS_URL]);
-
-for (const [name, redisUrl] of backends) {
-  describe(`batch rollback and idempotence (${name})`, () => {
+{
+  describe("batch rollback and idempotence", () => {
     let site: ReturnType<typeof Bun.serve>;
     let engine: Engine;
     const url = () => `http://127.0.0.1:${site.port}/page`;
@@ -29,8 +25,7 @@ for (const [name, redisUrl] of backends) {
             },
           ),
       });
-      engine = testEngine({ redisUrl, redisPrefix: `sex-test-rollback-${Date.now()}` });
-      if (redisUrl) engine.startWorker();
+      engine = testEngine();
     });
 
     afterAll(async () => {

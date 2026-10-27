@@ -43,7 +43,7 @@ export type CounterName = keyof JobCounters;
 export type JobRecord = JobMeta & JobCounters;
 export type JobPatch = Partial<Pick<JobMeta, "error" | "result" | "sources">>;
 
-/** Where job state lives: process memory or Redis. All methods are safe to call from many workers. */
+/** Where job state lives (SQLite, see sqlite.ts). Methods are called concurrently by tasks, so each must be atomic on its own. */
 export interface JobStore {
   create(init: Pick<JobMeta, "kind" | "url" | "options">): Promise<JobRecord>;
   get(id: string): Promise<JobRecord | undefined>;
