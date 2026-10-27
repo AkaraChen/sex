@@ -79,6 +79,13 @@ describe("http", () => {
     expect(status.data).toHaveLength(3);
     const skipped = await call("GET", `/v2/crawl/${id}?skip=2`);
     expect(skipped.body.data).toHaveLength(1);
+    // The status body is assembled from the stored JSON, not serialised by oRPC.
+    const raw = await createApp(engine).app.fetch(new Request(`http://sex.test/v2/crawl/${id}`));
+    const text = await raw.text();
+    expect(raw.headers.get("content-type")).toBe("application/json");
+    expect(raw.headers.get("content-length")).toBe(String(Buffer.byteLength(text)));
+    expect(raw.headers.get("content-disposition")).toBeNull();
+    expect(JSON.parse(text)).toEqual(status);
     const errors = await call("GET", `/v2/crawl/${id}/errors`);
     expect(errors.body.robotsBlocked).toEqual([`${site.url}/private/x`]);
     const cancel = await call("DELETE", `/v2/crawl/${id}`);
@@ -87,9 +94,15 @@ describe("http", () => {
 
   test("OpenAPI spec and docs", async () => {
     const { app } = createApp(engine);
-    const spec = (await (await app.fetch(new Request("http://sex.test/openapi.json"))).json()) as { paths: Record<string, unknown> };
+    const spec = (await (await app.fetch(new Request("http://sex.test/openapi.json"))).json()) as { paths: Record<string, any> };
     expect(Object.keys(spec.paths)).toContain("/v2/scrape");
     expect(Object.keys(spec.paths)).toContain("/v2/crawl/{id}");
+    // Status bodies are sent pre-serialised, but are still documented as JobStatusResponse.
+    for (const path of ["/v2/crawl/{id}", "/v2/batch/scrape/{id}"]) {
+      const schema = spec.paths[path].get.responses["200"].content["application/json"].schema;
+      expect(schema).toMatchObject({ type: "object", properties: { status: {}, next: {}, data: { type: "array" } } });
+      expect(schema.required).toContain("data");
+    }
     const docs = await app.fetch(new Request("http://sex.test/docs"));
     expect(await docs.text()).toContain("scalar");
   });
