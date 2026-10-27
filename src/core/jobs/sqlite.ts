@@ -114,6 +114,16 @@ interface DocIndexRow {
   chars: number;
 }
 
+/**
+ * Whether stored bytes look like one whole JSON object (`{`, then `}` before any trailing whitespace). A cheap guard
+ * so bytes that no longer match the index (a file changed behind sex's back) never reach a response as broken JSON.
+ */
+function isJsonObject(bytes: Uint8Array): boolean {
+  let end = bytes.length - 1;
+  while (end > 0 && (bytes[end] === 0x0a || bytes[end] === 0x0d || bytes[end] === 0x20 || bytes[end] === 0x09)) end--;
+  return bytes[0] === 0x7b && bytes[end] === 0x7d;
+}
+
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /**
@@ -126,8 +136,10 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
  * byte length of each, plus its length in UTF-16 code units, which is what the page budget counts. A document is
  * appended first and indexed after, and its seq is assigned only then, so documents become visible in seq order
  * without holes that fill in later. A crash in between leaves bytes without an index row; they are cut off (JSONL)
- * or dropped with their job. Index rows whose bytes are gone (an OS crash lost the end of a file, or an object is
- * missing) are dropped on open (JSONL) or when a read comes up short.
+ * or dropped with their job. Index rows past the end of a JSONL file (an OS crash lost its tail) are dropped on open.
+ * Reads never change the index: a document whose bytes are missing or damaged is left out of the page with a
+ * warning, because on S3 that can be transient or a configuration problem (wrong bucket, permissions, lifecycle
+ * rules) rather than lost data.
  *
  * Documents are only ever deleted by job id, for jobs this store deleted: the sweep leaves a tombstone in
  * `dropped_jobs` in the same transaction that deletes the job, and removes it once `drop` succeeded, so a crash or a
@@ -344,21 +356,17 @@ export class SqliteJobStore implements JobStore {
     const limit = pLimit(READ_CONCURRENCY);
     const bytes = await Promise.all(ranges.map((g) => limit(() => this.docs.read(g.object, g.offset, g.end - g.offset))));
     const data: Uint8Array[] = [];
-    const lost: number[] = [];
+    const missing: number[] = [];
     for (const [i, g] of ranges.entries()) {
       const buf = bytes[i] as Uint8Array;
       for (const r of g.rows) {
         const at = r.offset - g.offset;
-        if (at + r.length <= buf.length) data.push(buf.subarray(at, at + r.length));
-        else lost.push(r.seq);
+        const doc = at + r.length <= buf.length ? buf.subarray(at, at + r.length) : undefined;
+        if (doc && isJsonObject(doc)) data.push(doc);
+        else missing.push(r.seq);
       }
     }
-    if (lost.length > 0) {
-      // The bytes are gone (the object is missing or shorter than indexed): forget those documents and page again.
-      this.exec("DELETE FROM documents WHERE job_id = ? AND seq IN (SELECT value FROM json_each(?))", id, JSON.stringify(lost));
-      log.warn("documents lost their bytes; dropped from the index", { job: id, count: lost.length });
-      return this.documentsJson(id, skip, maxChars);
-    }
+    if (missing.length > 0) log.warn("documents unreadable; left out of the page", { job: id, seqs: missing.join(",") });
     return { data, nextSkip: more ? last.seq + 1 : null };
   }
 

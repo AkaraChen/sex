@@ -2,7 +2,19 @@
 // (s3://bucket/prefix, with S3_ENDPOINT / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY / S3_REGION for Bun.S3Client).
 import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  truncateSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DocumentLog, type DocumentRef, FsDocumentLog, MemoryDocumentLog, S3DocumentLog } from "../src/core/jobs/documents.ts";
@@ -297,13 +309,16 @@ for (const [name, makeLog] of backends) {
       expect(await stored()).toEqual([]);
     });
 
-    test("documents whose bytes are gone are dropped from the index on read", async () => {
+    test("a read leaves out documents whose bytes are missing, and keeps their index rows", async () => {
       const job = await store.create({ kind: "batch_scrape", options: {} });
       for (const n of [10, 20]) await store.pushDocument(job.id, doc(n));
       await docs.drop(job.id);
       expect(await store.documents(job.id, 0, 1e6)).toEqual({ data: [], nextSkip: null });
       await store.pushDocument(job.id, doc(30));
       expect((await store.documents(job.id, 0, 1e6)).data).toEqual([doc(30)]);
+      // The missing documents still hold seqs 0 and 1, so the new one is seq 2.
+      expect((await store.documents(job.id, 2, 1e6)).data).toEqual([doc(30)]);
+      expect((await store.documents(job.id, 3, 1e6)).data).toEqual([]);
     });
   });
 }
@@ -341,7 +356,7 @@ test("unindexed bytes at the end of a file (a crash between write and index) are
   await second.close();
 });
 
-test("index rows past the end of a file are dropped, on open and on read", async () => {
+test("index rows past the end of a file are dropped on open; a read only leaves them out", async () => {
   const { open, file } = fileStore("past-eof");
   const first = open();
   const a = await first.create({ kind: "crawl", url: "https://a/", options: {} });
@@ -365,10 +380,31 @@ test("index rows past the end of a file are dropped, on open and on read", async
   expect((await second.documents(b.id, 0, 1e6)).data).toEqual([doc(40)]);
   expect(statSync(file(a.id)).size).toBe(lines(doc(10), doc(20), doc(40)));
 
-  // The same, discovered while reading instead of on open: paging skips nothing that is still there.
+  // The file loses its tail while the store is open: reads leave those documents out but keep their rows (a page
+  // each), and only the repair on the next open drops them.
   truncateSync(file(a.id), lines(doc(10)) + 5);
-  expect((await allPages(second, a.id, 1)).flat()).toEqual([doc(10)]);
+  expect(await allPages(second, a.id, 1)).toEqual([[doc(10)], [], []]);
   await second.close();
+  const third = open();
+  expect(await allPages(third, a.id, 1)).toEqual([[doc(10)]]);
+  await third.pushDocument(a.id, doc(50));
+  expect((await third.documents(a.id, 0, 1e6)).data).toEqual([doc(10), doc(50)]);
+  expect(statSync(file(a.id)).size).toBe(lines(doc(10), doc(50)));
+  await third.close();
+});
+
+test("bytes that are not a whole JSON object are left out of the page instead of breaking it", async () => {
+  const { open, file } = fileStore("damaged");
+  const store = open();
+  const job = await store.create({ kind: "batch_scrape", options: {} });
+  for (const n of [10, 20, 30]) await store.pushDocument(job.id, doc(n));
+  const fd = openSync(file(job.id), "r+");
+  writeSync(fd, "X", lines(doc(10)));
+  closeSync(fd);
+  expect((await store.documents(job.id, 0, 1e6)).data).toEqual([doc(10), doc(30)]);
+  const raw = await store.documentsJson(job.id, 0, 1e6);
+  expect(raw.data).toHaveLength(2);
+  await store.close();
 });
 
 test("a whole page of a JSONL file is one read", async () => {
@@ -389,7 +425,7 @@ test("a whole page of a JSONL file is one read", async () => {
   expect(readdirSync(dataDir)).toEqual([`${job.id}.jsonl`]);
 });
 
-test.skipIf(!s3)("an S3 object missing from the middle of a page is dropped, and the rest is returned", async () => {
+test.skipIf(!s3)("an S3 object missing from a page is left out and keeps its index row", async () => {
   if (!s3) return;
   const prefix = `${s3.prefix}/missing`;
   const log = new S3DocumentLog(s3.client, prefix);
@@ -399,8 +435,13 @@ test.skipIf(!s3)("an S3 object missing from the middle of a page is dropped, and
   // Object names are UUIDv7, so they list in write order.
   const keys = ((await s3.client.list({ prefix: `${prefix}/${job.id}/` })).contents ?? []).map((o) => o.key).sort();
   expect(keys).toHaveLength(3);
-  await s3.client.delete(keys[1] as string);
+  const middle = keys[1] as string;
+  const bytes = await s3.client.file(middle).bytes();
+  await s3.client.delete(middle);
   expect(await store.documents(job.id, 0, 1e6)).toEqual({ data: [doc(10), doc(30)], nextSkip: null });
+  // A wrong prefix, missing permissions or read-after-write lag look the same; the document is back with its object.
+  await s3.client.write(middle, bytes);
+  expect((await store.documents(job.id, 0, 1e6)).data).toEqual([doc(10), doc(20), doc(30)]);
   await store.close();
   await log.drop(job.id);
 });
