@@ -3,6 +3,7 @@ import { AppError, browserRequired, llmRequired, unsupported } from "../errors.t
 import type { Document, FormatOption, ScrapeOptions } from "../schemas.ts";
 import type { BrowserScrapeResult } from "./browser.ts";
 import type { Engine } from "./engine.ts";
+import { compileJsonSchema } from "./json-schema.ts";
 import { assertPublicUrl, decodeBody, MARKUP_TYPE, parseHttpUrl, safeFetch } from "./net.ts";
 import type { PageExtractResult } from "./page.ts";
 
@@ -91,6 +92,7 @@ export function assertScrapeCapabilities(engine: Engine, options: ScrapeOptions 
   }
   const llmFeature = needsLlm(formats);
   if (llmFeature && !engine.llm.enabled) throw llmRequired(llmFeature);
+  if (formats.json?.schema) compileJsonSchema(formats.json.schema);
   return formats;
 }
 

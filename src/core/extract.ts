@@ -4,6 +4,7 @@ import { log } from "../log.ts";
 import type { ExtractRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
 import type { JobRecord } from "./jobs/index.ts";
+import { compileJsonSchema } from "./json-schema.ts";
 import { mapSite } from "./map.ts";
 import { assertPublicUrl, parseHttpUrl } from "./net.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "./scrape.ts";
@@ -17,6 +18,7 @@ export async function startExtract(engine: Engine, req: ExtractRequest): Promise
     throw badRequest("Provide urls, or a prompt with enableWebSearch: true");
   }
   if (!req.prompt && !req.schema) throw badRequest("Provide a prompt and/or a schema");
+  if (req.schema) compileJsonSchema(req.schema);
   assertScrapeCapabilities(engine, { ...req.scrapeOptions, formats: ["markdown"] });
 
   const valid: string[] = [];
