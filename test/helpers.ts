@@ -50,12 +50,10 @@ export function startFixtureSite() {
   return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
 }
 
-/** A streamed (SSE) /chat/completions response carrying `content`. */
-export function chatCompletionStream(content: string): Response {
-  const chunks = [
-    { choices: [{ index: 0, delta: { role: "assistant", content } }] },
-    { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
-  ];
+/** A streamed (SSE) /chat/completions response carrying `content` (or a `refusal`), ending with `finishReason`. */
+export function chatCompletionStream(content: string, opts: { finishReason?: string; refusal?: string } = {}): Response {
+  const delta = opts.refusal ? { role: "assistant", refusal: opts.refusal } : { role: "assistant", content };
+  const chunks = [{ choices: [{ index: 0, delta }] }, { choices: [{ index: 0, delta: {}, finish_reason: opts.finishReason ?? "stop" }] }];
   const sse = `${chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("")}data: [DONE]\n\n`;
   return new Response(sse, { headers: { "content-type": "text/event-stream" } });
 }
