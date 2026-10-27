@@ -1,9 +1,52 @@
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ConvertEngine } from "here-docs";
 import type { Config } from "../config.ts";
 import { AppError } from "../errors.ts";
 import { log } from "../log.ts";
 
 type HereDocs = typeof import("here-docs");
+
+/**
+ * here-docs and its native engines embedded in the compiled binary by `scripts/build.ts`: node_modules-relative path ->
+ * embedded file. Native libraries can only be loaded from real files, so they are extracted once per build (`digest`).
+ */
+let embedded: { digest: string; files: Record<string, string> } | undefined;
+
+export function registerEmbeddedDocs(digest: string, files: Record<string, string>): void {
+  embedded = { digest, files };
+}
+
+/** Writes the embedded node_modules tree to $XDG_CACHE_HOME/sex/docs-<digest> (once) and returns that directory. */
+async function extractEmbedded(bundle: { digest: string; files: Record<string, string> }): Promise<string> {
+  const root = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "sex", `docs-${bundle.digest}`);
+  if (existsSync(join(root, ".complete"))) return root;
+  const t0 = performance.now();
+  // Extract beside the target and rename, so an interrupted extraction is never mistaken for a complete one.
+  const tmp = `${root}.tmp-${process.pid}`;
+  rmSync(tmp, { recursive: true, force: true });
+  for (const [rel, src] of Object.entries(bundle.files)) {
+    const dest = join(tmp, "node_modules", rel);
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, await Bun.file(src).bytes());
+  }
+  writeFileSync(join(tmp, ".complete"), "");
+  try {
+    renameSync(tmp, root);
+  } catch (err) {
+    // Another sex process finished the same extraction first.
+    rmSync(tmp, { recursive: true, force: true });
+    if (!existsSync(join(root, ".complete"))) throw err;
+  }
+  log.info("here-docs extracted", { dir: root, files: Object.keys(bundle.files).length, ms: Math.round(performance.now() - t0) });
+  return root;
+}
+
+async function loadHereDocs(): Promise<HereDocs> {
+  if (!embedded) return import("here-docs");
+  return import(Bun.resolveSync("here-docs", `${await extractEmbedded(embedded)}/`));
+}
 
 export interface DocsWarning {
   code: string;
@@ -97,15 +140,9 @@ export class DocsConverter {
       const t0 = performance.now();
       let mod: HereDocs;
       try {
-        mod = await import("here-docs");
+        mod = await loadHereDocs();
       } catch (err) {
-        throw new AppError(
-          502,
-          "DOCS_UNAVAILABLE",
-          `SEX_DOCS is on but here-docs could not be loaded (${(err as Error).message}). ` +
-            "It needs sex run by bun from a checkout with dependencies installed (`bun src/cli.ts`) or the Docker image; " +
-            "the single-file binary cannot load its native engines.",
-        );
+        throw new AppError(502, "DOCS_UNAVAILABLE", `SEX_DOCS is on but here-docs could not be loaded: ${(err as Error).message}`);
       }
       try {
         const engine = await mod.createEngine();

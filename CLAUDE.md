@@ -26,7 +26,7 @@ Firecrawl v2 compatible web search (SearXNG) + fetch (Defuddle) as a CLI, HTTP A
 
 - Never pass JS *functions* to `page.evaluate`: Bun's bundler can rename globals like `document` inside them. Pass strings.
 - Browser and LLM are optional; features needing them must fail with `browserRequired()` / `llmRequired()` (501).
-- here-docs is imported only dynamically (`import("here-docs")` in `src/core/docs.ts`) and is `--external` in `bun run build`: its native addons cannot load from a `bun build --compile` binary, so `dist/sex --docs` fails with `DOCS_UNAVAILABLE`, and the Docker image runs `bun src/cli.ts` instead of the binary. It resolves to TypeScript source through the `bun` export condition (`customConditions` in tsconfig); there is no `dist/` in a Bun install.
+- here-docs is `--external` in the bundle. `scripts/build.ts` embeds its runtime closure for the target platform file by file (`with { type: "file" }`, via a generated `src/cli.embedded.gen.ts` that registers them and then imports `cli.ts`; it lives in `src/` so the entrypoints' common root, which `extract-pool.ts` relies on, stays `src/`). At runtime `src/core/docs.ts` extracts the files once to `$XDG_CACHE_HOME/sex/docs-<digest>` (native libraries load only from real files) and imports here-docs from there; `--compile-autoload-package-json` is required for that on-disk resolution. From source it imports `here-docs` from node_modules. It resolves to TypeScript source through the `bun` export condition (`customConditions` in tsconfig); there is no `dist/` in a Bun install.
 - Content-type checks for "is this markup" use `MARKUP_TYPE` from `src/core/net.ts`; a bare `/xml/` also matches OOXML office documents.
 - The Docker image ships Lightpanda (digest-pinned by `LIGHTPANDA_IMAGE` in the Dockerfile) and compose has no browser service, but the binary being present enables nothing: `SEX_LIGHTPANDA` decides. Same for here-docs and `SEX_DOCS`.
 - Screenshots (format and action) and the pdf action are deliberately unsupported (501), even with a browser.
@@ -45,4 +45,4 @@ Firecrawl v2 compatible web search (SearXNG) + fetch (Defuddle) as a CLI, HTTP A
 - `bun run format` — Biome write
 - Opt-in suites: `SEX_TEST_CDP_URL=http://127.0.0.1:9222` (browser tests against a running CDP browser) and `SEX_TEST_LIGHTPANDA_PATH=/path/to/lightpanda` (the same browser tests through the spawn path, plus child process lifecycle tests; `bun test test/browser.test.ts`)
 - `test/docs.test.ts` runs the real here-docs engines (installed as a dependency) against fixtures in `test/fixtures/`; it skips itself where here-docs cannot start (e.g. Intel macOS).
-- `bun run build` — single binary at `dist/sex` (without here-docs)
+- `bun run build` (`scripts/build.ts`) — single binary at `dist/sex`, here-docs embedded; `--target bun-<os>-<arch>` for other platforms whose packages are installed

@@ -22,7 +22,7 @@ bun src/cli.ts search "defuddle"
 bun src/cli.ts fetch https://stephango.com/saw
 bun src/cli.ts serve                 # HTTP API: http://127.0.0.1:3002/docs，MCP: http://127.0.0.1:3002/mcp
 
-bun run build                        # 单文件可执行：dist/sex（不含 here-docs，见「文档转换」）
+bun run build                        # 单文件可执行：dist/sex（内置 here-docs，见「文档转换」）
 ```
 
 需要 LLM 功能时，先 `cp .env.example .env`，取消注释并填写 `SEX_LLM_MODEL`、`SEX_LLM_API_KEY` 等。
@@ -37,7 +37,7 @@ docker compose up -d
 
 compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` 变量（如 `SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`）不会自动传入容器，需要加到 `compose.yaml` 的 `x-sex` 的 `environment` 里。
 
-镜像里 sex 是用 `bun` 直接跑源码（`bun /app/src/cli.ts`），不是单文件二进制，因为 here-docs 的原生引擎只能从 `node_modules` 加载；`SEX_DOCS` 默认关闭，在 `.env` 里设 `SEX_DOCS=1` 开启。
+镜像里是单文件二进制 `sex`（内置 here-docs），`SEX_DOCS` 默认关闭，在 `.env` 里设 `SEX_DOCS=1` 开启；任务存在 `/data`（compose 挂了 `sex-data` volume）。
 
 镜像自带 Lightpanda（`/usr/local/bin/lightpanda`），compose 给 sex 设了 `SEX_LIGHTPANDA=1`，所以没有单独的 `lightpanda` 服务：sex 进程自己启动、管理一个子进程，空闲时约 13 MB 内存。二进制在镜像里不等于开启，是否使用仍由 `SEX_LIGHTPANDA` 决定；镜像因此大约增大 77 MB。Lightpanda 目前只有 nightly，`Dockerfile` 里的 `LIGHTPANDA_IMAGE` 按 digest 固定了版本，升级时手动改 digest（或 `docker build --build-arg LIGHTPANDA_IMAGE=...`）。详见[浏览器](#浏览器)。
 
@@ -46,7 +46,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 | 能力 | 开启方式 | 依赖它的功能 |
 |---|---|---|
 | 浏览器 | `--lightpanda`（启动本地 Lightpanda 子进程，二进制从 PATH / `--lightpanda-path` 找；Docker 镜像自带，compose 已开启）或 `--cdp-url ws://...` | `actions`、JS 渲染页面；`waitFor` 无浏览器时忽略并给 warning |
-| 文档转换 | `--docs`（`SEX_DOCS=1`；需要用 `bun src/cli.ts` 或 Docker 镜像运行，单文件二进制不支持） | PDF 结构化 + 扫描页 OCR、Office / EPUB / RTF 文档、图片 OCR（`image` parser）；不开时 PDF 用 unpdf 抽纯文本，其它文件返回 415 |
+| 文档转换 | `--docs`（`SEX_DOCS=1`） | PDF 结构化 + 扫描页 OCR、Office / EPUB / RTF 文档、图片 OCR（`image` parser）；不开时 PDF 用 unpdf 抽纯文本，其它文件返回 415 |
 | LLM | `--llm-model`（+ `--llm-base-url`、`--llm-api-key`） | `json` / `summary` / `question` / `highlights` 格式、`/v2/extract`、crawl 的 `prompt`、`/v2/crawl/params-preview` |
 
 没开启却用到了对应功能时，直接报 `501 BROWSER_NOT_CONFIGURED` / `501 LLM_NOT_CONFIGURED`。
@@ -62,7 +62,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 - **超时和取消**：转换受请求的 `timeout`（默认 `SEX_TIMEOUT`）约束，超时返回 `408 SCRAPE_TIMEOUT`；客户端断开或任务被取消时立即停止，返回 408。OCR 一页大约几百毫秒，长扫描件需要调大 `timeout` 或用 `maxPages`。
 - **资源**：引擎在 `serve` 启动时加载（约 1–3 秒），每个进程一份，空闲时大约 200 MB 内存；OCR 吃 CPU，但跑在原生线程里，不阻塞事件循环。加载失败时 `serve` 直接以 `error: DOCS_UNAVAILABLE: ...` 退出。
 
-**运行方式**：here-docs 带原生 addon（约 200 MB），`bun build --compile` 出来的单文件二进制在运行时加载不了它们，所以 `dist/sex --docs` 会报 `DOCS_UNAVAILABLE`。需要文档转换时，在装好依赖（`bun install`）的源码目录里用 `bun src/cli.ts ... --docs`，或者用 Docker 镜像（镜像本来就是用 `bun` 跑源码）。支持的平台：Linux x64 / arm64（glibc 和 musl）、macOS arm64、Windows x64；Intel Mac 不支持。
+**运行方式**：`bun run build` 把 here-docs 和当前平台的原生引擎（约 160 MiB）一起打进 `dist/sex`（约 260 MiB）。原生库只能从磁盘上的真实文件加载，所以开了 `--docs` 后，第一次用到时会把它们解压到 `$XDG_CACHE_HOME/sex/docs-<hash>`（默认 `~/.cache/sex`，约 0.3–0.6 秒，之后复用；换版本自动换目录）。从源码运行（`bun src/cli.ts`）时直接用 `node_modules` 里的 here-docs。`bun scripts/build.ts --target bun-linux-arm64` 等可以构建其它平台，前提是 `node_modules` 里装了那个平台的原生包。支持的平台：Linux x64 / arm64（glibc 和 musl）、macOS arm64、Windows x64；Intel Mac 不支持。
 
 ### 浏览器
 
@@ -97,7 +97,7 @@ bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightp
 | `SEX_LIGHTPANDA` | `--lightpanda` | `false` | 启动本地 Lightpanda 子进程；compose 里已设为 `1` |
 | `SEX_LIGHTPANDA_PATH`（回退 `LIGHTPANDA_EXECUTABLE_PATH`） | `--lightpanda-path` | 从 PATH 查找 | Lightpanda 可执行文件；Docker 镜像里是 `/usr/local/bin/lightpanda`，已在 PATH 上 |
 | `SEX_CDP_URL` | `--cdp-url` | 无 | 已有 CDP 浏览器的地址，如 `ws://127.0.0.1:9222`；和 `SEX_LIGHTPANDA` 同时设置时以它为准 |
-| `SEX_DOCS` | `--docs` | `false` | 用 here-docs 转换 PDF / Office 文档 / 图片（结构化 + 本地 OCR），见[文档转换](#文档转换)；单文件二进制不支持 |
+| `SEX_DOCS` | `--docs` | `false` | 用 here-docs 转换 PDF / Office 文档 / 图片（结构化 + 本地 OCR），见[文档转换](#文档转换) |
 | `SEX_LLM_MODEL` | `--llm-model` | 无（LLM 关闭） | 设置后开启 LLM 功能 |
 | `SEX_LLM_BASE_URL`（回退 `OPENAI_BASE_URL`） | `--llm-base-url` | `https://api.openai.com/v1` | OpenAI 兼容接口 |
 | `SEX_LLM_API_KEY`（回退 `OPENAI_API_KEY`） | `--llm-api-key` | 无 | LLM API key |

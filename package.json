@@ -6,11 +6,11 @@
   "scripts": {
     "dev": "bun src/cli.ts",
     "typecheck": "bun check",
-    "lint": "biome check src test",
-    "format": "biome check --write src test",
+    "lint": "biome check src test scripts",
+    "format": "biome check --write src test scripts",
     "test": "bun test",
     "verify": "bun check && bun run lint && bun test",
-    "build": "bun build --compile --minify --external here-docs src/cli.ts src/core/extract-worker.ts --outfile dist/sex"
+    "build": "bun scripts/build.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.3",
