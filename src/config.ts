@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { AppError } from "./errors.ts";
 
@@ -20,9 +22,8 @@ export interface Config {
   timeout: number;
   /** Deadline for a single LLM request in ms. */
   llmTimeout: number;
-  /** Redis URL for BullMQ jobs; in-memory queue when unset. */
-  redisUrl?: string;
-  redisPrefix: string;
+  /** Directory for the job database and task queue (SQLite); jobs are kept in memory when unset. */
+  dataDir?: string;
   /** Max characters of page content sent to the LLM in one call. */
   llmMaxInputChars: number;
   /** Max response body size in bytes for a single page fetch. */
@@ -54,8 +55,7 @@ export interface ConfigOverrides {
   concurrency?: number;
   timeout?: number;
   llmTimeout?: number;
-  redisUrl?: string;
-  redisPrefix?: string;
+  dataDir?: string;
   llmMaxInputChars?: number;
   /** Comma-separated origins, e.g. "https://app.example.com,https://other.example". */
   corsOrigins?: string;
@@ -144,11 +144,25 @@ const FIELD_RULES: Record<keyof z.infer<typeof RAW_SCHEMA>, [name: string, expec
 /** A boolean override arrives as a real boolean; normalise it to the same word form env values use. */
 const flag = (override: boolean | undefined, envValue: string | undefined) => (override !== undefined ? String(override) : envValue);
 
+/** Where `serve` keeps jobs when SEX_DATA_DIR is not set: $XDG_DATA_HOME/sex, else ~/.local/share/sex. */
+export function defaultDataDir(env: Env = process.env): string {
+  return join(str(env.XDG_DATA_HOME) ?? join(homedir(), ".local", "share"), "sex");
+}
+
 export function resolveConfig(
   o: ConfigOverrides = {},
-  defaults: { allowPrivateNetwork: boolean } = { allowPrivateNetwork: false },
+  defaults: { allowPrivateNetwork: boolean; dataDir?: string } = { allowPrivateNetwork: false },
   env: Env = process.env,
 ): Config {
+  for (const name of ["SEX_REDIS_URL", "SEX_REDIS_PREFIX"]) {
+    if (str(env[name])) {
+      throw new AppError(
+        400,
+        "CONFIG_INVALID",
+        `${name} is no longer supported: jobs run in the sex process and are stored in SQLite under SEX_DATA_DIR. Unset ${name}.`,
+      );
+    }
+  }
   const raw = {
     concurrency: o.concurrency ?? str(env.SEX_CONCURRENCY),
     timeout: o.timeout ?? str(env.SEX_TIMEOUT),
@@ -195,8 +209,7 @@ export function resolveConfig(
     concurrency: v.concurrency ?? 8,
     timeout: v.timeout ?? 30_000,
     llmTimeout: v.llmTimeout ?? 120_000,
-    redisUrl: str(o.redisUrl) ?? str(env.SEX_REDIS_URL),
-    redisPrefix: str(o.redisPrefix) ?? str(env.SEX_REDIS_PREFIX) ?? "sex",
+    dataDir: str(o.dataDir) ?? str(env.SEX_DATA_DIR) ?? defaults.dataDir,
     llmMaxInputChars: v.llmMaxInputChars ?? 200_000,
     maxBodyBytes: v.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
     jobTtlMs: v.jobTtlMs ?? 24 * 60 * 60 * 1000,

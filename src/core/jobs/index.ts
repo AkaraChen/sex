@@ -1,43 +1,29 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { Config } from "../../config.ts";
 import { log } from "../../log.ts";
 import type { WebhookConfig } from "../../schemas.ts";
 import type { Engine } from "../engine.ts";
 import { assertPublicUrl, parseHttpUrl, safeFetch } from "../net.ts";
-import { MemoryJobStore, MemoryTaskQueue } from "./memory.ts";
-import { BullTaskQueue, RedisJobStore, redisConnection } from "./redis.ts";
+import { BunqueueTaskQueue } from "./queue.ts";
+import { SqliteJobStore } from "./sqlite.ts";
 import type { JobRecord, JobStore, TaskQueue } from "./types.ts";
 
 export * from "./types.ts";
 
 export interface JobBackend {
-  kind: "memory" | "redis";
   store: JobStore;
   queue: TaskQueue;
   close(): Promise<void>;
 }
 
-/** Redis + BullMQ when a Redis URL is configured, otherwise an in-process store and queue. */
+/** Job state and tasks in SQLite files under `config.dataDir` (they survive a restart), or in memory without one. */
 export function createJobBackend(config: Config): JobBackend {
-  if (config.redisUrl) {
-    const url = config.redisUrl;
-    const conn = redisConnection(url);
-    const store = new RedisJobStore(conn, config.redisPrefix, config.jobTtlMs);
-    const queue = new BullTaskQueue(conn, config.redisPrefix, config.concurrency, () => redisConnection(url, { blocking: true }));
-    return {
-      kind: "redis",
-      store,
-      queue,
-      async close() {
-        await queue.close();
-        await store.close();
-        conn.disconnect();
-      },
-    };
-  }
-  const store = new MemoryJobStore(config.jobTtlMs);
-  const queue = new MemoryTaskQueue(config.concurrency);
+  if (config.dataDir) mkdirSync(config.dataDir, { recursive: true });
+  const path = (file: string) => (config.dataDir ? join(config.dataDir, file) : ":memory:");
+  const store = new SqliteJobStore(path("jobs.sqlite"), config.jobTtlMs);
+  const queue = new BunqueueTaskQueue(path("queue.sqlite"), config.concurrency);
   return {
-    kind: "memory",
     store,
     queue,
     async close() {

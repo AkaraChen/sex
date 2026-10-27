@@ -22,6 +22,10 @@ COPY src ./src
 COPY --from=lightpanda /bin/lightpanda /usr/local/bin/lightpanda
 # Lightpanda writes to $HOME/.local/share/lightpanda; the home of nobody (/nonexistent) is not writable.
 ENV HOME=/tmp
+# Jobs (SQLite) live here; compose mounts a volume so they survive container restarts.
+RUN mkdir -p /data && chown nobody /data
+ENV SEX_DATA_DIR=/data
+VOLUME /data
 USER nobody
 ENV HOST=0.0.0.0
 EXPOSE 3002

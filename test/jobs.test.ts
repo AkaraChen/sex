@@ -1,30 +1,21 @@
-// Crawl / batch / extract against both job backends. The Redis variant runs when
-// SEX_TEST_REDIS_URL is set, e.g. SEX_TEST_REDIS_URL=redis://127.0.0.1:6379 bun test
+// Crawl / batch / extract through the job store and task queue.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Engine } from "../src/core/engine.ts";
 import type { JobKind, JobRecord } from "../src/core/jobs/index.ts";
 import { startFixtureSite, startMockLlm, testEngine, waitFor } from "./helpers.ts";
 
-const backends: Array<[string, string | undefined]> = [["memory", undefined]];
-if (process.env.SEX_TEST_REDIS_URL) backends.push(["redis", process.env.SEX_TEST_REDIS_URL]);
-
-for (const [name, redisUrl] of backends) {
-  describe(`jobs (${name})`, () => {
+{
+  describe("jobs", () => {
     let site: ReturnType<typeof startFixtureSite>;
     let llm: ReturnType<typeof startMockLlm>;
     let engine: Engine;
     let llmEngine: Engine;
 
     beforeAll(() => {
-      const prefix = `sex-test-${Date.now()}`;
       site = startFixtureSite();
       llm = startMockLlm(() => JSON.stringify({ title: "Doc A" }));
-      engine = testEngine({ redisUrl, redisPrefix: `${prefix}-a` });
-      llmEngine = testEngine({ redisUrl, redisPrefix: `${prefix}-b`, llmModel: "m", llmBaseUrl: llm.url });
-      if (redisUrl) {
-        engine.startWorker();
-        llmEngine.startWorker();
-      }
+      engine = testEngine();
+      llmEngine = testEngine({ llmModel: "m", llmBaseUrl: llm.url });
     });
 
     afterAll(async () => {

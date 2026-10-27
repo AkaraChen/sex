@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { defineCommand, runMain } from "citty";
-import { type ConfigOverrides, resolveConfig } from "./config.ts";
+import { type ConfigOverrides, defaultDataDir, resolveConfig } from "./config.ts";
 import { Engine } from "./core/engine.ts";
 import { AppError, toAppError } from "./errors.ts";
 import { log, setLogLevel } from "./log.ts";
@@ -39,8 +39,10 @@ const list = (v: string | undefined) =>
 
 const serverArgs = {
   ...commonArgs,
-  "redis-url": { type: "string", description: "Run crawl/batch/extract jobs on BullMQ in Redis (env SEX_REDIS_URL); in-memory when unset" },
-  worker: { type: "boolean", default: true, description: "Process queued jobs in this process (--no-worker to only enqueue; Redis mode)" },
+  "data-dir": {
+    type: "string",
+    description: "Directory for the job database and task queue (env SEX_DATA_DIR, default $XDG_DATA_HOME/sex or ~/.local/share/sex)",
+  },
   "cors-origin": {
     type: "string",
     description: "Comma-separated browser origins allowed cross-origin, e.g. https://app.example.com (env SEX_CORS_ORIGINS; default none)",
@@ -52,8 +54,8 @@ const serverArgs = {
 } as const;
 
 function engineFrom(
-  args: CommonArgs & { "redis-url"?: string; "cors-origin"?: string; "allowed-host"?: string },
-  defaults: { allowPrivateNetwork: boolean },
+  args: CommonArgs & { "data-dir"?: string; "cors-origin"?: string; "allowed-host"?: string },
+  defaults: { allowPrivateNetwork: boolean; dataDir?: string },
 ): Engine {
   if (args["log-level"]) setLogLevel(args["log-level"]);
   const overrides: ConfigOverrides = {
@@ -69,7 +71,7 @@ function engineFrom(
     userAgent: args["user-agent"],
     concurrency: int(args.concurrency, "--concurrency"),
     timeout: int(args.timeout, "--timeout"),
-    redisUrl: args["redis-url"],
+    dataDir: args["data-dir"],
     corsOrigins: args["cors-origin"],
     allowedHosts: args["allowed-host"],
   };
@@ -77,7 +79,10 @@ function engineFrom(
 }
 
 /** Builds the engine, or prints a CONFIG_INVALID error and returns undefined with exit code 2. */
-function engineOrExit(args: CommonArgs & { "redis-url"?: string }, defaults: { allowPrivateNetwork: boolean }): Engine | undefined {
+function engineOrExit(
+  args: CommonArgs & { "data-dir"?: string },
+  defaults: { allowPrivateNetwork: boolean; dataDir?: string },
+): Engine | undefined {
   try {
     return engineFrom(args, defaults);
   } catch (err) {
@@ -107,13 +112,6 @@ async function oneShot(engine: Engine, fn: () => Promise<void>) {
   } finally {
     await engine.close();
   }
-}
-
-/** Starts the job worker unless disabled; without Redis the in-memory queue always runs in-process. */
-function maybeStartWorker(engine: Engine, enabled: boolean) {
-  if (!engine.config.redisUrl) return;
-  if (enabled) engine.startWorker();
-  else log.info("job worker disabled; jobs run on other `sex worker` processes");
 }
 
 /** Starts the browser and document converter up front; a broken install prints `error: CODE: message` and exits 1. */
@@ -288,12 +286,13 @@ const serve = defineCommand({
     host: { type: "string", description: "Bind address (env HOST, default 127.0.0.1)" },
   },
   run: async ({ args }) => {
-    const engine = engineOrExit(args, { allowPrivateNetwork: false });
+    const engine = engineOrExit(args, { allowPrivateNetwork: false, dataDir: defaultDataDir() });
     if (!engine) return;
     let stopServer: (() => Promise<void>) | undefined;
     onShutdown(engine, () => stopServer?.());
     if (!(await warmupOrExit(engine))) return;
-    maybeStartWorker(engine, args.worker);
+    // Opening the job backend starts the worker, which resumes tasks left in the queue by a previous run.
+    void engine.jobs;
     const { serveHttp } = await import("./http/server.ts");
     stopServer = serveHttp(engine, {
       port: int(args.port, "--port") ?? int(process.env.PORT, "PORT") ?? 3002,
@@ -302,26 +301,9 @@ const serve = defineCommand({
   },
 });
 
-const worker = defineCommand({
-  meta: { name: "worker", description: "Process crawl/batch/extract jobs from Redis (BullMQ) without serving an API" },
-  args: { ...commonArgs, "redis-url": serverArgs["redis-url"] },
-  run: async ({ args }) => {
-    const engine = engineOrExit(args, { allowPrivateNetwork: false });
-    if (!engine) return;
-    if (!engine.config.redisUrl) {
-      process.stderr.write("error: worker needs --redis-url (or SEX_REDIS_URL); the in-memory queue only runs inside serve\n");
-      process.exit(1);
-    }
-    onShutdown(engine);
-    if (!(await warmupOrExit(engine))) return;
-    engine.startWorker();
-    log.info("worker running", engine.describe());
-  },
-});
-
 const main = defineCommand({
   meta: { name: "sex", version: VERSION, description: "Self-hosted, Firecrawl-compatible web search + fetch" },
-  subCommands: { search, fetch: fetchCmd, serve, http: serve, worker },
+  subCommands: { search, fetch: fetchCmd, serve, http: serve },
 });
 
 runMain(main);

@@ -7,9 +7,9 @@
 - **文档转换（可选）**：[here-docs](https://github.com/AkaraChen/here-docs)，PDF 保留标题、表格等结构，扫描页本地 OCR；还支持 Word / PowerPoint / Excel / OpenDocument / EPUB / RTF 和图片。不开时 PDF 用 unpdf 抽纯文本
 - **浏览器（可选）**：[Lightpanda](https://github.com/lightpanda-io/browser)（作为 sex 的子进程运行，Docker 镜像自带），或任意 CDP 浏览器（Chrome 等）
 - **LLM（可选）**：任意 OpenAI 兼容的 `/chat/completions` 接口
-- **任务队列（可选）**：配置了 Redis 时，crawl / batch scrape / extract 跑在 [BullMQ](https://bullmq.io) 上，可以开多个 worker 一起处理；不配就用进程内的内存队列
+- **任务**：crawl / batch scrape / extract 在 `serve` 进程里执行，队列用 [bunqueue](https://bunqueue.dev)（嵌入式），任务状态和队列都存在 SQLite 里（`SEX_DATA_DIR`），进程重启后接着跑。不需要 Redis，也没有单独的 worker 进程
 
-一个二进制，三个主要子命令：`search`、`fetch`、`serve`，另外有个 `worker`，用于在 Redis 模式下单独起消费进程。`serve` 在同一个端口上同时提供 HTTP API 和 MCP（`/mcp`，只有 streamable HTTP，没有 stdio）；`http` 是 `serve` 的旧名，目前仍作为别名保留。
+一个二进制，三个子命令：`search`、`fetch`、`serve`。`serve` 在同一个端口上同时提供 HTTP API 和 MCP（`/mcp`，只有 streamable HTTP，没有 stdio）；`http` 是 `serve` 的旧名，目前仍作为别名保留。
 
 ## 快速开始
 
@@ -27,11 +27,10 @@ bun run build                        # 单文件可执行：dist/sex（不含 he
 
 需要 LLM 功能时，先 `cp .env.example .env`，取消注释并填写 `SEX_LLM_MODEL`、`SEX_LLM_API_KEY` 等。
 
-一键起全套（SearXNG + Redis + `sex`（HTTP API 和 MCP 在同一个服务里；Lightpanda 在 sex 镜像里，由每个 sex 进程自己启动）+ worker）：
+一键起全套（SearXNG + `sex`；HTTP API、MCP 和任务都在同一个 sex 进程里，Lightpanda 是它的子进程，任务存在 `sex-data` volume 里）：
 
 ```bash
 docker compose up -d
-docker compose up -d --scale sex-worker=4   # 加 worker
 # HTTP API: http://localhost:3002  (Scalar 文档 /docs，OpenAPI /openapi.json)
 # MCP:      http://localhost:3002/mcp
 ```
@@ -40,7 +39,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 
 镜像里 sex 是用 `bun` 直接跑源码（`bun /app/src/cli.ts`），不是单文件二进制，因为 here-docs 的原生引擎只能从 `node_modules` 加载；`SEX_DOCS` 默认关闭，在 `.env` 里设 `SEX_DOCS=1` 开启。
 
-镜像自带 Lightpanda（`/usr/local/bin/lightpanda`），compose 给每个 sex 服务设了 `SEX_LIGHTPANDA=1`，所以没有单独的 `lightpanda` 服务：每个 sex 进程（包括每个 `sex-worker`）各自启动、管理一个子进程，空闲时约 13 MB 内存。二进制在镜像里不等于开启，是否使用仍由 `SEX_LIGHTPANDA` 决定；镜像因此大约增大 77 MB。Lightpanda 目前只有 nightly，`Dockerfile` 里的 `LIGHTPANDA_IMAGE` 按 digest 固定了版本，升级时手动改 digest（或 `docker build --build-arg LIGHTPANDA_IMAGE=...`）。详见[浏览器](#浏览器)。
+镜像自带 Lightpanda（`/usr/local/bin/lightpanda`），compose 给 sex 设了 `SEX_LIGHTPANDA=1`，所以没有单独的 `lightpanda` 服务：sex 进程自己启动、管理一个子进程，空闲时约 13 MB 内存。二进制在镜像里不等于开启，是否使用仍由 `SEX_LIGHTPANDA` 决定；镜像因此大约增大 77 MB。Lightpanda 目前只有 nightly，`Dockerfile` 里的 `LIGHTPANDA_IMAGE` 按 digest 固定了版本，升级时手动改 digest（或 `docker build --build-arg LIGHTPANDA_IMAGE=...`）。详见[浏览器](#浏览器)。
 
 ## 可选能力
 
@@ -49,7 +48,6 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 | 浏览器 | `--lightpanda`（启动本地 Lightpanda 子进程，二进制从 PATH / `--lightpanda-path` 找；Docker 镜像自带，compose 已开启）或 `--cdp-url ws://...` | `actions`、JS 渲染页面；`waitFor` 无浏览器时忽略并给 warning |
 | 文档转换 | `--docs`（`SEX_DOCS=1`；需要用 `bun src/cli.ts` 或 Docker 镜像运行，单文件二进制不支持） | PDF 结构化 + 扫描页 OCR、Office / EPUB / RTF 文档、图片 OCR（`image` parser）；不开时 PDF 用 unpdf 抽纯文本，其它文件返回 415 |
 | LLM | `--llm-model`（+ `--llm-base-url`、`--llm-api-key`） | `json` / `summary` / `question` / `highlights` 格式、`/v2/extract`、crawl 的 `prompt`、`/v2/crawl/params-preview` |
-| Redis | `--redis-url redis://...`（`serve` / `worker`） | 任务持久化、多进程/多机分担 crawl 和 batch；不配时任务存在内存里，只在当前进程执行 |
 
 没开启却用到了对应功能时，直接报 `501 BROWSER_NOT_CONFIGURED` / `501 LLM_NOT_CONFIGURED`。
 
@@ -62,13 +60,13 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 - **图片**（`image/*`）：OCR。请求里显式传了 `parsers` 但不含 `"image"` 时仍返回 415，和 Firecrawl 一致。
 - **页数上限**：`parsers: [{ "type": "pdf", "maxPages": N }]` 只转换前 N 页，后面的页不会被解析或 OCR，`warning` 里会说明实际转换了几页。不开 `--docs` 时 unpdf 路径同样遵守 `maxPages`。
 - **超时和取消**：转换受请求的 `timeout`（默认 `SEX_TIMEOUT`）约束，超时返回 `408 SCRAPE_TIMEOUT`；客户端断开或任务被取消时立即停止，返回 408。OCR 一页大约几百毫秒，长扫描件需要调大 `timeout` 或用 `maxPages`。
-- **资源**：引擎在 `serve` / `worker` 启动时加载（约 1–3 秒），每个进程一份，空闲时大约 200 MB 内存；OCR 吃 CPU，但跑在原生线程里，不阻塞事件循环。加载失败时 `serve` / `worker` 直接以 `error: DOCS_UNAVAILABLE: ...` 退出。
+- **资源**：引擎在 `serve` 启动时加载（约 1–3 秒），每个进程一份，空闲时大约 200 MB 内存；OCR 吃 CPU，但跑在原生线程里，不阻塞事件循环。加载失败时 `serve` 直接以 `error: DOCS_UNAVAILABLE: ...` 退出。
 
 **运行方式**：here-docs 带原生 addon（约 200 MB），`bun build --compile` 出来的单文件二进制在运行时加载不了它们，所以 `dist/sex --docs` 会报 `DOCS_UNAVAILABLE`。需要文档转换时，在装好依赖（`bun install`）的源码目录里用 `bun src/cli.ts ... --docs`，或者用 Docker 镜像（镜像本来就是用 `bun` 跑源码）。支持的平台：Linux x64 / arm64（glibc 和 musl）、macOS arm64、Windows x64；Intel Mac 不支持。
 
 ### 浏览器
 
-- **`--lightpanda`**（`SEX_LIGHTPANDA=1`）：sex 自己 spawn 一个 Lightpanda 子进程。`http` / `mcp` / `worker` 启动时预热，其它命令在第一次用到浏览器时才启动；子进程退出后，下一次请求会自动重新启动；sex 退出时一起退出。连续启动失败（60 秒内 3 次，例如二进制起不来）后，30 秒内直接返回 `502 BROWSER_UNAVAILABLE`，不会对着坏掉的二进制反复 spawn。
+- **`--lightpanda`**（`SEX_LIGHTPANDA=1`）：sex 自己 spawn 一个 Lightpanda 子进程。`serve` 启动时预热，其它命令在第一次用到浏览器时才启动；子进程退出后，下一次请求会自动重新启动；sex 退出时一起退出。连续启动失败（60 秒内 3 次，例如二进制起不来）后，30 秒内直接返回 `502 BROWSER_UNAVAILABLE`，不会对着坏掉的二进制反复 spawn。
 - **`--cdp-url ws://...`**（`SEX_CDP_URL`）：连接已经在运行的 CDP 浏览器，比如 Chrome，或者单独部署的 Lightpanda。sex 不启动任何进程；和 `--lightpanda` 同时设置时以 `--cdp-url` 为准。
 - 都不设：不用浏览器。
 
@@ -81,7 +79,7 @@ bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightp
 
 **子进程的回收**：`SIGINT` / `SIGTERM` 时 sex 会先关掉子进程再退出，但 `SIGKILL` 无法被捕获。所以在 Linux 上，sex 用 `setpriv --pdeathsig TERM -- lightpanda serve ...` 启动子进程（`setpriv` 属于 util-linux ≥ 2.33，Debian / Ubuntu 和 Docker 镜像里都有）：sex 被 `kill -9` 后，内核会给子进程发 `SIGTERM`，不会留下孤儿。macOS 没有对应机制（pdeathsig 是 Linux 特有的），Linux 上没有 `setpriv` 时也一样，sex 只能直接 spawn，此时 `kill -9` sex 会留下孤儿 Lightpanda 进程，需要自己清理。`lightpanda started` 日志里的 `spawn=setpriv` / `spawn=direct` 标明了实际用的是哪种方式。
 
-**内网保护**：`--allow-private-network` 关闭时（`http` / `mcp` / `worker` 默认），子进程会带上 `--block-private-networks`，Lightpanda 在 DNS 解析后再拦一次内网地址，作为 request interception 之外的第二道防线。`--cdp-url` 接外部浏览器时没有这一层，只有 request interception。
+**内网保护**：`--allow-private-network` 关闭时（`serve` 默认），子进程会带上 `--block-private-networks`，Lightpanda 在 DNS 解析后再拦一次内网地址，作为 request interception 之外的第二道防线。`--cdp-url` 接外部浏览器时没有这一层，只有 request interception。
 
 ### 配置
 
@@ -105,30 +103,28 @@ bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightp
 | `SEX_LLM_API_KEY`（回退 `OPENAI_API_KEY`） | `--llm-api-key` | 无 | LLM API key |
 | `SEX_LLM_TIMEOUT` | — | `120000`（毫秒，最小 1000） | 单次 LLM 调用的超时，包括遇到限流时的等待和重试 |
 | `SEX_LLM_MAX_INPUT_CHARS` | — | `200000`（最小 1000） | 单次 LLM 调用最多发送的页面字符数 |
-| `SEX_ALLOW_PRIVATE_NETWORK` | `--allow-private-network` | `search`/`fetch`：`true`；`serve`/`worker`：`false` | 是否允许抓取回环、内网、link-local 地址 |
+| `SEX_ALLOW_PRIVATE_NETWORK` | `--allow-private-network` | `search`/`fetch`：`true`；`serve`：`false` | 是否允许抓取回环、内网、link-local 地址 |
 | `SEX_USER_AGENT` | `--user-agent` | Chrome 桌面 UA | 页面抓取使用的 User-Agent |
 | `SEX_CONCURRENCY` | `--concurrency` | `8` | 单进程内同时进行的页面抓取数 |
 | `SEX_TIMEOUT` | `--timeout` | `30000`（毫秒，最小 1） | 单页默认超时 |
 | `SEX_MAX_BODY_BYTES` | — | `26214400`（25 MiB，最小 1024） | 单次页面下载的响应体上限 |
 | `SEX_EXTRACT_WILDCARD_PAGES` | — | `25` | extract 的 URL 以 `/*` 结尾时，最多展开的页面数 |
 | `SEX_EXTRACT_WORKERS` | — | `min(4, CPU 核数 - 1)`，至少 1 | HTML/PDF 解析的 worker 线程数；`0` 表示在主线程解析 |
-| `SEX_REDIS_URL` | `--redis-url` | 无（内存队列） | BullMQ 和任务存储用的 Redis |
-| `SEX_REDIS_PREFIX` | — | `sex` | Redis key 前缀 |
+| `SEX_DATA_DIR` | `--data-dir` | `serve`：`$XDG_DATA_HOME/sex` 或 `~/.local/share/sex`；Docker：`/data` | 任务数据库和任务队列（SQLite）所在目录；`search` / `fetch` 不使用 |
 | `SEX_JOB_TTL_MS` | — | `86400000`（24 小时，最小 60000） | 已结束任务的保留时间；crawl 的 `delay × limit` 超过它时会被拒绝 |
 | `SEX_LOG_LEVEL` | `--log-level` | `info` | `debug` / `info` / `warn` / `error` / `silent` |
 | `SEX_CORS_ORIGINS` | `--cors-origin` | 空（CORS 关闭） | 允许跨域调用 HTTP API 和 MCP 端点的浏览器 origin，逗号分隔，不带路径 |
 | `SEX_ALLOWED_HOSTS` | `--allowed-host` | 绑定回环地址时只接受 `localhost` / `127.0.0.1` / `[::1]` | 允许的 `Host` 头主机名，逗号分隔，不带端口 |
 
-其它 flag：`--worker` / `--no-worker`（`serve`：是否在本进程消费任务，默认消费）。
-
 ## 任务队列
 
 crawl、batch scrape、extract 都是异步任务。任务按页拆分：crawl 先跑一个 `crawl-start` 任务（读 robots.txt 和 sitemap），之后每个页面是一个 `page` 任务，抓完后再把新发现的链接入队；batch 每个 URL 一个任务；extract 整体是一个任务。
 
-- **不配 Redis**：任务状态和队列都在进程内存里，`serve` 进程自己执行，重启后丢失。文档内容总量超过 512 MiB 时，会淘汰最早结束的任务。
-- **配了 Redis**：任务状态存在 Redis 里（hash、list、set，按 `SEX_JOB_TTL_MS` 过期），任务通过 BullMQ 分发。`serve` 默认也会消费任务，加 `--no-worker` 则只负责入队；`sex worker` 是纯消费进程，可以开任意多个。同一个 crawl 的页面会分散到所有 worker 上并行处理，limit、去重和 robots 规则都通过 Redis 原子操作在 worker 之间共享。Redis 故障时，普通存取命令在有限次重试后报错，不会无限挂起；BullMQ 的阻塞消费连接与之分开。
-- 所有 worker 应使用相同的配置（浏览器、LLM 等），因为页面实际在哪个 worker 上执行是不确定的。
-- `worker` 命令同样默认拒绝内网地址。在 Redis 模式下，如果需要抓取内网站点，要在每个 worker 上都加 `--allow-private-network`，不能只加在 `serve` 上。
+- **执行**：任务都在 `serve` 进程里跑，同时运行的页面数受 `SEX_CONCURRENCY` 限制。没有单独的 worker 进程。
+- **存储**：任务状态（进度、抓到的文档、错误、去重集合）存在 `SEX_DATA_DIR/jobs.sqlite`，待执行的任务存在 `SEX_DATA_DIR/queue.sqlite`（[bunqueue](https://bunqueue.dev) 的嵌入式 broker）。`serve` 默认用 `$XDG_DATA_HOME/sex`（没设时是 `~/.local/share/sex`），Docker 镜像里是 `/data`。结束的任务在 `SEX_JOB_TTL_MS` 后删除。
+- **重启**：进程重启（包括被 `kill -9`）后，队列里的任务和延迟任务会继续执行；崩溃时正在跑的页面任务在锁过期后重新投递，不会重复计数。
+- **单进程**：同一个数据目录同一时间只能有一个 sex 进程在用。
+- `SEX_REDIS_URL` / `SEX_REDIS_PREFIX` 已经不再支持，设置了会在启动时报 `CONFIG_INVALID`。
 
 ## HTTP API（Firecrawl v2 兼容）
 
@@ -158,7 +154,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - 不支持 `screenshot`、`changeTracking`、`branding`、`product`、`menu`、`audio`、`video` 这几种格式，以及 `screenshot` / `pdf` 这两种 action，会返回 `501 NOT_SUPPORTED`。
 - `maxAge`、`proxy`、`blockAds`、`storeInCache`、搜索的 `location` / `country` / `ignoreInvalidURLs`、extract 的 `allowExternalLinks` 等参数会接受但忽略，没有缓存也没有代理池。
 - `parsers` 支持 `"pdf"`（含 `maxPages`）和 `"image"`；PDF parser 的 `mode`、`pages`（`document.pages`）和 `blocks` 会接受但忽略。开了 `--docs` 时 PDF 的 `metadata.title` 不再取自 PDF 元数据（here-docs 不提供），标题以正文里的标题为准。
-- crawl 的 `delay` 通过给每个页面任务分配错开的执行时间来实现；`maxConcurrency` 不按单个任务限制，并发由 worker 数和 `SEX_CONCURRENCY` 决定。crawl 的 `delay × limit` 超过 `SEX_JOB_TTL_MS` 时直接返回 `400 BAD_REQUEST`。
+- crawl 的 `delay` 通过给每个页面任务分配错开的执行时间来实现；`maxConcurrency` 不按单个任务限制，并发由 `SEX_CONCURRENCY` 决定。crawl 的 `delay × limit` 超过 `SEX_JOB_TTL_MS` 时直接返回 `400 BAD_REQUEST`。
 - crawl 遵守 robots.txt（RFC 9309）：robots.txt 返回 5xx 时视为全部禁止，返回 4xx 时视为全部允许。
 - 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
 - LLM 相关的格式（json / summary / question / highlights）和 extract：
@@ -224,9 +220,6 @@ bun test          # 单元 + 集成测试（本地 fixture 站点、mock SearXNG
 可选的集成测试需要外部服务，没有设置对应变量时会跳过：
 
 ```bash
-docker compose up -d redis
-SEX_TEST_REDIS_URL=redis://127.0.0.1:6379 bun test    # 任务存储和队列的 Redis/BullMQ 后端
-
 SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test test/browser.test.ts   # 需要一个正在运行的 CDP 浏览器（如 Lightpanda 或 Chrome）
 SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
 ```

@@ -1,38 +1,25 @@
-# SearXNG + Redis + sex (HTTP API on :3002, MCP over HTTP at :3002/mcp; Lightpanda runs inside each sex container).
-# Crawl/batch/extract jobs run on BullMQ in Redis; every sex process is also a worker.
-# Scale workers with: docker compose up -d --scale sex-worker=4
+# SearXNG + sex (HTTP API on :3002, MCP over HTTP at :3002/mcp).
+# One sex process does everything: Lightpanda runs as its child process, crawl/batch/extract jobs run in-process
+# and are kept in SQLite on the sex-data volume, so they survive a restart.
 # LLM features: set SEX_LLM_MODEL (and SEX_LLM_BASE_URL / SEX_LLM_API_KEY) in .env.
-x-sex: &sex
-  build: .
-  image: sex:latest
-  restart: unless-stopped
-  depends_on: [searxng, redis]
-  environment:
-    SEX_SEARXNG_URL: http://searxng:8080
-    # The image ships Lightpanda; every sex process runs its own as a child process, so there is no browser service.
-    SEX_LIGHTPANDA: "1"
-    SEX_REDIS_URL: redis://redis:6379
-    SEX_LLM_MODEL: ${SEX_LLM_MODEL:-}
-    SEX_LLM_BASE_URL: ${SEX_LLM_BASE_URL:-}
-    SEX_LLM_API_KEY: ${SEX_LLM_API_KEY:-}
-    # here-docs (structured PDF/office, local OCR) is in the image too, but CPU-heavy: opt in with SEX_DOCS=1 in .env.
-    SEX_DOCS: ${SEX_DOCS:-}
-
 services:
   sex:
-    <<: *sex
+    build: .
+    image: sex:latest
+    restart: unless-stopped
+    depends_on: [searxng]
     command: ["serve", "--host", "0.0.0.0", "--port", "3002"]
     ports: ["3002:3002"]
-
-  sex-worker:
-    <<: *sex
-    command: ["worker"]
-
-  redis:
-    image: redis:7.4-alpine
-    restart: unless-stopped
-    ports: ["127.0.0.1:${REDIS_PORT:-6379}:6379"]
-    volumes: [redis-data:/data]
+    volumes: [sex-data:/data]
+    environment:
+      SEX_SEARXNG_URL: http://searxng:8080
+      # The image ships Lightpanda; sex runs it as a child process, so there is no browser service.
+      SEX_LIGHTPANDA: "1"
+      SEX_LLM_MODEL: ${SEX_LLM_MODEL:-}
+      SEX_LLM_BASE_URL: ${SEX_LLM_BASE_URL:-}
+      SEX_LLM_API_KEY: ${SEX_LLM_API_KEY:-}
+      # here-docs (structured PDF/office, local OCR) is in the image too, but CPU-heavy: opt in with SEX_DOCS=1 in .env.
+      SEX_DOCS: ${SEX_DOCS:-}
 
   # Pin to a tested tag or digest in production (set SEARXNG_IMAGE).
   searxng:
@@ -45,4 +32,4 @@ services:
       SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me}
 
 volumes:
-  redis-data:
+  sex-data:
