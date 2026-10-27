@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS documents (
   chars INTEGER NOT NULL,
   PRIMARY KEY (job_id, seq)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS dropped_jobs (
+  job_id TEXT PRIMARY KEY
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS job_errors (
   job_id TEXT NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
   json TEXT NOT NULL
@@ -125,16 +128,21 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
  * without holes that fill in later. A crash in between leaves bytes without an index row; they are cut off (JSONL)
  * or dropped with their job. Index rows whose bytes are gone (an OS crash lost the end of a file, or an object is
  * missing) are dropped on open (JSONL) or when a read comes up short.
+ *
+ * Documents are only ever deleted by job id, for jobs this store deleted: the sweep leaves a tombstone in
+ * `dropped_jobs` in the same transaction that deletes the job, and removes it once `drop` succeeded, so a crash or a
+ * failed drop is retried by the next sweep (one runs on open). Nothing is deleted because it was found in the log,
+ * so a bucket, prefix or directory shared with other data is safe.
  */
 export class SqliteJobStore implements JobStore {
   private readonly db: Database;
   private readonly sweeper: ReturnType<typeof setInterval>;
   /** Repair of a log that appends in place; appends and reads wait for it. Resolved at once for other logs. */
   private readonly ready: Promise<void>;
-  /** Orphan cleanup (and repair), awaited only by close(). */
+  /** Repair of a log that appends in place, awaited by close(). */
   private readonly recovery: Promise<void>;
-  /** Document drops started by the sweep, awaited by close(). */
-  private readonly dropping = new Set<Promise<void>>();
+  /** Document drops in progress by job id, awaited by close(). */
+  private readonly dropping = new Map<string, Promise<void>>();
 
   constructor(
     path: string,
@@ -154,10 +162,9 @@ export class SqliteJobStore implements JobStore {
     }
     this.db.run(SCHEMA);
     this.sweep();
-    this.recovery = this.recover().catch((err) => log.warn("document recovery failed", { error: errorText(err) }));
-    // A log that appends in place must be repaired before the next append. Other logs (S3) are cleaned up in the
-    // background, so startup does not wait on listing a bucket.
-    this.ready = this.docs.truncate ? this.recovery : Promise.resolve();
+    this.recovery = this.repair().catch((err) => log.warn("document repair failed", { error: errorText(err) }));
+    // A log that appends in place must be repaired before the next append or read.
+    this.ready = this.recovery;
     this.sweeper = setInterval(() => this.sweep(), 10 * 60 * 1000);
     this.sweeper.unref?.();
   }
@@ -167,14 +174,11 @@ export class SqliteJobStore implements JobStore {
   }
 
   /**
-   * Drops the documents of jobs that no longer exist (the sweep deleted the job but not its documents before a crash).
-   * For a log that appends in place it also cuts each job's object back to the end of its last indexed document and
-   * drops index rows past the end of the object.
+   * For a log that appends in place: cuts each job's object back to the end of its last indexed document (bytes
+   * written before a crash but never indexed) and drops index rows past the end of the object (an OS crash lost its
+   * tail). Only objects of jobs that exist are touched.
    */
-  private async recover() {
-    // Listed first and checked after: a job's documents are only written while the job exists, so a job that is
-    // missing now really is gone, even if it was created after this store opened.
-    for (const id of await this.docs.jobs()) if (!this.jobExists(id)) await this.docs.drop(id);
+  private async repair() {
     const truncate = this.docs.truncate?.bind(this.docs);
     if (!truncate) return;
     const ends = this.db
@@ -292,8 +296,11 @@ export class SqliteJobStore implements JobStore {
       ref.length,
       json.length,
     ).changes;
-    // The job expired while the document was being written: its documents are orphans now.
-    if (added === 0) await this.docs.drop(id);
+    if (added === 0) {
+      // The job expired while the document was being written, so the sweep's drop may have missed it.
+      this.exec("INSERT OR IGNORE INTO dropped_jobs (job_id) VALUES (?)", id);
+      await this.dropDocuments(id);
+    }
   }
 
   async documentsJson(id: string, skip: number, maxChars: number): Promise<{ data: Uint8Array[]; nextSkip: number | null }> {
@@ -406,19 +413,39 @@ export class SqliteJobStore implements JobStore {
   async close() {
     clearInterval(this.sweeper);
     await this.recovery;
-    await Promise.all(this.dropping);
+    await Promise.all(this.dropping.values());
     this.db.close();
   }
 
+  /** Deletes expired jobs, leaving a tombstone for each, then drops the documents of every tombstoned job. */
   private sweep() {
-    const gone = this.db.query<{ id: string }, [number]>("DELETE FROM jobs WHERE expires_at < ? RETURNING id").all(Date.now());
-    // The rows go first: documents whose drop fails or is cut short by a crash are orphans, dropped on the next open.
-    for (const { id } of gone) {
-      const drop = this.docs
-        .drop(id)
-        .catch((err) => log.warn("dropping documents failed", { job: id, error: errorText(err) }))
-        .finally(() => this.dropping.delete(drop));
-      this.dropping.add(drop);
+    this.db.transaction(() => {
+      const gone = this.db.query<{ id: string }, [number]>("DELETE FROM jobs WHERE expires_at < ? RETURNING id").all(Date.now());
+      const tombstone = this.db.query("INSERT OR IGNORE INTO dropped_jobs (job_id) VALUES (?)");
+      for (const { id } of gone) tombstone.run(id);
+    })();
+    for (const { job_id } of this.db.query<{ job_id: string }, []>("SELECT job_id FROM dropped_jobs").all()) {
+      if (!this.dropping.has(job_id)) void this.dropDocuments(job_id);
     }
+  }
+
+  /**
+   * Drops a tombstoned job's documents and then its tombstone; a failure leaves the tombstone for the next sweep.
+   * Drops of one job run one after another (a late append can need a second one), and only the last removes it.
+   */
+  private dropDocuments(id: string): Promise<void> {
+    const drop: Promise<void> = (this.dropping.get(id) ?? Promise.resolve())
+      .then(() => this.docs.drop(id))
+      .then(
+        () => {
+          if (this.dropping.get(id) === drop) this.exec("DELETE FROM dropped_jobs WHERE job_id = ?", id);
+        },
+        (err) => log.warn("dropping documents failed; retried by the next sweep", { job: id, error: errorText(err) }),
+      )
+      .finally(() => {
+        if (this.dropping.get(id) === drop) this.dropping.delete(id);
+      });
+    this.dropping.set(id, drop);
+    return drop;
   }
 }

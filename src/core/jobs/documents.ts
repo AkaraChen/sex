@@ -5,7 +5,6 @@ import {
   ftruncateSync,
   mkdirSync,
   openSync,
-  readdirSync,
   readSync,
   rmSync,
   statSync,
@@ -35,10 +34,8 @@ export interface DocumentLog {
   append(jobId: string, json: string): Promise<DocumentRef>;
   /** Reads `length` bytes at `offset` of `object`; returns fewer (or none) when the object is shorter or missing. */
   read(object: string, offset: number, length: number): Promise<Uint8Array>;
-  /** Removes every object of the job. */
+  /** Removes every object of the job, and nothing else. */
   drop(jobId: string): Promise<void>;
-  /** Job ids that have objects, for orphan cleanup on open. */
-  jobs(): Promise<string[]>;
   /**
    * Only for logs that append a job's documents to one object in place: cuts the job's object back to `end` bytes if
    * it is longer (bytes written before a crash but never indexed) and returns its size afterwards, so index rows past
@@ -116,12 +113,6 @@ export class FsDocumentLog implements DocumentLog {
     rmSync(this.path(`${jobId}${JSONL}`), { force: true });
   }
 
-  async jobs() {
-    return readdirSync(this.dir)
-      .filter((name) => name.endsWith(JSONL))
-      .map((name) => name.slice(0, -JSONL.length));
-  }
-
   async truncate(jobId: string, end: number) {
     const path = this.path(`${jobId}${JSONL}`);
     const size = statSync(path, { throwIfNoEntry: false })?.size ?? 0;
@@ -151,10 +142,6 @@ export class MemoryDocumentLog implements DocumentLog {
 
   async drop(jobId: string) {
     this.byJob.delete(jobId);
-  }
-
-  async jobs() {
-    return [...this.byJob.keys()];
   }
 }
 
@@ -205,14 +192,6 @@ export class S3DocumentLog implements DocumentLog {
       for (const o of page.contents ?? []) keys.push(o.key);
     });
     await Promise.all(keys.map((key) => limit(() => this.client.delete(key))));
-  }
-
-  async jobs() {
-    const ids: string[] = [];
-    await this.list({ prefix: this.prefix, delimiter: "/" }, (page) => {
-      for (const p of page.commonPrefixes ?? []) ids.push(p.prefix.slice(this.prefix.length).replace(/\/$/, ""));
-    });
-    return ids;
   }
 
   private async list(options: Bun.S3ListObjectsOptions, each: (page: Bun.S3ListObjectsResponse) => void) {

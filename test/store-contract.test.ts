@@ -5,7 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type DocumentLog, FsDocumentLog, MemoryDocumentLog, S3DocumentLog } from "../src/core/jobs/documents.ts";
+import { type DocumentLog, type DocumentRef, FsDocumentLog, MemoryDocumentLog, S3DocumentLog } from "../src/core/jobs/documents.ts";
 import { SqliteJobStore } from "../src/core/jobs/sqlite.ts";
 import type { Document } from "../src/schemas.ts";
 
@@ -35,28 +35,58 @@ const s3 = s3Url
       return { client: new Bun.S3Client({ bucket: url.hostname }), prefix };
     })()
   : undefined;
-/** Job ids that still have stored documents. On S3 this lists objects: jobs() lists prefixes, and some S3 servers
- * (SeaweedFS) keep listing a prefix after its last object is deleted. */
-type Stored = () => Promise<string[]>;
-let logs = 0;
-const backends: Array<[string, () => { log: DocumentLog; stored: Stored }]> = [
-  ["memory", () => ((log) => ({ log, stored: () => log.jobs() }))(new MemoryDocumentLog())],
-  ["file", () => ((log) => ({ log, stored: () => log.jobs() }))(new FsDocumentLog(join(dir, `docs-${logs++}`)))],
-];
-if (s3) {
-  const client = s3.client;
-  backends.push([
-    "s3",
-    () => {
-      const prefix = `${s3.prefix}/${logs++}`;
-      const stored = async () => {
-        const keys = ((await client.list({ prefix: `${prefix}/` })).contents ?? []).map((o) => o.key);
-        return [...new Set(keys.map((k) => k.slice(prefix.length + 1).split("/")[0] as string))];
-      };
-      return { log: new S3DocumentLog(client, prefix), stored };
+/**
+ * Wraps a log so a test can see which jobs still have readable documents (through the DocumentLog interface alone),
+ * make the next drops fail, and hold appends until it releases them.
+ */
+function recorded(inner: DocumentLog) {
+  const refs: Array<{ jobId: string; ref: DocumentRef }> = [];
+  let failDrops = 0;
+  let held: Promise<void> = Promise.resolve();
+  const log: DocumentLog = {
+    append: async (jobId, json) => {
+      await held;
+      const ref = await inner.append(jobId, json);
+      refs.push({ jobId, ref });
+      return ref;
     },
-  ]);
+    read: (object, offset, length) => inner.read(object, offset, length),
+    drop: async (jobId) => {
+      if (failDrops > 0) {
+        failDrops--;
+        throw new Error("drop failed");
+      }
+      await inner.drop(jobId);
+    },
+    ...(inner.truncate ? { truncate: inner.truncate.bind(inner) } : {}),
+  };
+  return {
+    log,
+    /** Ids of jobs with at least one document whose bytes are still all there, sorted. */
+    stored: async () => {
+      const ids = new Set<string>();
+      for (const { jobId, ref } of refs) {
+        if ((await inner.read(ref.object, ref.offset, ref.length)).length === ref.length) ids.add(jobId);
+      }
+      return [...ids].sort();
+    },
+    failNextDrops: (n: number) => {
+      failDrops = n;
+    },
+    holdAppends: () => {
+      let release = () => {};
+      held = new Promise((resolve) => (release = resolve));
+      return release;
+    },
+  };
 }
+
+let logs = 0;
+const backends: Array<[string, () => ReturnType<typeof recorded>]> = [
+  ["memory", () => recorded(new MemoryDocumentLog())],
+  ["file", () => recorded(new FsDocumentLog(join(dir, `docs-${logs++}`)))],
+];
+if (s3) backends.push(["s3", () => recorded(new S3DocumentLog(s3.client, `${s3.prefix}/${logs++}`))]);
 
 for (const [name, makeLog] of backends) {
   describe(`job store contract (${name})`, () => {
@@ -220,18 +250,51 @@ for (const [name, makeLog] of backends) {
       expect(await stored()).toEqual([]);
     });
 
-    test("opening a store drops documents of jobs it does not have", async () => {
-      const path = join(dir, `orphans-${name}.sqlite`);
+    test("documents the store did not write are never deleted, by the sweep or on open", async () => {
+      const path = join(dir, `foreign-${name}.sqlite`);
       const { log, stored } = makeLog();
-      const store = new SqliteJobStore(path, 60_000, log);
+      // Another sex instance, or anything else, sharing the bucket, prefix or directory.
+      await log.append("not-ours", JSON.stringify(doc(5)));
+      const store = new SqliteJobStore(path, -1, log);
       const job = await store.create({ kind: "batch_scrape", options: {} });
       await store.pushDocument(job.id, doc(10));
+      (store as unknown as { sweep(): void }).sweep();
       await store.close();
-      await log.append("no-such-job", JSON.stringify(doc(5)));
-
-      const reopened = new SqliteJobStore(path, 60_000, log);
+      const reopened = new SqliteJobStore(path, -1, log);
       await reopened.close();
+      expect(await stored()).toEqual(["not-ours"]);
+    });
+
+    test("a drop that failed (or never ran before a crash) is retried from its tombstone", async () => {
+      const path = join(dir, `tombstone-${name}.sqlite`);
+      const { log, stored, failNextDrops } = makeLog();
+      const first = new SqliteJobStore(path, -1, log);
+      const job = await first.create({ kind: "batch_scrape", options: {} });
+      await first.pushDocument(job.id, doc(10));
+      failNextDrops(1);
+      (first as unknown as { sweep(): void }).sweep();
+      await first.close();
       expect(await stored()).toEqual([job.id]);
+
+      // Opening the store sweeps, and the sweep retries every tombstone.
+      const second = new SqliteJobStore(path, 60_000, log);
+      await second.close();
+      expect(await stored()).toEqual([]);
+    });
+
+    test("a document written while its job expired is dropped as well", async () => {
+      const path = join(dir, `late-${name}.sqlite`);
+      const { log, stored, holdAppends } = makeLog();
+      const store = new SqliteJobStore(path, -1, log);
+      const job = await store.create({ kind: "batch_scrape", options: {} });
+      const release = holdAppends();
+      const pushing = store.pushDocument(job.id, doc(10));
+      await Bun.sleep(5);
+      (store as unknown as { sweep(): void }).sweep();
+      release();
+      await pushing;
+      await store.close();
+      expect(await stored()).toEqual([]);
     });
 
     test("documents whose bytes are gone are dropped from the index on read", async () => {
