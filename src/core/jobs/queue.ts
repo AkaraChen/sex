@@ -39,6 +39,9 @@ export class BunqueueTaskQueue implements TaskQueue {
         data: task,
         opts: {
           attempts: 1,
+          // Written to queue.sqlite before add() resolves. bunqueue otherwise buffers new tasks for a few ms, and a
+          // crash in that window loses them while the job store already counts them as pending.
+          durable: true,
           removeOnComplete: true,
           removeOnFail: true,
           ...(delayMs && delayMs > 0 ? { delay: Math.round(delayMs) } : {}),
