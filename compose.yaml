@@ -15,6 +15,8 @@ x-sex: &sex
     SEX_LLM_MODEL: ${SEX_LLM_MODEL:-}
     SEX_LLM_BASE_URL: ${SEX_LLM_BASE_URL:-}
     SEX_LLM_API_KEY: ${SEX_LLM_API_KEY:-}
+    # here-docs (structured PDF/office, local OCR) is in the image too, but CPU-heavy: opt in with SEX_DOCS=1 in .env.
+    SEX_DOCS: ${SEX_DOCS:-}
 
 services:
   sex:

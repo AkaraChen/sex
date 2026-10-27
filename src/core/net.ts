@@ -212,6 +212,9 @@ function lowerKeys(h: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
 }
 
+/** HTML and XML content types (incl. `+xml` such as XHTML), but not OOXML office documents (`application/vnd.openxmlformats-...`). */
+export const MARKUP_TYPE = /html|^\s*(text|application)\/xml\b|\+xml\b/i;
+
 /** Decodes a response body using the charset from the header or an HTML <meta> tag. */
 export function decodeBody(body: Uint8Array, contentType: string): string {
   let charset = contentType.match(/charset=["']?([\w-]+)/i)?.[1];

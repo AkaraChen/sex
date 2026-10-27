@@ -8,7 +8,7 @@ const WORKER_URL = import.meta.url.includes("$bunfs")
   ? new URL("./core/extract-worker.ts", import.meta.url).href
   : new URL("./extract-worker.ts", import.meta.url).href;
 
-type JobMsg = { kind: "html"; html: string; opts: PageExtractOptions } | { kind: "pdf"; pdf: Uint8Array };
+type JobMsg = { kind: "html"; html: string; opts: PageExtractOptions } | { kind: "pdf"; pdf: Uint8Array; maxPages?: number };
 
 type WorkerReply = { id: number; ok: true; result: unknown } | { id: number; ok: false; status?: number; code?: string; message: string };
 
@@ -47,9 +47,9 @@ export class ExtractPool {
     return this.run({ kind: "html", html, opts }) as Promise<PageExtractResult>;
   }
 
-  pdf(bytes: Uint8Array): Promise<PdfText> {
-    if (this.size === 0) return pdfToMarkdown(bytes);
-    return this.run({ kind: "pdf", pdf: bytes }) as Promise<PdfText>;
+  pdf(bytes: Uint8Array, maxPages?: number): Promise<PdfText> {
+    if (this.size === 0) return pdfToMarkdown(bytes, maxPages);
+    return this.run({ kind: "pdf", pdf: bytes, maxPages }) as Promise<PdfText>;
   }
 
   async close(): Promise<void> {

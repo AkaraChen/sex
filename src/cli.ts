@@ -12,6 +12,7 @@ const commonArgs = {
   lightpanda: { type: "boolean", description: "Spawn a local Lightpanda browser for page rendering (env SEX_LIGHTPANDA)" },
   "lightpanda-path": { type: "string", description: "Path to the lightpanda binary (env SEX_LIGHTPANDA_PATH)" },
   "cdp-url": { type: "string", description: "Use an existing CDP browser, e.g. ws://127.0.0.1:9222 (env SEX_CDP_URL)" },
+  docs: { type: "boolean", description: "Convert PDFs, office documents and images with here-docs: structure + local OCR (env SEX_DOCS)" },
   "llm-model": { type: "string", description: "Enable LLM features with this model (env SEX_LLM_MODEL)" },
   "llm-base-url": { type: "string", description: "OpenAI-compatible base URL (env SEX_LLM_BASE_URL, default https://api.openai.com/v1)" },
   "llm-api-key": { type: "string", description: "LLM API key (env SEX_LLM_API_KEY or OPENAI_API_KEY)" },
@@ -60,6 +61,7 @@ function engineFrom(
     lightpanda: args.lightpanda,
     lightpandaPath: args["lightpanda-path"],
     cdpUrl: args["cdp-url"],
+    docs: args.docs,
     llmModel: args["llm-model"],
     llmBaseUrl: args["llm-base-url"],
     llmApiKey: args["llm-api-key"],
@@ -112,6 +114,20 @@ function maybeStartWorker(engine: Engine, enabled: boolean) {
   if (!engine.config.redisUrl) return;
   if (enabled) engine.startWorker();
   else log.info("job worker disabled; jobs run on other `sex worker` processes");
+}
+
+/** Starts the browser and document converter up front; a broken install prints `error: CODE: message` and exits 1. */
+async function warmupOrExit(engine: Engine): Promise<boolean> {
+  try {
+    await engine.browser.warmup();
+    await engine.docs.warmup();
+    return true;
+  } catch (err) {
+    const e = toAppError(err);
+    process.stderr.write(`error: ${e.code}: ${e.message}\n`);
+    await engine.close();
+    process.exit(1);
+  }
 }
 
 /** Closes the engine on SIGINT/SIGTERM, after `beforeClose` (e.g. stopping the server whose requests use the engine). */
@@ -276,7 +292,7 @@ const serve = defineCommand({
     if (!engine) return;
     let stopServer: (() => Promise<void>) | undefined;
     onShutdown(engine, () => stopServer?.());
-    await engine.browser.warmup();
+    if (!(await warmupOrExit(engine))) return;
     maybeStartWorker(engine, args.worker);
     const { serveHttp } = await import("./http/server.ts");
     stopServer = serveHttp(engine, {
@@ -297,7 +313,7 @@ const worker = defineCommand({
       process.exit(1);
     }
     onShutdown(engine);
-    await engine.browser.warmup();
+    if (!(await warmupOrExit(engine))) return;
     engine.startWorker();
     log.info("worker running", engine.describe());
   },

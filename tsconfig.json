@@ -11,6 +11,8 @@
 
     // Bundler mode
     "moduleResolution": "bundler",
+    // here-docs ships TypeScript source under the "bun" export condition (no dist/ in a Bun install).
+    "customConditions": ["bun"],
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,

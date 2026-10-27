@@ -62,6 +62,14 @@ test("integer bounds and boolean words are enforced", () => {
   expect(resolveConfig({}, undefined, { SEX_LIGHTPANDA: "Off" }).lightpanda).toBe(false);
 });
 
+test("SEX_DOCS is off by default; the flag wins over the env", () => {
+  expect(resolveConfig({}, undefined, {}).docs).toBe(false);
+  expect(resolveConfig({}, undefined, { SEX_DOCS: "1" }).docs).toBe(true);
+  expect(resolveConfig({ docs: false }, undefined, { SEX_DOCS: "1" }).docs).toBe(false);
+  const err = configError(() => resolveConfig({}, undefined, { SEX_DOCS: "maybe" }));
+  expect(err.message).toContain("SEX_DOCS");
+});
+
 test("SEARXNG URL must be an http(s) URL", () => {
   const err = configError(() => resolveConfig({}, undefined, { SEX_SEARXNG_URL: "not a url" }));
   expect(err.code).toBe("CONFIG_INVALID");
