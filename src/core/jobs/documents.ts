@@ -13,7 +13,8 @@ import {
   writeSync,
 } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import pLimit from "p-limit";
 import type { Config } from "../../config.ts";
 
 /** Where one stored document's bytes are. */
@@ -27,7 +28,7 @@ export interface DocumentRef {
 /**
  * Where scraped documents (Firecrawl Document JSON) are kept. The job store indexes them in SQLite (`documents`
  * table): it records the DocumentRef of each one and pages through them by that index, so a log only stores and
- * reads bytes. Implementations: one append-only JSONL file per job (default), or memory.
+ * reads bytes. Implementations: one append-only JSONL file per job (default), one S3 object per document, or memory.
  */
 export interface DocumentLog {
   /** Stores one document; resolves once the bytes are durable in the backend. */
@@ -157,16 +158,94 @@ export class MemoryDocumentLog implements DocumentLog {
   }
 }
 
-/** Reads made in parallel for one page of documents (they only happen in parallel on logs that keep each document in its own object). */
-export const READ_CONCURRENCY = 8;
+/** Parallel S3 requests per drop or read. */
+const S3_CONCURRENCY = 8;
 
-/** Where documents are kept, for `/health`: a file:// URL, or "memory". */
-export function documentsLocation(config: Pick<Config, "dataDir">): string {
+/**
+ * One S3 object per document, `<prefix>/<jobId>/<random id>.json` (Bun.S3Client; credentials, endpoint and region
+ * come from the S3_* / AWS_* env vars). A PUT is durable once it resolves. Objects are immutable, so there is
+ * nothing to truncate: a document written but never indexed is an orphan inside its job's prefix until the job is
+ * dropped.
+ */
+export class S3DocumentLog implements DocumentLog {
+  /** "" or "some/prefix/". */
+  private readonly prefix: string;
+
+  constructor(
+    private readonly client: Bun.S3Client,
+    prefix: string,
+  ) {
+    const trimmed = prefix.replace(/^\/+|\/+$/g, "");
+    this.prefix = trimmed ? `${trimmed}/` : "";
+  }
+
+  async append(jobId: string, json: string): Promise<DocumentRef> {
+    const object = `${jobId}/${Bun.randomUUIDv7()}.json`;
+    const bytes = Buffer.from(json);
+    await this.client.write(this.prefix + object, bytes, { type: "application/json" });
+    return { object, offset: 0, length: bytes.length };
+  }
+
+  async read(object: string, offset: number, length: number) {
+    try {
+      return await this.client
+        .file(this.prefix + object)
+        .slice(offset, offset + length)
+        .bytes();
+    } catch (err) {
+      if ((err as { code?: string }).code === "NoSuchKey") return new Uint8Array(0);
+      throw err;
+    }
+  }
+
+  async drop(jobId: string) {
+    const limit = pLimit(S3_CONCURRENCY);
+    const keys: string[] = [];
+    await this.list({ prefix: `${this.prefix}${jobId}/` }, (page) => {
+      for (const o of page.contents ?? []) keys.push(o.key);
+    });
+    await Promise.all(keys.map((key) => limit(() => this.client.delete(key))));
+  }
+
+  async jobs() {
+    const ids: string[] = [];
+    await this.list({ prefix: this.prefix, delimiter: "/" }, (page) => {
+      for (const p of page.commonPrefixes ?? []) ids.push(p.prefix.slice(this.prefix.length).replace(/\/$/, ""));
+    });
+    return ids;
+  }
+
+  private async list(options: Bun.S3ListObjectsOptions, each: (page: Bun.S3ListObjectsResponse) => void) {
+    let continuationToken: string | undefined;
+    do {
+      const page = await this.client.list({ ...options, continuationToken });
+      each(page);
+      continuationToken = page.isTruncated ? page.nextContinuationToken : undefined;
+    } while (continuationToken);
+  }
+}
+
+/** Reads made in parallel for one page of documents (in practice only on S3, where each document is a read). */
+export const READ_CONCURRENCY = S3_CONCURRENCY;
+
+/** Where documents are kept, for `/health`: a file:// or s3:// URL, or "memory". */
+export function documentsLocation(config: Pick<Config, "documentsUrl" | "dataDir">): string {
+  if (config.documentsUrl) return config.documentsUrl;
   return config.dataDir ? pathToFileURL(join(config.dataDir, "documents")).href : "memory";
 }
 
-/** The document log for a config: JSONL files under `<dataDir>/documents`, else memory. */
-export function createDocumentLog(config: Pick<Config, "dataDir">): DocumentLog {
+/**
+ * The document log for a config: `documentsUrl` (s3://bucket/prefix or file:///path, checked by resolveConfig), else
+ * JSONL files under `<dataDir>/documents`, else memory.
+ */
+export function createDocumentLog(config: Pick<Config, "documentsUrl" | "dataDir">): DocumentLog {
+  if (config.documentsUrl) {
+    const url = new URL(config.documentsUrl);
+    if (url.protocol === "s3:") {
+      return new S3DocumentLog(new Bun.S3Client({ bucket: decodeURIComponent(url.hostname) }), decodeURIComponent(url.pathname));
+    }
+    return new FsDocumentLog(fileURLToPath(url));
+  }
   if (config.dataDir) return new FsDocumentLog(join(config.dataDir, "documents"));
   return new MemoryDocumentLog();
 }

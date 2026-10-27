@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
+import { existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { defaultDataDir, resolveConfig } from "../src/config.ts";
+import { createDocumentLog, documentsLocation, FsDocumentLog, MemoryDocumentLog, S3DocumentLog } from "../src/core/jobs/documents.ts";
 import { testEngine } from "./helpers.ts";
 
 test("resolveConfig reads from an explicit env object", () => {
@@ -32,6 +35,43 @@ test("SEX_DATA_DIR falls back to the per-command default; none keeps jobs in mem
   expect(resolveConfig({}, undefined, { SEX_DATA_DIR: "/e" }).dataDir).toBe("/e");
   expect(resolveConfig({}, undefined, {}).dataDir).toBeUndefined();
   expect(defaultDataDir({ XDG_DATA_HOME: "/xdg" })).toBe("/xdg/sex");
+});
+
+test("SEX_DOCUMENTS_URL takes s3:// and file:// URLs, below --documents-url; anything else is CONFIG_INVALID", () => {
+  const documentsUrl = (o: { documentsUrl?: string }, env: Record<string, string>) => resolveConfig(o, undefined, env).documentsUrl;
+  expect(documentsUrl({}, {})).toBeUndefined();
+  expect(documentsUrl({}, { SEX_DOCUMENTS_URL: "  " })).toBeUndefined();
+  expect(documentsUrl({}, { SEX_DOCUMENTS_URL: "s3://bucket" })).toBe("s3://bucket");
+  expect(documentsUrl({}, { SEX_DOCUMENTS_URL: "s3://bucket/some/prefix" })).toBe("s3://bucket/some/prefix");
+  expect(documentsUrl({}, { SEX_DOCUMENTS_URL: "file:///srv/docs" })).toBe("file:///srv/docs");
+  expect(documentsUrl({ documentsUrl: "s3://flag" }, { SEX_DOCUMENTS_URL: "s3://env" })).toBe("s3://flag");
+  for (const bad of [
+    "/srv/docs",
+    "file://host/docs",
+    "file:///",
+    "s3://",
+    "s3:///prefix",
+    "https://bucket/x",
+    "s3://b/p?x=1",
+    "redis://x",
+  ]) {
+    const err = configError(() => resolveConfig({}, undefined, { SEX_DOCUMENTS_URL: bad }));
+    expect(err.code).toBe("CONFIG_INVALID");
+    expect(err.message).toContain("SEX_DOCUMENTS_URL");
+  }
+});
+
+test("documents go to the data dir unless SEX_DOCUMENTS_URL says otherwise", () => {
+  const dataDir = `${tmpdir()}/sex-config-${Bun.randomUUIDv7()}`;
+  expect(documentsLocation({})).toBe("memory");
+  expect(createDocumentLog({})).toBeInstanceOf(MemoryDocumentLog);
+  expect(documentsLocation({ dataDir })).toBe(`file://${dataDir}/documents`);
+  expect(createDocumentLog({ dataDir })).toBeInstanceOf(FsDocumentLog);
+  expect(createDocumentLog({ dataDir, documentsUrl: `file://${dataDir}/elsewhere` })).toBeInstanceOf(FsDocumentLog);
+  expect(existsSync(`${dataDir}/elsewhere`)).toBe(true);
+  expect(createDocumentLog({ dataDir, documentsUrl: "s3://bucket/prefix" })).toBeInstanceOf(S3DocumentLog);
+  expect(documentsLocation({ dataDir, documentsUrl: "s3://bucket/prefix" })).toBe("s3://bucket/prefix");
+  rmSync(dataDir, { recursive: true, force: true });
 });
 
 test("the removed Redis settings are rejected instead of silently ignored", () => {

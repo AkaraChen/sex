@@ -1,10 +1,11 @@
-// JobStore behaviour against every DocumentLog: memory and JSONL files.
+// JobStore behaviour against every DocumentLog: memory, JSONL files, and S3 when SEX_TEST_S3_URL is set
+// (s3://bucket/prefix, with S3_ENDPOINT / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY / S3_REGION for Bun.S3Client).
 import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type DocumentLog, FsDocumentLog, MemoryDocumentLog } from "../src/core/jobs/documents.ts";
+import { type DocumentLog, FsDocumentLog, MemoryDocumentLog, S3DocumentLog } from "../src/core/jobs/documents.ts";
 import { SqliteJobStore } from "../src/core/jobs/sqlite.ts";
 import type { Document } from "../src/schemas.ts";
 
@@ -25,13 +26,37 @@ async function allPages(store: SqliteJobStore, id: string, maxChars: number) {
   return pages;
 }
 
-/** Job ids that still have stored documents. */
+const s3Url = process.env.SEX_TEST_S3_URL;
+/** Each run writes under its own prefix and removes it afterwards. */
+const s3 = s3Url
+  ? (() => {
+      const url = new URL(s3Url);
+      const prefix = `${url.pathname.replace(/^\/+|\/+$/g, "")}/store-contract-${Bun.randomUUIDv7()}`.replace(/^\//, "");
+      return { client: new Bun.S3Client({ bucket: url.hostname }), prefix };
+    })()
+  : undefined;
+/** Job ids that still have stored documents. On S3 this lists objects: jobs() lists prefixes, and some S3 servers
+ * (SeaweedFS) keep listing a prefix after its last object is deleted. */
 type Stored = () => Promise<string[]>;
 let logs = 0;
 const backends: Array<[string, () => { log: DocumentLog; stored: Stored }]> = [
   ["memory", () => ((log) => ({ log, stored: () => log.jobs() }))(new MemoryDocumentLog())],
   ["file", () => ((log) => ({ log, stored: () => log.jobs() }))(new FsDocumentLog(join(dir, `docs-${logs++}`)))],
 ];
+if (s3) {
+  const client = s3.client;
+  backends.push([
+    "s3",
+    () => {
+      const prefix = `${s3.prefix}/${logs++}`;
+      const stored = async () => {
+        const keys = ((await client.list({ prefix: `${prefix}/` })).contents ?? []).map((o) => o.key);
+        return [...new Set(keys.map((k) => k.slice(prefix.length + 1).split("/")[0] as string))];
+      };
+      return { log: new S3DocumentLog(client, prefix), stored };
+    },
+  ]);
+}
 
 for (const [name, makeLog] of backends) {
   describe(`job store contract (${name})`, () => {
@@ -299,6 +324,29 @@ test("a whole page of a JSONL file is one read", async () => {
   expect(reads).toEqual([lines(doc(10), doc(20), doc(30))]);
   await store.close();
   expect(readdirSync(dataDir)).toEqual([`${job.id}.jsonl`]);
+});
+
+test.skipIf(!s3)("an S3 object missing from the middle of a page is dropped, and the rest is returned", async () => {
+  if (!s3) return;
+  const prefix = `${s3.prefix}/missing`;
+  const log = new S3DocumentLog(s3.client, prefix);
+  const store = new SqliteJobStore(":memory:", 60_000, log);
+  const job = await store.create({ kind: "batch_scrape", options: {} });
+  for (const n of [10, 20, 30]) await store.pushDocument(job.id, doc(n));
+  // Object names are UUIDv7, so they list in write order.
+  const keys = ((await s3.client.list({ prefix: `${prefix}/${job.id}/` })).contents ?? []).map((o) => o.key).sort();
+  expect(keys).toHaveLength(3);
+  await s3.client.delete(keys[1] as string);
+  expect(await store.documents(job.id, 0, 1e6)).toEqual({ data: [doc(10), doc(30)], nextSkip: null });
+  await store.close();
+  await log.drop(job.id);
+});
+
+afterAll(async () => {
+  if (!s3) return;
+  // Everything this run wrote; the contract tests leave nothing behind on their own, this is a safety net.
+  const keys = ((await s3.client.list({ prefix: `${s3.prefix}/` })).contents ?? []).map((o) => o.key);
+  await Promise.all(keys.map((k) => s3.client.delete(k)));
 });
 
 test("a database from before documents moved to files opens, without its documents", async () => {
