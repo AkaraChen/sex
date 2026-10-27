@@ -124,7 +124,11 @@ export const ScrapeOptions = z.object({
   mobile: z.boolean().optional(),
   skipTlsVerification: z.boolean().optional(),
   timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
-  parsers: z.array(z.union([z.string(), z.object({ type: z.string() }).loose()])).optional(),
+  parsers: z
+    .array(z.union([z.string(), z.object({ type: z.string(), maxPages: z.number().int().min(1).max(10_000).optional() }).loose()]))
+    .max(10)
+    .optional()
+    .describe('File parsers that may run: "pdf" (optionally { type: "pdf", maxPages }) and "image" (OCR, needs SEX_DOCS). Default: both.'),
   actions: z.array(Action).max(50).optional().describe("Browser actions run before the page is captured (browser only, at most 50)"),
   location: LocationConfig.optional(),
   removeBase64Images: z.boolean().optional(),

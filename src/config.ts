@@ -8,6 +8,8 @@ export interface Config {
   /** Spawn a local Lightpanda process and use it as the browser. */
   lightpanda: boolean;
   lightpandaPath?: string;
+  /** Convert PDFs, office documents and images with here-docs (structured text + OCR). */
+  docs: boolean;
   llm?: { baseUrl: string; apiKey?: string; model: string };
   /** Allow fetching loopback / private / link-local addresses. */
   allowPrivateNetwork: boolean;
@@ -43,6 +45,7 @@ export interface ConfigOverrides {
   cdpUrl?: string;
   lightpanda?: boolean;
   lightpandaPath?: string;
+  docs?: boolean;
   llmBaseUrl?: string;
   llmApiKey?: string;
   llmModel?: string;
@@ -113,6 +116,7 @@ const RAW_SCHEMA = z.object({
   searxngUrl: urlField,
   llmBaseUrl: urlField,
   lightpanda: flagField,
+  docs: flagField,
   allowPrivateNetwork: flagField,
   corsOrigins: corsOriginsField,
   allowedHosts: allowedHostsField,
@@ -131,6 +135,7 @@ const FIELD_RULES: Record<keyof z.infer<typeof RAW_SCHEMA>, [name: string, expec
   searxngUrl: ["SEX_SEARXNG_URL", "an http(s) URL"],
   llmBaseUrl: ["SEX_LLM_BASE_URL", "an http(s) URL"],
   lightpanda: ["SEX_LIGHTPANDA", `one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(", ")}`],
+  docs: ["SEX_DOCS", `one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(", ")}`],
   allowPrivateNetwork: ["SEX_ALLOW_PRIVATE_NETWORK", `one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(", ")}`],
   corsOrigins: ["SEX_CORS_ORIGINS", "comma-separated origins like https://app.example.com (no path)"],
   allowedHosts: ["SEX_ALLOWED_HOSTS", "comma-separated hostnames without a port"],
@@ -156,6 +161,7 @@ export function resolveConfig(
     searxngUrl: str(o.searxngUrl) ?? str(env.SEX_SEARXNG_URL),
     llmBaseUrl: str(o.llmBaseUrl) ?? str(env.SEX_LLM_BASE_URL) ?? str(env.OPENAI_BASE_URL),
     lightpanda: flag(o.lightpanda, str(env.SEX_LIGHTPANDA)),
+    docs: flag(o.docs, str(env.SEX_DOCS)),
     allowPrivateNetwork: flag(o.allowPrivateNetwork, str(env.SEX_ALLOW_PRIVATE_NETWORK)),
     corsOrigins: str(o.corsOrigins) ?? str(env.SEX_CORS_ORIGINS),
     allowedHosts: str(o.allowedHosts) ?? str(env.SEX_ALLOWED_HOSTS),
@@ -176,6 +182,7 @@ export function resolveConfig(
     cdpUrl: str(o.cdpUrl) ?? str(env.SEX_CDP_URL),
     lightpanda: v.lightpanda ?? false,
     lightpandaPath: str(o.lightpandaPath) ?? str(env.SEX_LIGHTPANDA_PATH) ?? str(env.LIGHTPANDA_EXECUTABLE_PATH),
+    docs: v.docs ?? false,
     llm: llmModel
       ? {
           baseUrl: (v.llmBaseUrl ?? DEFAULT_LLM_BASE_URL).replace(/\/+$/, ""),

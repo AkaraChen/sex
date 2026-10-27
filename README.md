@@ -4,6 +4,7 @@
 
 - **搜索**：[SearXNG](https://github.com/searxng/searxng)
 - **抓取/清洗**：[Defuddle](https://github.com/kepano/defuddle)（无浏览器时用 linkedom 跑它的 Node 版；有浏览器时把同一份浏览器 bundle 注入页面执行）。HTML 和 PDF 的解析在 worker 线程池里进行（`SEX_EXTRACT_WORKERS`）
+- **文档转换（可选）**：[here-docs](https://github.com/AkaraChen/here-docs)，PDF 保留标题、表格等结构，扫描页本地 OCR；还支持 Word / PowerPoint / Excel / OpenDocument / EPUB / RTF 和图片。不开时 PDF 用 unpdf 抽纯文本
 - **浏览器（可选）**：[Lightpanda](https://github.com/lightpanda-io/browser)（作为 sex 的子进程运行，Docker 镜像自带），或任意 CDP 浏览器（Chrome 等）
 - **LLM（可选）**：任意 OpenAI 兼容的 `/chat/completions` 接口
 - **任务队列（可选）**：配置了 Redis 时，crawl / batch scrape / extract 跑在 [BullMQ](https://bullmq.io) 上，可以开多个 worker 一起处理；不配就用进程内的内存队列
@@ -21,7 +22,7 @@ bun src/cli.ts search "defuddle"
 bun src/cli.ts fetch https://stephango.com/saw
 bun src/cli.ts serve                 # HTTP API: http://127.0.0.1:3002/docs，MCP: http://127.0.0.1:3002/mcp
 
-bun run build                        # 单文件可执行：dist/sex
+bun run build                        # 单文件可执行：dist/sex（不含 here-docs，见「文档转换」）
 ```
 
 需要 LLM 功能时，先 `cp .env.example .env`，取消注释并填写 `SEX_LLM_MODEL`、`SEX_LLM_API_KEY` 等。
@@ -37,6 +38,8 @@ docker compose up -d --scale sex-worker=4   # 加 worker
 
 compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` 变量（如 `SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`）不会自动传入容器，需要加到 `compose.yaml` 的 `x-sex` 的 `environment` 里。
 
+镜像里 sex 是用 `bun` 直接跑源码（`bun /app/src/cli.ts`），不是单文件二进制，因为 here-docs 的原生引擎只能从 `node_modules` 加载；`SEX_DOCS` 默认关闭，在 `.env` 里设 `SEX_DOCS=1` 开启。
+
 镜像自带 Lightpanda（`/usr/local/bin/lightpanda`），compose 给每个 sex 服务设了 `SEX_LIGHTPANDA=1`，所以没有单独的 `lightpanda` 服务：每个 sex 进程（包括每个 `sex-worker`）各自启动、管理一个子进程，空闲时约 13 MB 内存。二进制在镜像里不等于开启，是否使用仍由 `SEX_LIGHTPANDA` 决定；镜像因此大约增大 77 MB。Lightpanda 目前只有 nightly，`Dockerfile` 里的 `LIGHTPANDA_IMAGE` 按 digest 固定了版本，升级时手动改 digest（或 `docker build --build-arg LIGHTPANDA_IMAGE=...`）。详见[浏览器](#浏览器)。
 
 ## 可选能力
@@ -44,10 +47,24 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 | 能力 | 开启方式 | 依赖它的功能 |
 |---|---|---|
 | 浏览器 | `--lightpanda`（启动本地 Lightpanda 子进程，二进制从 PATH / `--lightpanda-path` 找；Docker 镜像自带，compose 已开启）或 `--cdp-url ws://...` | `actions`、JS 渲染页面；`waitFor` 无浏览器时忽略并给 warning |
+| 文档转换 | `--docs`（`SEX_DOCS=1`；需要用 `bun src/cli.ts` 或 Docker 镜像运行，单文件二进制不支持） | PDF 结构化 + 扫描页 OCR、Office / EPUB / RTF 文档、图片 OCR（`image` parser）；不开时 PDF 用 unpdf 抽纯文本，其它文件返回 415 |
 | LLM | `--llm-model`（+ `--llm-base-url`、`--llm-api-key`） | `json` / `summary` / `question` / `highlights` 格式、`/v2/extract`、crawl 的 `prompt`、`/v2/crawl/params-preview` |
 | Redis | `--redis-url redis://...`（`serve` / `worker`） | 任务持久化、多进程/多机分担 crawl 和 batch；不配时任务存在内存里，只在当前进程执行 |
 
 没开启却用到了对应功能时，直接报 `501 BROWSER_NOT_CONFIGURED` / `501 LLM_NOT_CONFIGURED`。
+
+### 文档转换
+
+`--docs`（`SEX_DOCS=1`）开启后，PDF、Office 文档和图片交给 [here-docs](https://github.com/AkaraChen/here-docs)，它在本地跑 Firecrawl 的 pdf-inspector / anydoc 和 PP-OCR，不依赖任何外部服务：
+
+- **PDF**：能抽出文字的页输出带标题、列表、表格的 Markdown；扫描页和图片页逐页 OCR，按页序合并。`metadata.numPages` 是总页数。
+- **Office 等文档**：Word、PowerPoint、Excel、OpenDocument、EPUB、RTF 转成结构化 Markdown，内嵌图片的 OCR 文字插在原位置。
+- **图片**（`image/*`）：OCR。请求里显式传了 `parsers` 但不含 `"image"` 时仍返回 415，和 Firecrawl 一致。
+- **页数上限**：`parsers: [{ "type": "pdf", "maxPages": N }]` 只转换前 N 页，后面的页不会被解析或 OCR，`warning` 里会说明实际转换了几页。不开 `--docs` 时 unpdf 路径同样遵守 `maxPages`。
+- **超时和取消**：转换受请求的 `timeout`（默认 `SEX_TIMEOUT`）约束，超时返回 `408 SCRAPE_TIMEOUT`；客户端断开或任务被取消时立即停止，返回 408。OCR 一页大约几百毫秒，长扫描件需要调大 `timeout` 或用 `maxPages`。
+- **资源**：引擎在 `serve` / `worker` 启动时加载（约 1–3 秒），每个进程一份，空闲时大约 200 MB 内存；OCR 吃 CPU，但跑在原生线程里，不阻塞事件循环。加载失败时 `serve` / `worker` 直接以 `error: DOCS_UNAVAILABLE: ...` 退出。
+
+**运行方式**：here-docs 带原生 addon（约 200 MB），`bun build --compile` 出来的单文件二进制在运行时加载不了它们，所以 `dist/sex --docs` 会报 `DOCS_UNAVAILABLE`。需要文档转换时，在装好依赖（`bun install`）的源码目录里用 `bun src/cli.ts ... --docs`，或者用 Docker 镜像（镜像本来就是用 `bun` 跑源码）。支持的平台：Linux x64 / arm64（glibc 和 musl）、macOS arm64、Windows x64；Intel Mac 不支持。
 
 ### 浏览器
 
@@ -82,6 +99,7 @@ bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightp
 | `SEX_LIGHTPANDA` | `--lightpanda` | `false` | 启动本地 Lightpanda 子进程；compose 里已设为 `1` |
 | `SEX_LIGHTPANDA_PATH`（回退 `LIGHTPANDA_EXECUTABLE_PATH`） | `--lightpanda-path` | 从 PATH 查找 | Lightpanda 可执行文件；Docker 镜像里是 `/usr/local/bin/lightpanda`，已在 PATH 上 |
 | `SEX_CDP_URL` | `--cdp-url` | 无 | 已有 CDP 浏览器的地址，如 `ws://127.0.0.1:9222`；和 `SEX_LIGHTPANDA` 同时设置时以它为准 |
+| `SEX_DOCS` | `--docs` | `false` | 用 here-docs 转换 PDF / Office 文档 / 图片（结构化 + 本地 OCR），见[文档转换](#文档转换)；单文件二进制不支持 |
 | `SEX_LLM_MODEL` | `--llm-model` | 无（LLM 关闭） | 设置后开启 LLM 功能 |
 | `SEX_LLM_BASE_URL`（回退 `OPENAI_BASE_URL`） | `--llm-base-url` | `https://api.openai.com/v1` | OpenAI 兼容接口 |
 | `SEX_LLM_API_KEY`（回退 `OPENAI_API_KEY`） | `--llm-api-key` | 无 | LLM API key |
@@ -139,6 +157,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - 不鉴权，`Authorization` 头会被忽略。
 - 不支持 `screenshot`、`changeTracking`、`branding`、`product`、`menu`、`audio`、`video` 这几种格式，以及 `screenshot` / `pdf` 这两种 action，会返回 `501 NOT_SUPPORTED`。
 - `maxAge`、`proxy`、`blockAds`、`storeInCache`、搜索的 `location` / `country` / `ignoreInvalidURLs`、extract 的 `allowExternalLinks` 等参数会接受但忽略，没有缓存也没有代理池。
+- `parsers` 支持 `"pdf"`（含 `maxPages`）和 `"image"`；PDF parser 的 `mode`、`pages`（`document.pages`）和 `blocks` 会接受但忽略。开了 `--docs` 时 PDF 的 `metadata.title` 不再取自 PDF 元数据（here-docs 不提供），标题以正文里的标题为准。
 - crawl 的 `delay` 通过给每个页面任务分配错开的执行时间来实现；`maxConcurrency` 不按单个任务限制，并发由 worker 数和 `SEX_CONCURRENCY` 决定。crawl 的 `delay × limit` 超过 `SEX_JOB_TTL_MS` 时直接返回 `400 BAD_REQUEST`。
 - crawl 遵守 robots.txt（RFC 9309）：robots.txt 返回 5xx 时视为全部禁止，返回 4xx 时视为全部允许。
 - 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
@@ -199,7 +218,7 @@ HTTP 传输（`serve`，端点 `/mcp`）始终是无状态的（SDK v2 的行为
 ```bash
 bun run verify    # bun check && bun run lint && bun test
 bun run format    # biome --write
-bun test          # 单元 + 集成测试（本地 fixture 站点、mock SearXNG、mock LLM，不依赖外网）
+bun test          # 单元 + 集成测试（本地 fixture 站点、mock SearXNG、mock LLM，不依赖外网；test/docs.test.ts 会真的跑 here-docs，平台不支持时自动跳过）
 ```
 
 可选的集成测试需要外部服务，没有设置对应变量时会跳过：

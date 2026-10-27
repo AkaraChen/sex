@@ -4,7 +4,7 @@ import type { Document, FormatOption, ScrapeOptions } from "../schemas.ts";
 import type { BrowserScrapeResult } from "./browser.ts";
 import type { Engine } from "./engine.ts";
 import { compileJsonSchema } from "./json-schema.ts";
-import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
+import { assertPublicUrl, decodeBody, MARKUP_TYPE, parseHttpUrl, safeFetch } from "./net.ts";
 import type { PageExtractResult } from "./page.ts";
 
 export interface NormalizedFormats {
@@ -158,6 +158,7 @@ async function scrapeInner(
   let extracted: PageExtractResult | undefined;
   let plainMarkdown: string | undefined;
   let pdfMeta: { title?: string; numPages?: number } | undefined;
+  const parsers = fileParsers(options.parsers);
   let browserResult: BrowserScrapeResult | undefined;
 
   if (engine.browser.enabled) {
@@ -206,20 +207,28 @@ async function scrapeInner(
     status = res.status;
     contentType = res.contentType;
     const isPdf = /application\/pdf/i.test(contentType) || startsWith(res.body, "%PDF-");
-    const pdfDisabled = options.parsers !== undefined && !options.parsers.some((p) => (typeof p === "string" ? p : p.type) === "pdf");
     if (isPdf) {
-      if (pdfDisabled) throw new AppError(415, "UNSUPPORTED_FILE", "PDF parsing is disabled by the parsers option");
-      const pdf = await engine.extractPool.pdf(res.body);
-      plainMarkdown = pdf.markdown;
-      pdfMeta = { title: pdf.title, numPages: pdf.numPages };
+      if (!parsers.pdf) throw new AppError(415, "UNSUPPORTED_FILE", "PDF parsing is disabled by the parsers option");
+      if (engine.docs.enabled) {
+        const doc = await convertDocument(engine, res.body, finalUrl, parsers.maxPages, timeout, internal.signal, warnings);
+        plainMarkdown = doc.markdown;
+        pdfMeta = { numPages: doc.numPages };
+      } else {
+        const pdf = await engine.extractPool.pdf(res.body, parsers.maxPages);
+        plainMarkdown = pdf.markdown;
+        pdfMeta = { title: pdf.title, numPages: pdf.numPages };
+      }
       contentType ||= "application/pdf";
-    } else if (!contentType || /html|xml/i.test(contentType)) {
+    } else if (!contentType || MARKUP_TYPE.test(contentType)) {
       rawHtml = decodeBody(res.body, contentType);
       extracted = await engine.extractPool.html(rawHtml, { ...extractOpts, url: finalUrl });
     } else if (/^(text\/|application\/(json|javascript|x-ndjson))/i.test(contentType)) {
       const text = decodeBody(res.body, contentType);
       plainMarkdown = /json/i.test(contentType) ? `\`\`\`json\n${text}\n\`\`\`` : text;
       rawHtml = text;
+    } else if (engine.docs.enabled && (parsers.image || !/^image\//i.test(contentType))) {
+      // Office documents, EPUB, RTF and (with the "image" parser) raster images; here-docs detects the format from the bytes.
+      plainMarkdown = (await convertDocument(engine, res.body, finalUrl, undefined, timeout, internal.signal, warnings)).markdown;
     } else {
       throw new AppError(415, "UNSUPPORTED_FILE", `Unsupported content type: ${contentType}`);
     }
@@ -290,6 +299,38 @@ async function scrapeInner(
   if (warnings.length) doc.warning = warnings.join("; ");
 
   return { document: doc, links: extracted?.links, linkTitles: extracted?.linkTitles };
+}
+
+/** Firecrawl `parsers`: which file parsers may run, and the PDF page budget. Omitted means every parser, all pages. */
+function fileParsers(parsers: ScrapeOptions["parsers"]): { pdf: boolean; image: boolean; maxPages?: number } {
+  if (parsers === undefined) return { pdf: true, image: true };
+  const out: { pdf: boolean; image: boolean; maxPages?: number } = { pdf: false, image: false };
+  for (const p of parsers) {
+    const type = typeof p === "string" ? p : p.type;
+    if (type === "image") out.image = true;
+    if (type !== "pdf") continue;
+    out.pdf = true;
+    if (typeof p !== "string" && p.maxPages !== undefined) out.maxPages = p.maxPages;
+  }
+  return out;
+}
+
+async function convertDocument(
+  engine: Engine,
+  body: Uint8Array,
+  url: string,
+  maxPages: number | undefined,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  warnings: string[],
+) {
+  const filename = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "") || undefined;
+  const doc = await engine.docs.convert(body, { filename, maxPages, timeoutMs, signal });
+  for (const w of doc.warnings) warnings.push(w.message);
+  if (doc.numPages !== undefined && doc.pagesConverted !== undefined && doc.pagesConverted < doc.numPages) {
+    warnings.push(`Converted the first ${doc.pagesConverted} of ${doc.numPages} pages (parsers maxPages)`);
+  }
+  return doc;
 }
 
 function startsWith(body: Uint8Array, prefix: string): boolean {

@@ -3,9 +3,9 @@ import { pdfToMarkdown } from "./pdf.ts";
 
 declare const self: Worker;
 self.onmessage = async (e: MessageEvent) => {
-  const { id, kind, html, pdf, opts } = e.data;
+  const { id, kind, html, pdf, maxPages, opts } = e.data;
   try {
-    const result = kind === "pdf" ? await pdfToMarkdown(pdf) : await extractFromHtmlInline(html, opts);
+    const result = kind === "pdf" ? await pdfToMarkdown(pdf, maxPages) : await extractFromHtmlInline(html, opts);
     self.postMessage({ id, ok: true, result });
   } catch (err) {
     const e2 = err as { status?: number; code?: string; message?: string };

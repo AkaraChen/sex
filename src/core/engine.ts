@@ -15,6 +15,7 @@ import type {
 import { startBatchScrape } from "./batch.ts";
 import { BrowserPool } from "./browser.ts";
 import { crawlParamsFromPrompt, startCrawl } from "./crawl.ts";
+import { DocsConverter } from "./docs.ts";
 import { startExtract } from "./extract.ts";
 import { ExtractPool } from "./extract-pool.ts";
 import { createJobBackend, type JobBackend, type JobKind, type JobRecord } from "./jobs/index.ts";
@@ -31,12 +32,15 @@ export class Engine {
   readonly scrapeLimit: ReturnType<typeof pLimit>;
   /** HTML and PDF parsing, off the main thread. */
   readonly extractPool: ExtractPool;
+  /** PDFs, office documents and images via here-docs, when SEX_DOCS is on. */
+  readonly docs: DocsConverter;
 
   constructor(readonly config: Config) {
     this.browser = new BrowserPool(config);
     this.llm = new Llm(config);
     this.scrapeLimit = pLimit(config.concurrency);
     this.extractPool = new ExtractPool(config.extractWorkers, Math.max(10_000, config.timeout));
+    this.docs = new DocsConverter(config);
   }
 
   private backend?: JobBackend;
@@ -103,6 +107,7 @@ export class Engine {
       searxng: this.config.searxngUrl,
       browser: this.browser.enabled ? (this.config.cdpUrl ?? "lightpanda") : "off (Defuddle/linkedom)",
       llm: this.config.llm ? `${this.config.llm.model} @ ${this.config.llm.baseUrl}` : "off",
+      docs: this.docs.enabled ? "here-docs (structured PDF/office, OCR)" : "off (unpdf text only)",
       jobs: this.config.redisUrl ? "redis (bullmq)" : "memory",
     };
   }
@@ -111,5 +116,6 @@ export class Engine {
     await this.backend?.close();
     await this.browser.close();
     await this.extractPool.close();
+    await this.docs.close();
   }
 }

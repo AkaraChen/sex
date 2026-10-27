@@ -6,8 +6,8 @@ export interface PdfText {
   numPages: number;
 }
 
-/** Plain text extraction; pages are separated by horizontal rules. */
-export async function pdfToMarkdown(data: Uint8Array): Promise<PdfText> {
+/** Plain text extraction; pages are separated by horizontal rules. Only the first `maxPages` pages are kept. */
+export async function pdfToMarkdown(data: Uint8Array, maxPages?: number): Promise<PdfText> {
   const { extractText, getDocumentProxy, getMeta } = await import("unpdf");
   let pdf: Awaited<ReturnType<typeof getDocumentProxy>> | undefined;
   try {
@@ -18,7 +18,10 @@ export async function pdfToMarkdown(data: Uint8Array): Promise<PdfText> {
     ]);
     const title = typeof meta.info.Title === "string" && meta.info.Title.trim() ? meta.info.Title.trim() : undefined;
     return {
-      markdown: text.map((page) => page.trim()).join("\n\n---\n\n"),
+      markdown: text
+        .slice(0, maxPages)
+        .map((page) => page.trim())
+        .join("\n\n---\n\n"),
       title,
       numPages: totalPages,
     };

@@ -10,6 +10,7 @@ import type { Config } from "../config.ts";
 import { AppError, BROWSER_HINT } from "../errors.ts";
 import { log } from "../log.ts";
 import type { Action } from "../schemas.ts";
+import { MARKUP_TYPE } from "./net.ts";
 import { PAGE_SCRIPT, type PageExtractOptions, type PageExtractResult } from "./page.ts";
 
 const MOBILE_UA =
@@ -397,7 +398,7 @@ export class BrowserPool {
       if (aborted) return { url: opts.url, status: 200, contentType: "", nonHtml: true, rawHtml: "" };
       const contentType = response?.headers()["content-type"] ?? "text/html";
       const base = { url: page.url() || opts.url, status: response?.status() ?? 200, contentType };
-      if (!/html|xml/i.test(contentType)) return { ...base, nonHtml: true, rawHtml: "" };
+      if (!MARKUP_TYPE.test(contentType)) return { ...base, nonHtml: true, rawHtml: "" };
 
       if (opts.waitFor) await Bun.sleep(opts.waitFor);
       const actions = opts.actions?.length ? await runActions(page, opts.actions) : undefined;
