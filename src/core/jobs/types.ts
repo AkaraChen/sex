@@ -60,6 +60,8 @@ export interface JobStore {
   pushDocument(id: string, doc: Document): Promise<void>;
   /** Documents from `skip`, up to ~maxChars of JSON; nextSkip is null when there are no more. */
   documents(id: string, skip: number, maxChars: number): Promise<{ data: Document[]; nextSkip: number | null }>;
+  /** The same page as `documents`, each document as its JSON text (UTF-8), so it can be sent without parsing it first. */
+  documentsJson(id: string, skip: number, maxChars: number): Promise<{ data: Uint8Array[]; nextSkip: number | null }>;
   pushError(id: string, error: JobError): Promise<void>;
   errors(id: string): Promise<JobError[]>;
   /** Stores the robots.txt body fetched once per crawl and shared by all workers ("" = none). Kept out of the job record so status reads stay small. */

@@ -18,6 +18,7 @@ import { crawlParamsFromPrompt, startCrawl } from "./crawl.ts";
 import { DocsConverter } from "./docs.ts";
 import { startExtract } from "./extract.ts";
 import { ExtractPool } from "./extract-pool.ts";
+import { documentsLocation } from "./jobs/documents.ts";
 import { createJobBackend, type JobBackend, type JobKind, type JobRecord } from "./jobs/index.ts";
 import { Llm } from "./llm.ts";
 import { mapSite } from "./map.ts";
@@ -107,6 +108,7 @@ export class Engine {
       llm: this.config.llm ? `${this.config.llm.model} @ ${this.config.llm.baseUrl}` : "off",
       docs: this.docs.enabled ? "here-docs (structured PDF/office, OCR)" : "off (unpdf text only)",
       jobs: this.config.dataDir ? `sqlite (${this.config.dataDir})` : "memory",
+      documents: documentsLocation(this.config),
     };
   }
 
