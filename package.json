@@ -29,7 +29,7 @@
     "bullmq": "^6.4.2",
     "citty": "^0.2.2",
     "defuddle": "^0.19.6",
-    "here-docs": "github:AkaraChen/here-docs#bbfb825ba8b32dbe723c3488d12d9292e15ed901",
+    "here-docs": "github:AkaraChen/here-docs#40febc7",
     "hono": "^4.13.14",
     "ioredis": "^6.0.0",
     "ipaddr.js": "^2",
