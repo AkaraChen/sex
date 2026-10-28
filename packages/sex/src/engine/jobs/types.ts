@@ -8,6 +8,8 @@ export interface JobError {
   timestamp: string;
   url: string;
   error: string;
+  /** The `ERRORS` code of the failure; missing on errors recorded before codes were kept. */
+  code?: string;
 }
 
 export interface JobMeta {
@@ -20,18 +22,22 @@ export interface JobMeta {
   options: Record<string, unknown>;
   createdAt: number;
   expiresAt: number;
+  /** When the job left "scraping" (`expiresAt` minus the TTL); undefined while it runs. */
+  finishedAt?: number;
   error?: string;
   /** Extract: what the pages' scrapes warned about, which the result alone does not show. */
   warning?: string;
   /** Extract result. */
   result?: unknown;
   sources?: Record<string, unknown>;
+  /** Extract: LLM tokens the run spent (prompt + completion). */
+  tokensUsed?: number;
 }
 
 export interface JobCounters {
-  /** URLs scheduled (crawl) or submitted (batch). */
+  /** URLs scheduled (crawl) or submitted (batch), less the pages that failed (see `pushError`). */
   total: number;
-  /** Pages finished (crawl: stored documents; batch: successes + failures). */
+  /** Pages stored as documents; failed pages are neither here nor in `total`. */
   completed: number;
   /** Tasks queued or running; the job completes when this drops to 0. */
   pending: number;
@@ -60,7 +66,9 @@ export type TaskEffect =
   /** The task marked its page's redirect target seen (see `claimSeen`). */
   | "redirect";
 export type JobRecord = JobMeta & JobCounters;
-export type JobPatch = Partial<Pick<JobMeta, "error" | "warning" | "result" | "sources">>;
+/** `total` and `completed` are absolute values (an extract sets them as it finishes), so applying a patch twice changes nothing. */
+export type JobPatch = Partial<Pick<JobMeta, "error" | "warning" | "result" | "sources" | "tokensUsed">> &
+  Partial<Pick<JobCounters, "total" | "completed">>;
 
 /** Where job state lives (SQLite, see sqlite.ts). Methods are called concurrently by tasks, so each must be atomic on its own. */
 export interface JobStore {
@@ -72,8 +80,8 @@ export interface JobStore {
   /** Moves a completed job back to "scraping" (batch appendToId). */
   reopen(id: string): Promise<void>;
   incr(id: string, counter: CounterName, by?: number): Promise<number>;
-  /** Decrements `pending` once for this task; returns the new value, or null if `taskId` was already settled. With `countCompleted` the same step also increments `completed`, so a redelivered task is not counted twice. Without a taskId it behaves like `incr(id, "pending", -1)`. */
-  settle(id: string, taskId: string | undefined, countCompleted?: boolean): Promise<number | null>;
+  /** Decrements `pending` once for this task; returns the new value, or null if `taskId` was already settled. Without a taskId it behaves like `incr(id, "pending", -1)`. */
+  settle(id: string, taskId: string | undefined): Promise<number | null>;
   /**
    * Claims `effect` for this task: true the first time, false if the task already claimed it (a redelivery) or the job
    * is gone. Without a taskId nothing can be deduplicated, so it is true for any job that exists. The claim is not
@@ -84,16 +92,29 @@ export interface JobStore {
   /**
    * Stores a document, once per task: returns true if this call stored it, false if the task's document was already
    * stored (a redelivery) or the job is gone. Callers act on a new document only when this is true (page webhook).
-   * With `countCompleted`, the same transaction that indexes the document also increments `completed`. Without a
-   * taskId every call stores a new document.
+   * With `countCompleted`, the same transaction that indexes the document also increments `completed`, so a
+   * redelivered task is not counted twice. Without a taskId every call stores a new document.
    */
   pushDocument(id: string, doc: Document, taskId?: string, countCompleted?: boolean): Promise<boolean>;
-  /** Documents from `skip`, up to ~maxChars of JSON; nextSkip is null when there are no more. */
-  documents(id: string, skip: number, maxChars: number): Promise<{ data: Document[]; nextSkip: number | null }>;
-  /** The same page as `documents`, each document as its JSON text (UTF-8), so it can be sent without parsing it first. */
-  documentsJson(id: string, skip: number, maxChars: number): Promise<{ data: Uint8Array[]; nextSkip: number | null }>;
-  /** Records a failure, once per task when a taskId is given (a redelivered task does not list it twice). Returns true if this call recorded it. */
-  pushError(id: string, error: JobError, taskId?: string): Promise<boolean>;
+  /** Documents from `skip`, up to ~maxChars of JSON and (with `limit`) that many documents; nextSkip is null when there are no more. */
+  documents(id: string, skip: number, maxChars: number, limit?: number): Promise<{ data: Document[]; nextSkip: number | null }>;
+  /**
+   * The same page as `documents`, each document as its JSON text (UTF-8), so it can be sent without parsing it first.
+   * `cursor` is where the next read starts to see only documents stored after this page: `nextSkip` when there is more,
+   * else the seq after the page's last document (`skip` for an empty page).
+   */
+  documentsJson(
+    id: string,
+    skip: number,
+    maxChars: number,
+    limit?: number,
+  ): Promise<{ data: Uint8Array[]; nextSkip: number | null; cursor: number }>;
+  /**
+   * Records a failure, once per task when a taskId is given (a redelivered task does not list it twice). Returns true if
+   * this call recorded it. With `dropFromTotal` the same transaction takes the page out of `total`: a page that failed
+   * is neither completed nor part of the total.
+   */
+  pushError(id: string, error: JobError, taskId?: string, opts?: { dropFromTotal?: boolean }): Promise<boolean>;
   errors(id: string): Promise<JobError[]>;
   /** Stores the robots.txt body fetched once per crawl and shared by all workers ("" = none). Kept out of the job record so status reads stay small. */
   setRobotsTxt(id: string, text: string): Promise<void>;
@@ -124,6 +145,8 @@ export interface JobStore {
    */
   released(id: string, taskIds: string[], queued: boolean): Promise<void>;
   active(kind: JobKind): Promise<JobRecord[]>;
+  /** When the most recent job of any kind completed, or undefined if none is stored (finished jobs are kept for the TTL). */
+  lastCompletedAt(): Promise<number | undefined>;
   close(): Promise<void>;
 }
 
@@ -193,6 +216,8 @@ export interface TaskQueue {
   add(tasks: QueuedTask[]): Promise<void>;
   /** At most `limit` tasks of the lane run at once (no limit when undefined). Outlives a restart together with the queued tasks. */
   capLane(lane: string, limit: number | undefined): Promise<void>;
+  /** Tasks in the queue right now, whatever their job: running, and waiting (including delayed ones and lanes at their cap or cooling down). */
+  counts(): Promise<{ active: number; waiting: number }>;
   /**
    * Starts consuming tasks in this process. Tasks the queue gave up on (interrupted `MAX_DELIVERIES` times, so no
    * handler can ever finish them) are passed to `onAbandoned` once, when the worker starts; the queue forgets a task

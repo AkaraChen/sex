@@ -102,10 +102,27 @@ export const JobCreatedResponse = z.object({
   id: z.string(),
   url: z.string(),
   invalidURLs: z.array(z.string()).optional(),
+  promptGeneratedOptions: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe("Crawl with a `prompt`: the options the LLM derived from it."),
+  finalCrawlerOptions: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe("Crawl with a `prompt`: the options the crawl runs with (header values redacted)."),
 });
 
 export const JobIdInput = z.object({ id: z.string() });
-export const JobStatusInput = z.object({ id: z.string(), skip: z.coerce.number().int().nonnegative().optional() });
+export const JobStatusInput = z.object({
+  id: z.string(),
+  skip: z.coerce.number().int().nonnegative().optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Return at most this many documents (a page is also capped at 10 MB of JSON)."),
+});
 
 export const JobStatusResponse = z.object({
   success: z.literal(true),
@@ -114,20 +131,42 @@ export const JobStatusResponse = z.object({
   completed: z.number(),
   creditsUsed: z.number(),
   expiresAt: z.string(),
-  next: z.string().nullable().optional(),
+  createdAt: z.string(),
+  completedAt: z.string().optional().describe('When the job left "scraping".'),
+  duration: z.number().describe("Seconds from creation to completion (so far, while the job runs)."),
+  error: z.string().optional().describe("Why the job failed."),
+  warning: z.string().optional(),
+  next: z.string().nullable().optional().describe("Always set while the job is scraping, even when there are no new documents yet."),
   data: z.array(Document),
 });
 
 export const CancelResponse = z.object({ success: z.literal(true), status: z.literal("cancelled") });
 
 export const JobErrorsResponse = z.object({
-  errors: z.array(z.object({ id: z.string(), timestamp: z.string().optional(), url: z.string(), error: z.string() })),
+  errors: z.array(
+    z.object({ id: z.string(), timestamp: z.string().optional(), url: z.string(), error: z.string(), code: z.string().optional() }),
+  ),
   robotsBlocked: z.array(z.string()),
 });
 
 export const ActiveCrawlsResponse = z.object({
   success: z.literal(true),
-  crawls: z.array(z.object({ id: z.string(), teamId: z.string(), url: z.string(), options: z.unknown() })),
+  crawls: z.array(z.object({ id: z.string(), teamId: z.string(), url: z.string(), created_at: z.string(), options: z.unknown() })),
+});
+
+export const ConcurrencyCheckResponse = z.object({
+  success: z.literal(true),
+  concurrency: z.number().describe("Tasks running now."),
+  maxConcurrency: z.number().describe("SEX_CONCURRENCY."),
+});
+
+export const QueueStatusResponse = z.object({
+  success: z.literal(true),
+  jobsInQueue: z.number().describe("Tasks running or waiting."),
+  activeJobsInQueue: z.number(),
+  waitingJobsInQueue: z.number().describe("Includes delayed tasks and tasks of lanes at their cap or cooling down."),
+  maxConcurrency: z.number(),
+  mostRecentSuccess: z.string().nullable().describe("When the last job completed, among the jobs still stored."),
 });
 
 export const CrawlParamsPreviewRequest = z.object({ url: z.string(), prompt: z.string() });
@@ -135,7 +174,10 @@ export const CrawlParamsPreviewResponse = z.object({ success: z.literal(true), d
 
 export const BatchScrapeRequest = ScrapeOptions.extend({
   urls: z.array(z.string()).min(1).max(10_000),
-  ignoreInvalidURLs: z.boolean().optional(),
+  ignoreInvalidURLs: z
+    .boolean()
+    .optional()
+    .describe("Skip invalid URLs and list them as `invalidURLs` (default true); false fails the request."),
   maxConcurrency: z
     .number()
     .int()
@@ -148,14 +190,46 @@ export const BatchScrapeRequest = ScrapeOptions.extend({
 export type BatchScrapeRequest = z.infer<typeof BatchScrapeRequest>;
 
 export const ExtractRequest = z.object({
-  urls: z.array(z.string()).max(100).optional().describe("URLs to extract from (at most 100); a trailing /* expands to the site's map"),
+  urls: z
+    .array(z.string())
+    .max(100)
+    .optional()
+    .describe(
+      "URLs to extract from (at most 100); a trailing /* expands to the site's map. Without urls the prompt is searched for on the web.",
+    ),
   prompt: z.string().max(20_000).optional(),
   schema: z.record(z.string(), z.unknown()).optional(),
   systemPrompt: z.string().max(20_000).optional(),
-  enableWebSearch: z.boolean().optional().describe("Also search the web for the prompt and include top results"),
+  enableWebSearch: z
+    .boolean()
+    .optional()
+    .describe("Also search the web for the prompt and add the top 10 results to the urls (with no urls it always does)."),
   allowExternalLinks: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
-  showSources: z.boolean().optional(),
-  ignoreInvalidURLs: z.boolean().optional(),
+  showSources: z
+    .boolean()
+    .optional()
+    .describe('Adds `sources` to the status: "*" lists the pages used, "products[0]" the pages an array item came from.'),
+  ignoreInvalidURLs: z
+    .boolean()
+    .optional()
+    .describe("Skip invalid URLs and list them as `invalidURLs` (default true); false fails the request."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(1000)
+    .optional()
+    .describe("Most pages a URL ending in /* expands to (default SEX_EXTRACT_WILDCARD_PAGES)."),
+  includeSubdomains: z.boolean().optional().describe("Whether a URL ending in /* also expands to subdomains (default true)."),
+  timeout: z
+    .number()
+    .int()
+    .min(1000)
+    .max(3_600_000)
+    .optional()
+    .describe(
+      "Milliseconds the whole extract may take; past it the job fails. Without it only cancelling or SEX_LLM_TIMEOUT per call ends it.",
+    ),
   webhook: WebhookConfig.optional().describe("Receives extract.started, extract.completed (with the result) and extract.failed"),
   scrapeOptions: ScrapeOptions.optional(),
 });
@@ -171,5 +245,6 @@ export const ExtractStatusResponse = z.object({
   warning: z.string().optional(),
   sources: z.record(z.string(), z.unknown()).optional(),
   expiresAt: z.string(),
-  creditsUsed: z.number().optional(),
+  creditsUsed: z.number().optional().describe("Pages the extract read, like a crawl's."),
+  tokensUsed: z.number().optional().describe("LLM tokens the run spent (prompt + completion)."),
 });

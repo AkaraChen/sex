@@ -120,8 +120,15 @@ function inScope(plan: CrawlPlan, url: URL, fromExternal = false): boolean {
   );
 }
 
-/** `defaults` apply only where neither the prompt nor the request sets an option. */
-export async function startCrawl(engine: Engine, input: CrawlRequest, defaults: Partial<CrawlRequest> = {}): Promise<JobRecord> {
+/**
+ * `defaults` apply only where neither the prompt nor the request sets an option. `promptGeneratedOptions` is what the
+ * LLM derived from `prompt` (after validation); the options the crawl runs with are `job.options`.
+ */
+export async function startCrawl(
+  engine: Engine,
+  input: CrawlRequest,
+  defaults: Partial<CrawlRequest> = {},
+): Promise<{ job: JobRecord; promptGeneratedOptions?: Record<string, unknown> }> {
   const start = parseHttpUrl(input.url.trim());
   await assertPublicUrl(start, engine.config.allowPrivateNetwork);
   assertScrapeCapabilities(engine, input.scrapeOptions);
@@ -147,7 +154,7 @@ export async function startCrawl(engine: Engine, input: CrawlRequest, defaults: 
     await store.finish(job.id, "failed", { error: toAppError(err).message });
     throw err;
   }
-  return job;
+  return { job, promptGeneratedOptions: input.prompt ? derived : undefined };
 }
 
 /** Filters candidate links and enqueues the new ones as page tasks, respecting the limit. */
@@ -320,7 +327,7 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
     if (url !== start && !(await acceptRedirect(store, fx, job, plan, url, document.metadata?.url as string | undefined, taskId))) return;
     // The start page always feeds discovery but only counts as a result if it passes the filters.
     if (url !== start || matchesFilters(plan, new URL(url))) {
-      await fx.page(document, { countCompleted: true });
+      await fx.page(document);
     }
     // `scheduled` only grows toward `limit` and then stays there, so a full crawl has nothing left to discover.
     const full = job.scheduled >= plan.limit;
@@ -336,6 +343,7 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
         !isSameSite(plan, new URL(document.metadata?.url ?? url)),
       );
   } catch (err) {
-    await fx.failure(url, toAppError(err).message);
+    const e = toAppError(err);
+    await fx.failure(url, e.message, e.code);
   }
 }

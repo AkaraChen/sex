@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Deadline } from "@sex/core/deadline.ts";
 import type { AppError } from "@sex/core/errors.ts";
 import type { Engine } from "../src/engine/engine.ts";
-import { mergeAll, mergeEntities, splitSchema } from "../src/engine/extract-merge.ts";
+import { conflictingFields, entitySources, mergeAll, mergeEntities, splitSchema } from "../src/engine/extract-merge.ts";
 import { escapeTags } from "../src/engine/prompts.ts";
-import { startFixtureSite, startMockLlm, testEngine, waitFor } from "./helpers.ts";
+import { MOCK_LLM_TOKENS, startFixtureSite, startMockLlm, testEngine, waitFor } from "./helpers.ts";
 
 const NO_LIMIT = Deadline.unbounded();
 
@@ -296,7 +296,12 @@ describe("extract pipeline", () => {
       ],
       company: "Acme",
     });
-    expect(done.sources).toEqual({ "*": [`${site.url}/docs/a`, `${site.url}/docs/b`] });
+    // Pages that gave an item: X is on both pages, Y only on /docs/a.
+    expect(done.sources).toEqual({
+      "*": [`${site.url}/docs/a`, `${site.url}/docs/b`],
+      "products[0]": [`${site.url}/docs/a`, `${site.url}/docs/b`],
+      "products[1]": [`${site.url}/docs/a`],
+    });
     // plan + one call per page + one single-answer call for the rest of the schema; no LLM merge.
     expect(llm.requests.length).toBe(4);
     const single = llm.requests.find((r) => systemOf(r).includes("You extract") && !systemOf(r).includes("is_content_relevant"));
@@ -336,6 +341,136 @@ describe("extract pipeline", () => {
       "extract",
     ]);
     expect(systemOf(llm.requests[1]!)).toContain('"required":["title"]');
+  });
+
+  test("tokensUsed adds up the run's LLM calls, and creditsUsed counts the pages read", async () => {
+    llm.requests.length = 0;
+    reply = (system) =>
+      system.includes("You write the JSON Schema") ? '{"type":"object","properties":{"title":{"type":"string"}}}' : '{"title":"Doc A"}';
+    const done = await runExtract({ urls: [`${site.url}/docs/a`, `${site.url}/docs/b`], prompt: "The title" });
+    expect(llm.requests.length).toBeGreaterThan(1);
+    expect(done.tokensUsed).toBe(llm.requests.length * MOCK_LLM_TOKENS);
+    expect({ total: done.total, completed: done.completed }).toEqual({ total: 2, completed: 2 });
+  });
+
+  test("a page that cannot be read is neither in total nor completed", async () => {
+    reply = () => '{"title":"Doc A"}';
+    const done = await runExtract({
+      urls: [`${site.url}/docs/a`, "http://127.0.0.1:1/dead"],
+      schema: { type: "object", properties: { title: { type: "string" } } },
+    });
+    expect(done.status).toBe("completed");
+    expect({ total: done.total, completed: done.completed }).toEqual({ total: 1, completed: 1 });
+    expect((await engine.jobs.store.errors(done.id)).map((e) => e.url)).toEqual(["http://127.0.0.1:1/dead"]);
+    expect((await engine.jobs.store.errors(done.id))[0]?.code).toBeString();
+  });
+
+  test("invalid URLs are skipped by default and reported; ignoreInvalidURLs: false rejects them", async () => {
+    reply = () => '{"title":"Doc A"}';
+    const schema = { type: "object", properties: { title: { type: "string" } } };
+    const started = await engine.extract({ urls: [`${site.url}/docs/a`, "not a url"], schema });
+    expect(started.invalidURLs).toEqual(["not a url"]);
+    expect((await engine.extract({ urls: [`${site.url}/docs/a`], schema })).invalidURLs).toBeUndefined();
+    await expect(engine.extract({ urls: [`${site.url}/docs/a`, "not a url"], schema, ignoreInvalidURLs: false })).rejects.toMatchObject({
+      status: 400,
+    });
+    // Urls that are all invalid never turn into a web search for the prompt.
+    await expect(engine.extract({ urls: ["not a url"], prompt: "x" })).rejects.toMatchObject({ status: 400 });
+  });
+
+  test("a prompt without urls searches the web, 10 results", async () => {
+    const results: string[] = [];
+    const searx = Bun.serve({
+      port: 0,
+      fetch(req) {
+        if (new URL(req.url).searchParams.get("pageno") !== "1") return Response.json({ results: [] });
+        results.push(req.url);
+        return Response.json({
+          results: Array.from({ length: 12 }, (_, i) => ({
+            url: `${site.url}/docs/${i % 2 ? "a" : "b"}?n=${i}`,
+            title: `R${i}`,
+            content: "c",
+          })),
+        });
+      },
+    });
+    const withSearch = testEngine({ llmModel: "m", llmBaseUrl: llm.url, searxngUrl: `http://127.0.0.1:${searx.port}` });
+    try {
+      reply = (system) =>
+        system.includes("You write the JSON Schema") ? '{"type":"object","properties":{"title":{"type":"string"}}}' : '{"title":"x"}';
+      const { job } = await withSearch.extract({ prompt: "doc titles" });
+      const done = await waitFor(async () => {
+        const j = await withSearch.getJob(job.id, "extract");
+        return j.status === "scraping" ? undefined : j;
+      });
+      expect(done.status).toBe("completed");
+      expect(done.total).toBe(10);
+      await expect(withSearch.extract({ urls: [`${site.url}/docs/a`], enableWebSearch: true, schema: {} })).rejects.toMatchObject({
+        status: 400,
+      });
+    } finally {
+      await withSearch.close();
+      searx.stop(true);
+    }
+  });
+
+  test("timeout fails the job", async () => {
+    const slow = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Promise<Response>(() => {}) });
+    try {
+      reply = () => "{}";
+      const done = await runExtract({
+        urls: [`http://127.0.0.1:${slow.port}/`],
+        schema: { type: "object", properties: { a: { type: "string" } } },
+        timeout: 1000,
+      });
+      expect(done.status).toBe("failed");
+      expect(done.error).toBe("Extract timed out after 1000 ms");
+    } finally {
+      slow.stop(true);
+    }
+  });
+
+  test("pages that disagree on a single-answer field are named in the warning", () => {
+    expect(
+      conflictingFields([{ company: "Acme", ceo: { name: "A" } }, { company: "Acme Inc", ceo: { name: "A" }, hq: "Oslo" }, { hq: "Rome" }]),
+    ).toEqual(["company", "hq"]);
+    expect(conflictingFields([{ a: [1] }, { a: [2] }, { a: null }, { a: "x" }])).toEqual([]);
+  });
+});
+
+describe("entitySources", () => {
+  test("traces each merged item to the pages it was seen on", () => {
+    const pieces = [
+      {
+        url: "u1",
+        value: {
+          products: [
+            { name: "X", price: null },
+            { name: "Y", price: 2 },
+          ],
+        },
+      },
+      { url: "u2", value: { products: [{ name: "X", price: 5 }] } },
+      {
+        url: "u3",
+        value: {
+          products: [
+            { name: "Y", price: 2 },
+            { name: "Z", price: 1 },
+          ],
+        },
+      },
+    ];
+    const merged = mergeAll(pieces.map((p) => p.value));
+    expect(entitySources(merged, pieces)).toEqual({ "products[0]": ["u1", "u2"], "products[1]": ["u1", "u3"], "products[2]": ["u3"] });
+  });
+
+  test("root arrays are keyed [i]; items without scalars match by equality", () => {
+    const pieces = [
+      { url: "u1", value: [{ tags: ["a"] }] },
+      { url: "u2", value: [{ tags: ["a"] }, { tags: ["b"] }] },
+    ];
+    expect(entitySources(mergeAll(pieces.map((p) => p.value)), pieces)).toEqual({ "[0]": ["u1", "u2"], "[1]": ["u2"] });
   });
 });
 

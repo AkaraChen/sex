@@ -25,7 +25,6 @@ export async function runTask(engine: Engine, task: Task): Promise<TaskOutcome> 
     await handleExtract(engine, job, task.taskId);
     return "done";
   }
-  let countCompleted = false;
   try {
     if (task.type === "crawl-start") {
       await handleCrawlStart(engine, task.jobId, task.taskId);
@@ -35,13 +34,10 @@ export async function runTask(engine: Engine, task: Task): Promise<TaskOutcome> 
     // Cancelled or failed jobs still drain their queued pages, which costs their lane no cooldown.
     if (job?.status !== "scraping") return "skipped";
     if (job.kind === "crawl") await handleCrawlPage(engine, job, task.url, task.depth, task.taskId);
-    else {
-      countCompleted = true;
-      await handleBatchPage(engine, job, task.url, task.options, task.taskId);
-    }
+    else await handleBatchPage(engine, job, task.url, task.options, task.taskId);
     return "done";
   } finally {
-    await settleTask(engine, task.jobId, task.taskId, countCompleted);
+    await settleTask(engine, task.jobId, task.taskId);
   }
 }
 
@@ -68,8 +64,8 @@ export async function abandonTask(engine: Engine, task: Task): Promise<void> {
       if (job && (await store.finish(job.id, "failed", { error: ABANDONED }))) await sendWebhook(engine, job, "failed", [], ABANDONED);
       break;
     case "page":
-      if (job?.status === "scraping") await taskEffects(engine, job, task.taskId).failure(task.url, ABANDONED);
+      if (job?.status === "scraping") await taskEffects(engine, job, task.taskId).failure(task.url, ABANDONED, "INTERNAL_ERROR");
       break;
   }
-  await settleTask(engine, task.jobId, task.taskId, task.type === "page" && job?.kind === "batch_scrape");
+  await settleTask(engine, task.jobId, task.taskId);
 }

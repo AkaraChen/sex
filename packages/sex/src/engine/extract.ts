@@ -8,25 +8,28 @@ import { search } from "@sex/core/search.ts";
 import pLimit from "p-limit";
 import type { ExtractRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
-import { arrayKeys, mergeAll, splitSchema, withProperty } from "./extract-merge.ts";
+import { arrayKeys, conflictingFields, entitySources, mergeAll, splitSchema, withProperty } from "./extract-merge.ts";
 import { taskEffects } from "./jobs/effects.ts";
 import { type JobRecord, sendWebhook, validateWebhook } from "./jobs/index.ts";
 import { compileJsonSchema, describeSchemaErrors } from "./json-schema.ts";
+import { TokenMeter } from "./llm.ts";
 import { mapSite } from "./map.ts";
 import { RELEVANCE_FIELD_DESCRIPTION } from "./prompts.ts";
 
-const SEARCH_RESULTS = 5;
+/** Results of the web search a prompt without URLs starts from (Firecrawl's). */
+const SEARCH_RESULTS = 10;
 
 export async function startExtract(engine: Engine, req: ExtractRequest): Promise<{ job: JobRecord; invalidURLs?: string[] }> {
   engine.llm.require("Extract");
-  if (!req.urls?.length && !(req.enableWebSearch && req.prompt)) {
-    throw badRequest("Provide urls, or a prompt with enableWebSearch: true");
-  }
+  // Without urls the prompt is searched for on the web; with urls, enableWebSearch adds the search to them.
+  if (!req.urls?.length && !req.prompt) throw badRequest("Provide urls, or a prompt to search the web for");
+  if (req.enableWebSearch && !req.prompt) throw badRequest("enableWebSearch needs a prompt to search for");
   if (!req.prompt && !req.schema) throw badRequest("Provide a prompt and/or a schema");
   if (req.schema) compileJsonSchema(req.schema);
   assertScrapeCapabilities(engine, { ...req.scrapeOptions, formats: ["markdown"] });
   await validateWebhook(engine, req.webhook);
 
+  const ignoreInvalid = req.ignoreInvalidURLs ?? true;
   const valid: string[] = [];
   const invalid: string[] = [];
   for (const raw of req.urls ?? []) {
@@ -35,14 +38,16 @@ export async function startExtract(engine: Engine, req: ExtractRequest): Promise
       await assertPublicUrl(url, engine.config.allowPrivateNetwork);
       valid.push(raw.trim().endsWith("/*") ? `${url.href}*` : url.href);
     } catch (err) {
-      if (!req.ignoreInvalidURLs) throw err;
+      if (!ignoreInvalid) throw err;
       invalid.push(raw);
     }
   }
+  // Urls that were all dropped must not turn into a web search for the prompt.
+  if (req.urls?.length && !valid.length) throw badRequest("No valid URLs to extract from", { invalidURLs: invalid });
 
   const job = await engine.jobs.store.create({ kind: "extract", options: { ...req, urls: valid } as Record<string, unknown> });
   await engine.jobs.scheduler.add([{ task: { type: "extract", jobId: job.id, taskId: crypto.randomUUID() } }]);
-  return { job, invalidURLs: req.ignoreInvalidURLs ? invalid : undefined };
+  return { job, invalidURLs: invalid.length ? invalid : undefined };
 }
 
 /** How often a running extract checks whether its job was cancelled. */
@@ -50,8 +55,11 @@ const CANCEL_POLL_MS = 2000;
 
 export async function handleExtract(engine: Engine, job: JobRecord, taskId?: string) {
   const { store } = engine.jobs;
+  const req = job.options as unknown as ExtractRequest;
   // Cancelling a job finishes it in the store; poll for that so in-flight map/search/scrape/LLM work stops too.
+  // `timeout` aborts the same way, but fails the job instead of leaving it to whoever cancelled it.
   const controller = new AbortController();
+  let timedOut = false;
   const timer = setInterval(async () => {
     try {
       const current = await store.get(job.id);
@@ -60,22 +68,37 @@ export async function handleExtract(engine: Engine, job: JobRecord, taskId?: str
       // A transient store error is retried on the next tick.
     }
   }, CANCEL_POLL_MS);
+  const deadline = req.timeout
+    ? setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, req.timeout)
+    : undefined;
+  // Counted afresh by every run, and stored as absolute values with the job's end, so a redelivered extract does not add up.
+  const meter = new TokenMeter();
+  const fail = async (message: string) => {
+    if (await store.finish(job.id, "failed", { error: message, tokensUsed: meter.tokens }))
+      await sendWebhook(engine, job, "failed", [], message);
+  };
   try {
-    const req = job.options as unknown as ExtractRequest;
     await taskEffects(engine, job, taskId).started();
-    const { result, sources, warning, total, completed } = await runExtract(engine, job.id, req, req.urls ?? [], controller.signal);
+    const out = await engine.llm.metered(meter, () => runExtract(engine, job.id, req, req.urls ?? [], controller.signal));
+    if (timedOut) return await fail(`Extract timed out after ${req.timeout} ms`);
     if (controller.signal.aborted) return;
-    await store.incr(job.id, "total", total);
-    await store.incr(job.id, "completed", completed);
-    if (await store.finish(job.id, "completed", { result, sources, warning })) await sendWebhook(engine, job, "completed", [result]);
+    const { result, sources, warning, total, completed } = out;
+    if (await store.finish(job.id, "completed", { result, sources, warning, total, completed, tokensUsed: meter.tokens })) {
+      await sendWebhook(engine, job, "completed", [result]);
+    }
   } catch (err) {
+    if (timedOut) return await fail(`Extract timed out after ${req.timeout} ms`);
     // Cancelled jobs were already finished by cancelJob; do not overwrite that.
     if (controller.signal.aborted) return;
     const e = toAppError(err);
     log.error("extract failed", { id: job.id, error: e.message });
-    if (await store.finish(job.id, "failed", { error: e.message })) await sendWebhook(engine, job, "failed", [], e.message);
+    await fail(e.message);
   } finally {
     clearInterval(timer);
+    clearTimeout(deadline);
   }
 }
 
@@ -85,17 +108,32 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
     if (u.endsWith("/*")) {
       const { links } = await mapSite(
         engine,
-        { url: u.slice(0, -1), limit: engine.config.extractWildcardPages, search: req.prompt },
+        {
+          url: u.slice(0, -1),
+          limit: req.limit ?? engine.config.extractWildcardPages,
+          search: req.prompt,
+          includeSubdomains: req.includeSubdomains,
+        },
         signal,
       );
       for (const l of links) targets.add(l.url);
     } else targets.add(u);
   }
-  if (req.enableWebSearch && req.prompt) {
+  if (req.prompt && (req.enableWebSearch || !urls.length)) {
     const { data } = await search(engine, { query: req.prompt, limit: SEARCH_RESULTS }, signal);
     for (const r of data.web ?? []) targets.add(r.url);
   }
 
+  const recordError = async (url: string, err: unknown) => {
+    const e = toAppError(err);
+    await engine.jobs.store.pushError(jobId, {
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      url,
+      error: e.message,
+      code: e.code,
+    });
+  };
   const limit = pLimit(engine.config.concurrency);
   const options = { ...req.scrapeOptions, formats: ["markdown" as const] };
   const warnings: string[] = [];
@@ -110,12 +148,7 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
           return { url, markdown: options.checkPromptInjection ? markdown.slice(0, GUARD_MAX_CHARS) : markdown };
         } catch (err) {
           if (signal.aborted) return undefined;
-          await engine.jobs.store.pushError(jobId, {
-            id: crypto.randomUUID(),
-            timestamp: new Date().toISOString(),
-            url,
-            error: toAppError(err).message,
-          });
+          await recordError(url, err);
           return undefined;
         }
       }),
@@ -124,20 +157,16 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
   const ok = pages.filter((p): p is Page => !!p && p.markdown.trim().length > 0);
   if (!ok.length) throw new Error(`Could not scrape any of the ${targets.size} source pages`);
 
-  const { result, used } = await extractFromPages(engine, req, ok, limit, signal, async (url, err) => {
-    await engine.jobs.store.pushError(jobId, {
-      id: crypto.randomUUID(),
-      timestamp: new Date().toISOString(),
-      url,
-      error: toAppError(err).message,
-    });
-  });
+  const { result, used, itemSources, notes } = await extractFromPages(engine, req, ok, limit, signal, recordError);
+  warnings.push(...notes);
 
   return {
     result,
-    sources: req.showSources ? { "*": used } : undefined,
+    // "*" lists every page the answer drew on; the other keys name the array items and the pages each came from.
+    sources: req.showSources ? { "*": used, ...itemSources } : undefined,
     warning: warnings.length ? warnings.join("; ") : undefined,
-    total: targets.size,
+    // Pages that failed are neither in the total nor completed (see JobCounters).
+    total: ok.length,
     completed: ok.length,
   };
 }
@@ -168,7 +197,7 @@ async function extractFromPages(
   limit: Limit,
   signal: AbortSignal,
   onError: (url: string, err: unknown) => Promise<void>,
-): Promise<{ result: unknown; used: string[] }> {
+): Promise<{ result: unknown; used: string[]; itemSources: Record<string, string[]>; notes: string[] }> {
   const { llm } = engine;
   // An extract has no time limit of its own: it ends when the job is cancelled, and each LLM call has SEX_LLM_TIMEOUT.
   const deadline = Deadline.unbounded(signal);
@@ -203,6 +232,8 @@ async function extractFromPages(
 
   const used = new Set<string>();
   const parts: unknown[] = [];
+  const notes: string[] = [];
+  const entityPieces: Array<{ url: string; value: unknown }> = [];
   const run = async (url: string, task: () => Promise<unknown>, errors: unknown[]) => {
     try {
       return await task();
@@ -232,6 +263,7 @@ async function extractFromPages(
                 delete (v as Record<string, unknown>)[RELEVANT];
               }
               used.add(piece.url);
+              entityPieces.push({ url: piece.url, value: v });
               return v;
             },
             errors,
@@ -268,6 +300,9 @@ async function extractFromPages(
     );
     const found = results.filter((r) => r !== undefined);
     if (!found.length && errors.length) throw errors[0];
+    // Chunks that answer a field differently: `mergeAll` keeps the first, and the caller should know.
+    const conflicts = conflictingFields(found);
+    if (conflicts.length) notes.push(`Pages gave different values for ${conflicts.join(", ")}; the first one was kept`);
     parts.push(mergeAll(found));
   }
 
@@ -281,7 +316,12 @@ async function extractFromPages(
       });
     }
   }
-  return { result, used: pages.map((p) => p.url).filter((u) => used.has(u)) };
+  return {
+    result,
+    used: pages.map((p) => p.url).filter((u) => used.has(u)),
+    itemSources: entitySources(result, entityPieces),
+    notes,
+  };
 }
 
 function isArrayRoot(schema: Schema): boolean {

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { ScrapeLlm } from "@sex/core/capabilities.ts";
 import type { Deadline } from "@sex/core/deadline.ts";
@@ -19,6 +20,12 @@ const GUARD_CHUNK_OVERLAP = 2_000;
 const GUARD_BATCH = 5;
 
 type Schema = Record<string, unknown>;
+
+/** Counts the tokens of the LLM calls made while it is active (see `Llm.metered`). */
+export class TokenMeter {
+  tokens = 0;
+}
+const meters = new AsyncLocalStorage<TokenMeter>();
 
 /** Returns what is wrong with a parsed reply, or nothing when it is acceptable. */
 type Check = (value: unknown) => string[] | undefined;
@@ -85,6 +92,15 @@ export class Llm implements ScrapeLlm {
     return { text: content.slice(0, this.maxInputChars), truncated: true };
   }
 
+  /**
+   * Runs `fn` and adds the tokens of every LLM call it makes (also through the prompt injection guard of a scrape it
+   * awaits, and on the correction turn of a malformed reply) to `meter`. The meter is per run, not per `Llm`, which
+   * all jobs share; a run that is started again counts from its own zero.
+   */
+  metered<T>(meter: TokenMeter, fn: () => Promise<T>): Promise<T> {
+    return meters.run(meter, fn);
+  }
+
   /** One LLM call; its budget is `SEX_LLM_TIMEOUT` out of what `deadline` has left, and covers every attempt, rate-limit waits included. */
   private async complete(
     what: string,
@@ -107,6 +123,8 @@ export class Llm implements ScrapeLlm {
       call.throwIfAborted("while waiting for the LLM");
       throw toLlmError(err, llm.baseUrl);
     }
+    const meter = meters.getStore();
+    if (meter) meter.tokens += result.totalUsage?.totalTokens ?? 0;
     return resultText(result);
   }
 

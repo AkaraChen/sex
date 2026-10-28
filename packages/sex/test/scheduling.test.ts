@@ -31,12 +31,24 @@ describe("the queue under the scheduler", () => {
   ) {
     const queue = new BunqueueTaskQueue(":memory:", opts.workers ?? 4);
     const scheduler = new JobScheduler(queue);
-    const log: Array<{ id: string; job: string; start: number; end: number }> = [];
+    const log: Array<{ id: string; job: string; start: number; end: number; live: number }> = [];
+    const running = new Map<string, number>();
     const t0 = Date.now();
     queue.startWorker(async (task) => {
-      const entry = { id: String((task as { taskId?: string }).taskId ?? task.type), job: task.jobId, start: Date.now() - t0, end: 0 };
+      // `live` counts the job's tasks running when this one started, itself included. Unlike start/end times it does
+      // not depend on the clock's resolution, so a cap can be checked without a millisecond of slack.
+      const live = (running.get(task.jobId) ?? 0) + 1;
+      running.set(task.jobId, live);
+      const entry = {
+        id: String((task as { taskId?: string }).taskId ?? task.type),
+        job: task.jobId,
+        start: Date.now() - t0,
+        end: 0,
+        live,
+      };
       log.push(entry);
       await Bun.sleep(opts.ms ?? 40);
+      running.set(task.jobId, (running.get(task.jobId) ?? 1) - 1);
       entry.end = Date.now() - t0;
       return opts.outcome ?? "done";
     });
@@ -80,7 +92,7 @@ describe("the queue under the scheduler", () => {
       Array.from({ length: 6 }, (_, i) => ({ task: page("two", i), options: { maxConcurrency: 2 } })),
       { workers: 4 },
     );
-    expect(peak(log)).toBe(2);
+    expect(Math.max(...log.map((e) => e.live))).toBe(2);
   });
 
   test("with a delay the next page starts a delay after the previous one finished", async () => {

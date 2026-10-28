@@ -91,6 +91,12 @@ export class BunqueueTaskQueue implements TaskQueue {
     else await this.queue.setGroupConcurrency(lane, Math.max(1, Math.floor(limit)));
   }
 
+  async counts() {
+    if (this.closed) return { active: 0, waiting: 0 };
+    const c = await this.queue.getJobCountsAsync();
+    return { active: c.active, waiting: c.waiting + c.prioritized + c.delayed };
+  }
+
   startWorker(handler: (task: Task) => Promise<TaskOutcome | void>, onAbandoned?: (task: Task) => Promise<void>) {
     if (this.worker || this.closed) return;
     // A throw would make bunqueue retry the task (`attempts` is for interruptions), so errors end here.
