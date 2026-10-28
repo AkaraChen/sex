@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { pdfToMarkdown } from "../src/pdf.ts";
+import { joinPages, pdfToMarkdown } from "../src/pdf.ts";
+import { textPdf } from "./helpers.ts";
 
 /** A one-page PDF with the text "Hello PDF", built by hand. */
 function minimalPdf(): Uint8Array {
@@ -34,4 +35,23 @@ test("extracts text from a PDF repeatedly (document proxy is destroyed each time
 test("a corrupt PDF is a 422", async () => {
   const err = await pdfToMarkdown(new TextEncoder().encode("%PDF-1.4 garbage")).catch((e: unknown) => e);
   expect((err as { code?: string }).code).toBe("PDF_PARSE_FAILED");
+});
+
+test("returns the pages one by one, empty ones included", async () => {
+  const pdf = await pdfToMarkdown(textPdf(3));
+  expect(pdf.pages).toEqual([1, 2, 3].map((n) => ({ pageNumber: n, markdown: `Text page ${n}` })));
+  expect(pdf.markdown).toBe(joinPages(pdf.pages, false));
+  const limited = await pdfToMarkdown(textPdf(3), 2);
+  expect(limited.pages.map((p) => p.pageNumber)).toEqual([1, 2]);
+});
+
+test("joinPages: markers go between pages, empty pages are skipped when marking", () => {
+  const pages = [
+    { pageNumber: 1, markdown: "one" },
+    { pageNumber: 2, markdown: "" },
+    { pageNumber: 3, markdown: "three" },
+  ];
+  expect(joinPages(pages, true)).toBe("one\n\n---\n\n<!-- page 3 -->\n\nthree");
+  expect(joinPages(pages, false)).toBe("one\n\n---\n\n\n\n---\n\nthree");
+  expect(joinPages([{ pageNumber: 4, markdown: "x" }], true)).toBe("x");
 });

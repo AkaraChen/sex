@@ -169,7 +169,7 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 | `SEX_USER_AGENT` | `--user-agent` | Chrome 桌面 UA | 页面抓取使用的 User-Agent |
 | `SEX_CONCURRENCY` | `--concurrency` | `8` | 单进程内同时进行的页面抓取数 |
 | `SEX_TIMEOUT` | `--timeout` | `30000`（毫秒，最小 1） | 单页默认超时（请求用到 LLM（LLM 格式或 `checkPromptInjection`）且没传 `timeout` 时至少 60000）|
-| `SEX_MAX_BODY_BYTES` | — | `26214400`（25 MiB，最小 1024） | 单次页面下载的响应体上限 |
+| `SEX_MAX_BODY_BYTES` | — | `26214400`（25 MiB，最小 1024） | 单次页面下载的响应体上限，也是 `/v2/parse` 上传文件的上限 |
 | `SEX_MCP_TOOL_NAMES` | — | `web` | MCP 工具名：`web`（`web_fetch` 等）或 `firecrawl`（firecrawl-mcp 里有的工具用它的名字） |
 | `SEX_EXTRACT_WILDCARD_PAGES` | — | `25` | extract 的 URL 以 `/*` 结尾时，最多展开的页面数（请求里的 `limit` 优先） |
 | `SEX_DOCS_CONCURRENCY` | — | `min(2, CPU 核数 - 1)`，至少 1 | 同时用 here-docs 转换的文档数，超出的排队（排队时间计入请求的 `timeout`） |
@@ -239,6 +239,7 @@ crawl、batch scrape、extract 的请求都可以带 `webhook`（URL 字符串�
 |---|---|
 | `GET /health` | 健康检查，返回版本，以及 SearXNG / 浏览器 / LLM / 任务存储 / 文档存储（`documents`，如 `s3://bucket/prefix`）的状态摘要 |
 | `POST /v2/scrape` | 单页抓取 |
+| `POST /v2/parse` | 上传文件（`multipart/form-data`：`file`，以及 JSON 字符串 `options`，字段同 `/v2/scrape` 的选项），返回 Document。PDF 任何情况下都能解析（不开 `--docs` 走 unpdf）；Office 文档、图片需要 `--docs`，否则 `415`；超过 `SEX_MAX_BODY_BYTES` 返回 `413`。不支持 `rawBase64` 和 `actions`。只有 sex 有，sex-lite 没有（`404`） |
 | `POST /v2/search` | 搜索（`sources`: web/news/images，`scrapeOptions` 会顺便抓取结果页） |
 | `POST /v2/map` | 列出站点 URL（sitemap + 页面链接 + SearXNG `site:`）；入口重定向后以最终地址为准，`filterByPath` 默认只返回入口路径下的 URL，`includePaths` / `excludePaths` 是路径正则，响应带 `id`，`useIndex` / `ignoreCache` 接受但忽略 |
 | `POST /v2/crawl`、`GET/DELETE /v2/crawl/{id}`、`GET /v2/crawl/{id}/errors`、`GET /v2/crawl/active`（别名 `/v2/crawl/ongoing`）、`POST /v2/crawl/params-preview` | 异步爬取 |
@@ -269,7 +270,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
   - `fastMode: true` 跳过浏览器，只做 HTTP 抓取（脚本不会运行），不能和 `actions` 一起用（`400`）。
   - 其它不存在的字段仍被丢掉（官方 SDK 会带 `origin`、`integration` 之类）；设 `SEX_STRICT_REQUESTS=1` 后改为返回 `400`（`Unrecognized key in body: "..."`）。
   - extract 的 `allowExternalLinks` 会接受但忽略。
-- `parsers` 只接受 `"pdf"`、`"image"`、`{ "type": "pdf", ... }` 和 `{ "type": "image" }`，拼错或多出字段返回 `400`。PDF parser 只用 `maxPages`；`mode`、`pages`、`pageMarkdown`、`blocks`、`pageMarkers`、`refresh` 接受但没有效果，设了会在 `warning` 里列出。`parsers` 不含 `pdf` 时 PDF 不解析，`markdown` 和 `html` 是文件的 base64，`metadata.contentType` 为 `application/pdf`（和 Firecrawl 一致，以前是 `415`）。开了 `--docs` 时 PDF 的 `metadata.title` 不再取自 PDF 元数据（here-docs 不提供），标题以正文里的标题为准。
+- `parsers` 只接受 `"pdf"`、`"image"`、`{ "type": "pdf", ... }` 和 `{ "type": "image" }`，拼错或多出字段返回 `400`。PDF parser 用 `maxPages`、`pages`（别名 `pageMarkdown`：`pages: true` 时响应多一个 `pages: [{ pageNumber, markdown }]`，每页一项，空页也在）和 `pageMarkers`（`markdown` 里页与页之间是 `---` 和 `<!-- page N -->`，第一页前没有标记，空页跳过所以页号可能不连续）；unpdf 和 here-docs 两条路径都支持。`mode`、`blocks`、`refresh` 接受但没有效果，设了会在 `warning` 里列出（`mode` 需要 here-docs 先暴露 OCR 开关或每页是否 OCR 的信息）。`parsers` 不含 `pdf` 时 PDF 不解析，`markdown` 和 `html` 是文件的 base64，`metadata.contentType` 为 `application/pdf`（和 Firecrawl 一致，以前是 `415`）。开了 `--docs` 时 PDF 的 `metadata.title` 不再取自 PDF 元数据（here-docs 不提供），标题以正文里的标题为准。
 - **`metadata.numPages` 的语义变了**：以前是文件的总页数，现在是实际解析的页数（`min(总页数, maxPages)`，超时只转换了一部分时是已转换的页数），和 Firecrawl 一致；总页数在新增的 `metadata.totalPages` 里。没传 `maxPages` 的请求两者相同；传了的，读 `numPages` 当总页数的调用方要改读 `totalPages`。
 - 搜索：SearXNG 请求遇到网络错误或 5xx 时，约 400 ms 后重试 1 次（在整体 deadline 内）；结果为空且 SearXNG 报告了 `unresponsive_engines`（如 Google 被 captcha）时，引擎和原因写进 `warning`。不传 `timeout` 时整个搜索（含 scrape）的 deadline 是 `max(SEX_TIMEOUT × 2, 60000)` ms。`includeDomains` 会去掉首尾空白、转小写并校验主机名（不合法返回 `400`），按域名并发的 SearXNG 查询在整个进程内共享 4 个并发。没有搜索结果缓存。
   - 与 Firecrawl v2 对齐：`safe: true` 对应 SearXNG 的 `safesearch=2`；响应有 `id`（UUID）和 `creditsUsed: 0`（`creditsUsed` 恒为 0）；`web` / `news` 结果带 `category`（github.com → `github`，`.pdf` → `pdf`，`.gov` → `gov`，SearXNG 的 `science` → `research`、`it` → `developer`，其余没有）。`limit` 缺省时 **HTTP `/v2/search` 为 10**（同 Firecrawl），CLI 和 MCP `web_search` 为 5（省 LLM 的 token）。无法支持的参数不会静默忽略：`tbs` 不是 `qdr:h|d|w|m|y`、`country`、`location` 都会写进 `warning`。

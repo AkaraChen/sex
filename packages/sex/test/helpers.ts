@@ -1,7 +1,7 @@
 import { type ConfigOverrides, resolveConfig } from "../src/config.ts";
 import { Engine } from "../src/engine/engine.ts";
 
-export { CERT, KEY, startFixtureSite, startMockSearxng, waitFor } from "@sex/core/test/helpers.ts";
+export { CERT, KEY, startFixtureSite, startMockSearxng, textPdf, waitFor } from "@sex/core/test/helpers.ts";
 
 /** Tokens the mock LLM reports for each call. */
 export const MOCK_LLM_TOKENS = 15;

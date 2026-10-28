@@ -1,5 +1,7 @@
 import { JSON_SCHEMA_OUTPUT_REGISTRY, ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
+import { badRequest } from "@sex/core/errors.ts";
 import { coreRoutes, procedureBase } from "@sex/core/http/procedures.ts";
+import { scrapeUpload } from "@sex/core/scrape.ts";
 import { z } from "zod";
 import type { Engine } from "../engine/engine.ts";
 import { type JobRecord, PAGE_BUDGET_CHARS } from "../engine/jobs/index.ts";
@@ -21,7 +23,10 @@ import {
   JobStatusResponse,
   MapRequest,
   MapResponse,
+  ParseRequest,
   QueueStatusResponse,
+  ScrapeOptions,
+  ScrapeResponse,
 } from "../schemas.ts";
 
 const base = procedureBase<Engine>();
@@ -142,8 +147,41 @@ const errorsOf = async (engine: Engine, kind: JobKind, id: string) => {
   return { errors: await store.errors(id), robotsBlocked: await store.robotsBlocked(id) };
 };
 
+/** The `options` field of an upload: a JSON object in a string, validated like a scrape request's options. */
+function parseOptions(raw: string | undefined) {
+  if (!raw?.trim()) return {};
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    throw badRequest("The 'options' field must be valid JSON");
+  }
+  if (typeof json !== "object" || json === null || Array.isArray(json)) throw badRequest("The 'options' field must be a JSON object");
+  const parsed = ScrapeOptions.safeParse(json);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw badRequest(`Invalid options: ${issue?.path.join(".") || "options"}: ${issue?.message}`);
+  }
+  return parsed.data;
+}
+
 export const router = {
   ...coreRoutes,
+
+  parse: base
+    .route({
+      method: "POST",
+      path: "/v2/parse",
+      tags: ["Parse"],
+      summary: "Convert an uploaded file (multipart/form-data) to a document",
+      inputStructure: "compact",
+    })
+    .input(ParseRequest)
+    .output(ScrapeResponse)
+    .handler(async ({ input, context, signal }) => {
+      const { document } = await scrapeUpload(context.engine, input.file, parseOptions(input.options), { signal });
+      return { success: true as const, data: document };
+    }),
 
   map: base
     .route({ method: "POST", path: "/v2/map", tags: ["Map"], summary: "List the URLs of a website" })

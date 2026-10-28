@@ -1,5 +1,6 @@
 import type { Deadline } from "./deadline.ts";
 import type { PageExtractOptions, PageExtractResult } from "./page.ts";
+import type { PdfPage } from "./pdf.ts";
 import type { Action } from "./schemas.ts";
 
 /**
@@ -89,6 +90,11 @@ export interface DocsWarning {
 
 export interface DocsResult {
   markdown: string;
+  /**
+   * The converted pages in order, empty ones included; absent when the input is not paged or the converter returned something
+   * that belongs to no page (so `markdown` cannot be rebuilt from it).
+   */
+  pages?: PdfPage[];
   /** Pages in the whole document, for paged inputs (PDF). */
   numPages?: number;
   /** Pages actually converted; less than numPages when maxPages stopped early. */
