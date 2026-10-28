@@ -72,6 +72,7 @@ export async function sitemapUrls(
       const res = await safeFetch(sm, {
         deadline: deadline.slice(15_000),
         allowPrivateNetwork: engine.config.allowPrivateNetwork,
+        proxy: engine.config.proxyUrl,
         userAgent: engine.config.userAgent,
         maxBodyBytes: engine.config.maxBodyBytes,
       });
@@ -131,6 +132,7 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   const resolveOpts = {
     deadline: deadline.slice(10_000),
     allowPrivateNetwork: engine.config.allowPrivateNetwork,
+    proxy: engine.config.proxyUrl,
     userAgent: engine.config.userAgent,
     headersOnly: true,
   };

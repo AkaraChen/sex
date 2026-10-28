@@ -106,7 +106,7 @@ export function pdeathsigWrapper(): string[] | undefined {
 export function lightpandaArgv(
   bin: string,
   port: number,
-  config: Pick<Config, "concurrency" | "allowPrivateNetwork">,
+  config: Pick<Config, "concurrency" | "allowPrivateNetwork" | "proxyUrl">,
   wrapper: string[] = [],
 ): string[] {
   return [
@@ -126,7 +126,40 @@ export function lightpandaArgv(
     // Second line of defence: Lightpanda refuses private addresses after DNS resolution. The request interception in
     // scrapeInner stays the primary guard, because an external --cdp-url browser has no such flag.
     ...(config.allowPrivateNetwork ? [] : ["--block-private-networks"]),
+    // Lightpanda's own flag, so every page request goes through the proxy. Credentials in the URL end up on its command line.
+    ...(config.proxyUrl ? ["--http-proxy", config.proxyUrl] : []),
   ];
+}
+
+/** `argv` for a log line, without the credentials of the `--http-proxy` URL. */
+export function redactArgv(argv: string[]): string[] {
+  return argv.map((arg, i) => (argv[i - 1] === "--http-proxy" ? redactUrl(arg) : arg));
+}
+
+function redactUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.username || url.password) {
+      url.username = "***";
+      url.password = "";
+    }
+    return url.href;
+  } catch {
+    return "<invalid>";
+  }
+}
+
+/**
+ * How an external CDP browser reaches the proxy: Chrome takes the proxy per browser context (`proxyServer`, no credentials in
+ * it) and gets the credentials by answering the proxy's auth challenge. A spawned Lightpanda has its proxy on the command line.
+ */
+export function contextProxy(
+  config: Pick<Config, "cdpUrl" | "proxyUrl">,
+): { server: string; credentials?: { username: string; password: string } } | undefined {
+  if (!config.cdpUrl || !config.proxyUrl) return undefined;
+  const url = new URL(config.proxyUrl);
+  const credentials = url.username ? { username: decodeURIComponent(url.username), password: decodeURIComponent(url.password) } : undefined;
+  return { server: `${url.protocol}//${url.host}`, ...(credentials ? { credentials } : {}) };
 }
 
 const startFailed = (reason: string) => new AppError("BROWSER_UNAVAILABLE", `Lightpanda did not start: ${reason}`);
@@ -223,7 +256,7 @@ export class BrowserPool implements ScrapeBrowser {
     const port = await freePort();
     const wrapper = pdeathsigWrapper();
     const argv = lightpandaArgv(bin, port, this.config, wrapper);
-    log.debug("spawning lightpanda", { argv });
+    log.debug("spawning lightpanda", { argv: redactArgv(argv) });
     let proc: Subprocess;
     try {
       proc = Bun.spawn(argv, {
@@ -299,7 +332,8 @@ export class BrowserPool implements ScrapeBrowser {
         throw err;
       }
       try {
-        const context = await browser.createBrowserContext();
+        const proxy = contextProxy(this.config);
+        const context = await browser.createBrowserContext(proxy ? { proxyServer: proxy.server } : undefined);
         let closed = false;
         const close = () => {
           if (closed) return;
@@ -310,6 +344,7 @@ export class BrowserPool implements ScrapeBrowser {
         try {
           deadline.throwIfAborted("before the browser scrape started");
           const page = await context.newPage();
+          if (proxy?.credentials) await deadline.bound(page.authenticate(proxy.credentials));
           return await deadline.bound(fn(page));
         } finally {
           deadline.signal.removeEventListener("abort", close);

@@ -80,6 +80,7 @@ export async function deliverWebhook(engine: Engine, task: WebhookTask): Promise
       },
       deadline: Deadline.start(ATTEMPT_TIMEOUT_MS),
       allowPrivateNetwork: engine.config.allowPrivateNetwork,
+      proxy: engine.config.proxyUrl,
       userAgent: engine.config.userAgent,
       maxBodyBytes: 1024 * 1024,
     });

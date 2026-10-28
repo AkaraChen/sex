@@ -55,6 +55,7 @@ describe("safeFetch end-to-end", () => {
     const err = await safeFetch(`http://[::ffff:127.0.0.1]:${server.port}/`, {
       deadline: Deadline.start(3000),
       allowPrivateNetwork: false,
+      proxy: undefined,
       userAgent: "t",
     }).then(
       () => null,

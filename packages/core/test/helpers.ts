@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { type CoreConfigOverrides, resolveCoreConfig } from "../src/config.ts";
 import { BaseEngine } from "../src/engine.ts";
 
@@ -145,4 +146,40 @@ export function textPdf(pages: number): Uint8Array {
   out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
   out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return new TextEncoder().encode(out);
+}
+
+/**
+ * A forward proxy that counts what it is asked for. Plain-HTTP requests (absolute-form target) are recorded and forwarded
+ * to `target(url)` (default: the URL itself); CONNECT requests are recorded and refused. The proxy URL is `url`.
+ * With `auth` ("user:password") requests without matching Basic credentials get a 407 challenge (and are recorded too).
+ */
+export function startCountingProxy(target: (url: URL) => URL = (u) => u, opts: { auth?: string } = {}) {
+  const requests: Array<{ url: string; headers: Headers }> = [];
+  const connects: string[] = [];
+  const server = createServer(async (req, res) => {
+    const headers = new Headers();
+    for (const [k, v] of Object.entries(req.headers)) if (typeof v === "string") headers.set(k, v);
+    requests.push({ url: req.url ?? "", headers });
+    if (opts.auth && headers.get("proxy-authorization") !== `Basic ${btoa(opts.auth)}`) {
+      res.writeHead(407, { "proxy-authenticate": 'Basic realm="test"', "content-length": "0" }).end();
+      return;
+    }
+    try {
+      const upstream = await fetch(target(new URL(req.url ?? "")), { method: req.method, redirect: "manual" });
+      res.writeHead(upstream.status, Object.fromEntries(upstream.headers));
+      res.end(Buffer.from(await upstream.arrayBuffer()));
+    } catch {
+      res.writeHead(502).end();
+    }
+  });
+  server.on("connect", (req, socket) => {
+    connects.push(req.url ?? "");
+    socket.end("HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\n\r\n");
+  });
+  return new Promise<{ url: string; requests: typeof requests; connects: string[]; close: () => void }>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as { port: number };
+      resolve({ url: `http://127.0.0.1:${port}`, requests, connects, close: () => server.close() });
+    });
+  });
 }
