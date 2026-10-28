@@ -75,6 +75,7 @@ describe("outbound deadlines", () => {
     const formats = (f: Parameters<typeof normalizeFormats>[0]) => normalizeFormats(f);
     expect(scrapeTimeout({ timeout: 30_000 }, {}, formats(["markdown"]))).toBe(30_000);
     expect(scrapeTimeout({ timeout: 30_000 }, {}, formats(["markdown", "summary"]))).toBe(60_000);
+    expect(scrapeTimeout({ timeout: 30_000 }, { checkPromptInjection: true }, formats(["markdown"]))).toBe(60_000);
     expect(scrapeTimeout({ timeout: 90_000 }, {}, formats(["summary"]))).toBe(90_000);
     expect(scrapeTimeout({ timeout: 30_000 }, { timeout: 5000 }, formats(["summary"]))).toBe(5000);
   });

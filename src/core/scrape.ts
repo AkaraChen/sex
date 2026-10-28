@@ -143,8 +143,8 @@ export async function scrapeUrl(
     // Waiting in the queue can outlast the caller; do not start work nobody is waiting for.
     outer.throwIfAborted("before the scrape started");
     // `timeout` bounds the whole scrape: fetching or rendering, waiting, converting, extracting and the LLM calls (each
-    // of which also has SEX_LLM_TIMEOUT, cut from what is left). Like Firecrawl, a request with LLM formats and no
-    // `timeout` gets at least 60 s instead of the default.
+    // of which also has SEX_LLM_TIMEOUT, cut from what is left). Like Firecrawl, a request that uses the LLM (formats or the
+    // injection guard) and has no `timeout` gets at least 60 s instead of the default.
     const timeout = scrapeTimeout(engine.config, options, formats);
     const deadline = outer.slice(timeout, { expiredCode: "SCRAPE_TIMEOUT" });
     // An extract job has no time limit of its own: its guard calls are cut from the job instead.
@@ -163,9 +163,10 @@ export async function scrapeUrl(
 /** The default `timeout` of a request with LLM formats, when it is longer than SEX_TIMEOUT (Firecrawl: json 30 s -> 60 s). */
 const LLM_MIN_TIMEOUT_MS = 60_000;
 
-/** The time one scrape has: the request's `timeout`, else SEX_TIMEOUT (at least 60 s when it asks for an LLM format). */
+/** The time one scrape has: the request's `timeout`, else SEX_TIMEOUT (at least 60 s when it calls the LLM: an LLM format or the guard). */
 export function scrapeTimeout(config: { timeout: number }, options: ScrapeOptions, formats: NormalizedFormats): number {
-  return options.timeout ?? (needsLlm(formats) ? Math.max(config.timeout, LLM_MIN_TIMEOUT_MS) : config.timeout);
+  const usesLlm = needsLlm(formats) || options.checkPromptInjection;
+  return options.timeout ?? (usesLlm ? Math.max(config.timeout, LLM_MIN_TIMEOUT_MS) : config.timeout);
 }
 
 /** Where the time of one scrape comes from: the same deadline, except for an extract's guard calls. */
