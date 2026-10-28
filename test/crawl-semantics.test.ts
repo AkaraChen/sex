@@ -24,6 +24,8 @@ const pages: Record<string, () => Response> = {
   "/hub/": () => html("Hub", `${link("/hub/a?x=1")} ${link("/hub/a?x=2")}`),
   "/hub/a": () => html("Hub A", ""),
   "/": () => html("Home", ""),
+  "/r/": () => html("Redirects", `${link("/r/out")} ${link("/r/dup")} ${link("/r/block")} ${link("/r/target")}`),
+  "/r/target": () => html("Target", ""),
   "/deep/page": () => html("Deep", ""),
 };
 
@@ -46,6 +48,10 @@ describe("crawl semantics", () => {
             headers: { "content-type": "application/xml" },
           });
         }
+        if (pathname === "/r/out") return Response.redirect(`http://localhost:${site.port}/docs/intro`, 302);
+        if (pathname === "/r/dup") return Response.redirect(`${baseUrl}/r/target`, 302);
+        if (pathname === "/r/block") return Response.redirect(`${baseUrl}/private/x`, 302);
+        if (pathname === "/robots.txt") return new Response("User-agent: *\nDisallow: /private/\n");
         const page = pages[pathname];
         return page ? page() : new Response("not found", { status: 404 });
       },
@@ -123,5 +129,14 @@ describe("crawl semantics", () => {
 
     const plain = await engine.crawl({ url: `${baseUrl}/` }, { limit: 20 });
     expect((plain.options as Record<string, unknown>).limit).toBe(20);
+  });
+
+  test("a redirect target is checked for scope, robots and duplicates before the document is kept", async () => {
+    const job = await finished(engine, await engine.crawl({ url: `${baseUrl}/r/`, sitemap: "skip" }));
+    expect(await sourceUrls(engine, job.id)).toEqual([`${baseUrl}/r/`, `${baseUrl}/r/target`]);
+    expect(await engine.jobs.store.robotsBlocked(job.id)).toContain(`${baseUrl}/private/x`);
+    expect(
+      (await engine.jobs.store.errors(job.id)).some((e) => e.url === `${baseUrl}/r/out` && e.error.includes("outside the crawl scope")),
+    ).toBe(true);
   });
 });
