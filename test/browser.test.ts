@@ -25,6 +25,9 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
   let a: ReturnType<typeof Bun.serve>;
   let b: ReturnType<typeof Bun.serve>;
   let bHits: string[] = [];
+  /** Headers of every request each server received, by path. */
+  let aHeaders: Record<string, Headers> = {};
+  let bHeaders: Record<string, Headers> = {};
   let engine: Engine;
   const origin = () => `http://127.0.0.1:${a.port}`;
   const guardA = async (u: string) => new URL(u).port === String(a.port);
@@ -36,6 +39,9 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
       hostname: "127.0.0.1",
       fetch(req) {
         bHits.push(new URL(req.url).pathname);
+        bHeaders[new URL(req.url).pathname] = req.headers;
+        if (new URL(req.url).pathname === "/cdn.js")
+          return new Response("window.cdnLoaded = true", { headers: { "content-type": "application/javascript" } });
         if (new URL(req.url).pathname === "/pixel.png")
           return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } });
         return new Response(html("<p>secret internal text</p>"), { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -46,6 +52,7 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
       hostname: "127.0.0.1",
       fetch(req) {
         const { pathname } = new URL(req.url);
+        aHeaders[pathname] = req.headers;
         switch (pathname) {
           case "/page":
             return new Response(html(`<h1>Fixture heading</h1><p>Hello from the browser fixture.</p><a href="/other">Other page</a>`), {
@@ -55,6 +62,16 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
             return new Response(html("<p>other</p>"), { headers: { "content-type": "text/html; charset=utf-8" } });
           case "/redirect":
             return Response.redirect(`http://127.0.0.1:${b.port}/secret`, 302);
+          case "/creds":
+            // /same.js is the target's own origin; localhost is a different origin (host) on the same machine.
+            return new Response(
+              html(`<p>Credentials page</p><script src="/same.js"></script><script src="http://localhost:${b.port}/cdn.js"></script>`),
+              { headers: { "content-type": "text/html; charset=utf-8" } },
+            );
+          case "/same.js":
+            return new Response("window.sameLoaded = true", { headers: { "content-type": "application/javascript" } });
+          case "/to-other":
+            return Response.redirect(`http://localhost:${b.port}/landing`, 302);
           case "/img":
             return new Response(html(`<p>Image page</p><img src="http://127.0.0.1:${b.port}/pixel.png">`), {
               headers: { "content-type": "text/html; charset=utf-8" },
@@ -95,6 +112,54 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
       .catch((e: unknown) => e);
     expect((err as { code?: string }).code).toBe("PRIVATE_NETWORK_BLOCKED");
     expect(bHits).toEqual([]);
+  });
+
+  describe("user credentials", () => {
+    const headers = { Authorization: "Bearer secret-token", Cookie: "sid=abc123; theme=dark", "X-Plain": "1" };
+    const scrape = (path: string, extra: Partial<Parameters<Engine["browser"]["scrape"]>[0]> = {}) => {
+      aHeaders = {};
+      bHeaders = {};
+      return engine.browser.scrape({ url: `${origin()}${path}`, timeout: 10_000, userAgent: "t", extract, headers, ...extra });
+    };
+
+    test("reach the target's origin, its subresources, and no other origin", async () => {
+      const result = await scrape("/creds");
+      expect(result.rawHtml).toContain("Credentials page");
+      for (const path of ["/creds", "/same.js"]) {
+        expect(aHeaders[path]?.get("authorization")).toBe("Bearer secret-token");
+        expect(aHeaders[path]?.get("cookie")).toBe("sid=abc123; theme=dark");
+        expect(aHeaders[path]?.get("x-plain")).toBe("1");
+      }
+      // Same machine, different host: a third party as far as the browser is concerned.
+      expect(bHeaders["/cdn.js"]).toBeDefined();
+      expect(bHeaders["/cdn.js"]?.get("authorization")).toBeNull();
+      expect(bHeaders["/cdn.js"]?.get("cookie")).toBeNull();
+      expect(bHeaders["/cdn.js"]?.get("proxy-authorization")).toBeNull();
+    });
+
+    test("do not follow a redirect to another origin", async () => {
+      const result = await scrape("/to-other");
+      expect(result.rawHtml).toContain("secret internal text");
+      expect(bHeaders["/landing"]).toBeDefined();
+      expect(bHeaders["/landing"]?.get("authorization")).toBeNull();
+      expect(bHeaders["/landing"]?.get("cookie")).toBeNull();
+    });
+
+    test("work next to the private-network guard", async () => {
+      const result = await scrape("/creds", { requestGuard: async () => true });
+      expect(result.rawHtml).toContain("Credentials page");
+      expect(aHeaders["/same.js"]?.get("authorization")).toBe("Bearer secret-token");
+      expect(bHeaders["/cdn.js"]?.get("authorization")).toBeNull();
+      // The guard still decides first: a refused origin is not contacted, with or without credentials.
+      bHits = [];
+      await scrape("/creds", { requestGuard: guardA });
+      expect(bHits).toEqual([]);
+    });
+
+    test("the cookie arrives intact (it lives in the cookie jar, not in a request header)", async () => {
+      await scrape("/page", { headers: { Cookie: "token=a=b==; short=x" } });
+      expect(aHeaders["/page"]?.get("cookie")).toBe("token=a=b==; short=x");
+    });
   });
 
   test("blocks subresources to a non-allowed address without failing the page", async () => {

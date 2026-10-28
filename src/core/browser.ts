@@ -5,11 +5,12 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import defuddleBundle from "defuddle/full" with { type: "text" };
 import pLimit from "p-limit";
-import puppeteer, { type HTTPRequest, type Page } from "puppeteer-core";
+import puppeteer, { type Page } from "puppeteer-core";
 import type { Config } from "../config.ts";
 import { AppError, BROWSER_HINT } from "../errors.ts";
 import { log } from "../log.ts";
 import type { Action } from "../schemas.ts";
+import { applyRequestPolicies } from "./browser-policy.ts";
 import { MARKUP_TYPE } from "./net.ts";
 import { PAGE_SCRIPT, type PageExtractOptions, type PageExtractResult } from "./page.ts";
 
@@ -26,6 +27,10 @@ const START_COOLDOWN_MS = 30_000;
 export interface BrowserScrapeOptions {
   url: string;
   timeout: number;
+  /**
+   * Sent with the page's requests. `Authorization` / `Proxy-Authorization` reach the target's origin only, `Cookie` is stored as
+   * host-only cookies of the target's host; everything else goes to every request (see browser-policy.ts).
+   */
   headers?: Record<string, string>;
   userAgent: string;
   mobile?: boolean;
@@ -348,63 +353,15 @@ export class BrowserPool {
       page.setDefaultTimeout(opts.timeout);
       page.setDefaultNavigationTimeout(opts.timeout);
       await page.setUserAgent(opts.mobile ? MOBILE_UA : opts.userAgent).catch(() => {});
-      if (opts.headers && Object.keys(opts.headers).length) {
-        await page.setExtraHTTPHeaders(opts.headers).catch(() => {});
-      }
       const viewport = opts.mobile ? { width: 390, height: 844 } : { width: 1280, height: 800 };
       await page.setViewport({ ...viewport, isMobile: !!opts.mobile }).catch(() => {});
 
-      const blockedDocs: string[] = [];
-      if (opts.requestGuard) {
-        const guard = opts.requestGuard;
-        const interceptable = await page.setRequestInterception(true).then(
-          () => true,
-          () => false,
-        );
-        if (!interceptable) {
-          throw new AppError(
-            501,
-            "BROWSER_INTERCEPTION_UNSUPPORTED",
-            "This browser cannot intercept requests, so private-network protection cannot be enforced. Use a browser with CDP Fetch support or --allow-private-network.",
-          );
-        }
-        // Verdicts are cached per origin for this page; every request still goes through the handler.
-        const verdicts = new Map<string, Promise<boolean>>();
-        const handle = async (req: HTTPRequest): Promise<void> => {
-          if (req.isInterceptResolutionHandled()) return;
-          const u = req.url();
-          if (/^(data|blob|about):/i.test(u)) {
-            await req.continue().catch(() => {});
-            return;
-          }
-          let parsed: URL;
-          try {
-            parsed = new URL(u);
-          } catch {
-            await req.abort("blockedbyclient").catch(() => {});
-            return;
-          }
-          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-            await req.abort("blockedbyclient").catch(() => {});
-            return;
-          }
-          let verdict = verdicts.get(parsed.origin);
-          if (!verdict) {
-            verdict = guard(parsed.origin);
-            verdicts.set(parsed.origin, verdict);
-          }
-          if (await verdict) {
-            await req.continue().catch(() => {});
-          } else {
-            // Record main-frame navigations so the caller gets a clear error instead of a generic load failure.
-            if (req.isNavigationRequest() && req.frame() === page.mainFrame()) blockedDocs.push(u);
-            await req.abort("blockedbyclient").catch(() => {});
-          }
-        };
-        page.on("request", (req) => {
-          handle(req).catch(() => req.abort("failed").catch(() => {}));
-        });
-      }
+      // Headers, cookies and request interception; see browser-policy.ts.
+      const { blockedNavigations: blockedDocs } = await applyRequestPolicies(page, {
+        url: opts.url,
+        headers: opts.headers,
+        requestGuard: opts.requestGuard,
+      });
 
       if (opts.skipTlsVerification) {
         // Best effort: browsers without the Security domain (Lightpanda) keep their own certificate handling.
