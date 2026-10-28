@@ -205,7 +205,7 @@ crawl、batch scrape、extract 都是异步任务。任务按页拆分：crawl �
 | `GET /health` | 健康检查，返回版本，以及 SearXNG / 浏览器 / LLM / 任务存储 / 文档存储（`documents`，如 `s3://bucket/prefix`）的状态摘要 |
 | `POST /v2/scrape` | 单页抓取 |
 | `POST /v2/search` | 搜索（`sources`: web/news/images，`scrapeOptions` 会顺便抓取结果页） |
-| `POST /v2/map` | 列出站点 URL（sitemap + 页面链接 + SearXNG `site:`） |
+| `POST /v2/map` | 列出站点 URL（sitemap + 页面链接 + SearXNG `site:`）；入口重定向后以最终地址为准，`filterByPath` 默认只返回入口路径下的 URL，`includePaths` / `excludePaths` 是路径正则，响应带 `id`，`useIndex` / `ignoreCache` 接受但忽略 |
 | `POST /v2/crawl`、`GET/DELETE /v2/crawl/{id}`、`GET /v2/crawl/{id}/errors`、`GET /v2/crawl/active`、`POST /v2/crawl/params-preview` | 异步爬取 |
 | `POST /v2/batch/scrape`、`GET/DELETE /v2/batch/scrape/{id}`、`GET /v2/batch/scrape/{id}/errors` | 批量抓取 |
 | `POST /v2/extract`、`GET /v2/extract/{id}` | LLM 结构化抽取 |

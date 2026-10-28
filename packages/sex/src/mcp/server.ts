@@ -60,8 +60,8 @@ export function buildServer(engine: Engine): McpServer {
     },
     (args, ctx) =>
       guard(async () => {
-        const links = await engine.map({ ...args, limit: args.limit ?? MCP_MAP_DEFAULT_LIMIT }, ctx.mcpReq.signal);
-        return json({ links });
+        const { links, warning } = await engine.map({ ...args, limit: args.limit ?? MCP_MAP_DEFAULT_LIMIT }, ctx.mcpReq.signal);
+        return json({ links, ...(warning ? { warning } : {}) });
       }),
   );
 
