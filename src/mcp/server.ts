@@ -179,7 +179,11 @@ export function buildServer(engine: Engine): McpServer {
         }
         if (job.status === "scraping") await engine.cancelJob(job).catch(() => {});
         if (job.status !== "completed") throw new ToolMessageError(`Extract ${job.status}: ${job.error ?? "timed out"}`);
-        return json({ data: job.result, ...(job.sources ? { sources: job.sources } : {}) });
+        return json({
+          data: job.result,
+          ...(job.warning ? { warning: job.warning } : {}),
+          ...(job.sources ? { sources: job.sources } : {}),
+        });
       }),
   );
 

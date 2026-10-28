@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   error TEXT,
+  warning TEXT,
   result TEXT,
   sources TEXT,
   total INTEGER NOT NULL DEFAULT 0,
@@ -94,6 +95,7 @@ interface JobRow {
   created_at: number;
   expires_at: number;
   error: string | null;
+  warning: string | null;
   result: string | null;
   sources: string | null;
   total: number;
@@ -122,6 +124,7 @@ function toRecord(r: JobRow): JobRecord {
   };
   if (r.url !== null) rec.url = r.url;
   if (r.error !== null) rec.error = r.error;
+  if (r.warning !== null) rec.warning = r.warning;
   if (r.result !== null) rec.result = JSON.parse(r.result);
   if (r.sources !== null) rec.sources = JSON.parse(r.sources);
   return rec;
@@ -204,6 +207,9 @@ export class SqliteJobStore implements JobStore {
       this.db.run("ALTER TABLE jobs DROP COLUMN doc_count");
     }
     this.db.run(SCHEMA);
+    if (!this.db.query("SELECT 1 FROM pragma_table_info('jobs') WHERE name = 'warning'").get()) {
+      this.db.run("ALTER TABLE jobs ADD COLUMN warning TEXT");
+    }
     // `settled` (job_id, task_id) became the "settle" rows of `task_effects`; tasks in flight keep their settlements.
     if (this.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settled'").get()) {
       this.db.transaction(() => {
@@ -284,6 +290,7 @@ export class SqliteJobStore implements JobStore {
 
   private applyPatch(id: string, patch: JobPatch) {
     if ("error" in patch) this.exec("UPDATE jobs SET error = ? WHERE id = ?", patch.error ?? null, id);
+    if ("warning" in patch) this.exec("UPDATE jobs SET warning = ? WHERE id = ?", patch.warning ?? null, id);
     if ("result" in patch) this.exec("UPDATE jobs SET result = ? WHERE id = ?", json(patch.result), id);
     if ("sources" in patch) this.exec("UPDATE jobs SET sources = ? WHERE id = ?", json(patch.sources), id);
   }

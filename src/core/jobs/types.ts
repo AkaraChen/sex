@@ -21,6 +21,8 @@ export interface JobMeta {
   createdAt: number;
   expiresAt: number;
   error?: string;
+  /** Extract: what the pages' scrapes warned about, which the result alone does not show. */
+  warning?: string;
   /** Extract result. */
   result?: unknown;
   sources?: Record<string, unknown>;
@@ -56,7 +58,7 @@ export type TaskEffect =
   /** The crawl's `started` webhook went out. */
   | "started";
 export type JobRecord = JobMeta & JobCounters;
-export type JobPatch = Partial<Pick<JobMeta, "error" | "result" | "sources">>;
+export type JobPatch = Partial<Pick<JobMeta, "error" | "warning" | "result" | "sources">>;
 
 /** Where job state lives (SQLite, see sqlite.ts). Methods are called concurrently by tasks, so each must be atomic on its own. */
 export interface JobStore {

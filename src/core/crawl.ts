@@ -328,7 +328,16 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
     // `scheduled` only grows toward `limit` and then stays there, so a full crawl has nothing left to discover.
     const full = job.scheduled >= plan.limit;
     if ((plan.req.sitemap ?? "include") !== "only" && !full)
-      await enqueueLinks(engine, job, plan, links ?? [], depth + 1, taskId, false, !isSameSite(plan, new URL(document.metadata?.url ?? url)));
+      await enqueueLinks(
+        engine,
+        job,
+        plan,
+        links ?? [],
+        depth + 1,
+        taskId,
+        false,
+        !isSameSite(plan, new URL(document.metadata?.url ?? url)),
+      );
   } catch (err) {
     await fx.failure(url, toAppError(err).message);
   }

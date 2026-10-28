@@ -12,6 +12,8 @@ const MAX_RATE_LIMIT_RETRIES = 2;
 const RATE_LIMIT_BACKOFF_MS = 1000;
 
 /** The prompt injection guard scans overlapping chunks, so an injection cannot hide on a boundary. */
+/** Most page characters the injection guard scans; a page past it is cut, so nothing unscanned reaches the LLM (Firecrawl: 2M). */
+export const GUARD_MAX_CHARS = 2_000_000;
 const GUARD_CHUNK_CHARS = 32_000;
 const GUARD_CHUNK_OVERLAP = 2_000;
 /** Guard chunks classified at once; a detection stops later batches from being sent. */

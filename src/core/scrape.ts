@@ -6,6 +6,7 @@ import type { BrowserScrapeResult } from "./browser.ts";
 import { Deadline } from "./deadline.ts";
 import type { Engine } from "./engine.ts";
 import { compileJsonSchema } from "./json-schema.ts";
+import { GUARD_MAX_CHARS } from "./llm.ts";
 import { assertPublicUrl, decodeBody, MARKUP_TYPE, parseHttpUrl, safeFetch } from "./net.ts";
 import type { PageExtractResult } from "./page.ts";
 import { fileKindOf, rewriteUrl } from "./rewrite.ts";
@@ -316,21 +317,23 @@ async function scrapeInner(
   if (formats.attributes) doc.attributes = extracted?.attributes ?? [];
   if (browserResult?.actions) doc.actions = browserResult.actions;
 
+  // What the LLM gets: the title and the page. With the guard on, it scans exactly this text, so nothing unscanned is sent.
+  const heading = title ? `# ${title}\n\n` : "";
+  let body = markdown;
   if (options.checkPromptInjection) {
     // Runs before every LLM-backed format, so content it blocks never reaches one.
-    const { text, truncated } = engine.llm.fit(markdown);
-    const { scannedFully } = await engine.llm.checkInjection(text, llmDeadline);
-    if (truncated || !scannedFully) {
+    if (body.length > GUARD_MAX_CHARS) {
+      body = body.slice(0, GUARD_MAX_CHARS);
       warnings.push(
-        truncated
-          ? `The prompt injection check scanned only the first ${engine.llm.maxInputChars} characters of the page.`
-          : "The prompt injection check could not scan all of the page content, so some of it was not checked.",
+        `The prompt injection check scanned only the first ${GUARD_MAX_CHARS} characters of the page; the rest is not sent to the LLM.`,
       );
     }
+    const { scannedFully } = await engine.llm.checkInjection(`${heading}${body}`, llmDeadline);
+    if (!scannedFully) warnings.push("The prompt injection check could not scan all of the page content, so some of it was not checked.");
   }
 
   if (needsLlm(formats)) {
-    const { text: content, truncated } = engine.llm.fit(`${title ? `# ${title}\n\n` : ""}${markdown}`);
+    const { text: content, truncated } = engine.llm.fit(`${heading}${body}`);
     if (truncated) warnings.push(`The page was too long for the LLM; only its first ${engine.llm.maxInputChars} characters were used.`);
     const { llm } = engine;
     const settled = await Promise.allSettled([
