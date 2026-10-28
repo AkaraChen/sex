@@ -29,7 +29,7 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
   const { valid, invalid } = await splitUrls(engine, urls, !!ignoreInvalidURLs);
   if (!valid.length) throw badRequest("No valid URLs to scrape", { invalidURLs: invalid });
 
-  const { store, queue } = engine.jobs;
+  const { store, scheduler } = engine.jobs;
   let job: JobRecord;
   let taskOptions: Record<string, unknown> | undefined;
   if (appendToId) {
@@ -49,10 +49,11 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
   }
   await store.incr(job.id, "total", valid.length);
   try {
-    await queue.add(
+    await scheduler.add(
       valid.map((url) => ({
         task: { type: "page" as const, jobId: job.id, taskId: crypto.randomUUID(), url, depth: 0, options: taskOptions },
       })),
+      taskOptions ?? job.options,
     );
   } catch (err) {
     // Nothing will run or settle these tasks: undo the counts, and if nothing else is in flight finish the job

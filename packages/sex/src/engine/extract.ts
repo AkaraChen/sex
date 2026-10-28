@@ -39,7 +39,7 @@ export async function startExtract(engine: Engine, req: ExtractRequest): Promise
   }
 
   const job = await engine.jobs.store.create({ kind: "extract", options: { ...req, urls: valid } as Record<string, unknown> });
-  await engine.jobs.queue.add([{ task: { type: "extract", jobId: job.id } }]);
+  await engine.jobs.scheduler.add([{ task: { type: "extract", jobId: job.id } }]);
   return { job, invalidURLs: req.ignoreInvalidURLs ? invalid : undefined };
 }
 

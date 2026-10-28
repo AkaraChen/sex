@@ -60,8 +60,18 @@ export const CrawlRequest = z.object({
   allowSubdomains: z.boolean().optional(),
   ignoreRobotsTxt: z.boolean().optional(),
   robotsUserAgent: z.string().optional(),
-  delay: z.number().nonnegative().max(60).optional().describe("Seconds between page fetches (max 60)"),
-  maxConcurrency: z.number().int().positive().optional().describe("Accepted; concurrency is set per server (SEX_CONCURRENCY)."),
+  delay: z
+    .number()
+    .nonnegative()
+    .max(60)
+    .optional()
+    .describe("Seconds to wait after a page is done before the next one starts (max 60); pages run one at a time"),
+  maxConcurrency: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Most pages of this job scraped at once (never more than SEX_CONCURRENCY); delay makes it 1"),
   webhook: WebhookConfig.optional(),
   scrapeOptions: ScrapeOptions.optional(),
 });
@@ -106,7 +116,12 @@ export const CrawlParamsPreviewResponse = z.object({ success: z.literal(true), d
 export const BatchScrapeRequest = ScrapeOptions.extend({
   urls: z.array(z.string()).min(1).max(10_000),
   ignoreInvalidURLs: z.boolean().optional(),
-  maxConcurrency: z.number().int().positive().optional().describe("Accepted; concurrency is set per server (SEX_CONCURRENCY)."),
+  maxConcurrency: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Most pages of this job scraped at once (never more than SEX_CONCURRENCY); delay makes it 1"),
   appendToId: z.string().optional(),
   webhook: WebhookConfig.optional(),
 });

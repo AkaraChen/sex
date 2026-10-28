@@ -37,8 +37,6 @@ export interface JobCounters {
   pending: number;
   /** Crawl: URLs accepted so far, checked against `limit`. */
   scheduled: number;
-  /** Crawl: politeness-delay slots handed out. */
-  slots: number;
 }
 
 export type CounterName = keyof JobCounters;
@@ -111,9 +109,9 @@ export interface JobStore {
    * Crawl discovery as one atomic step, so a crash cannot mark a URL seen without leaving a page task for it. Each
    * candidate whose key is new is marked seen; a `blocked` one goes to the robots list, the others take a slot under
    * `limit` (past it they are seen but not crawled). Every slot counts `scheduled`, `total` and `pending` and becomes
-   * a row of the job's outbox, owned by `owner` (the discovering task), with its page task's taskId. With
-   * `intervalMs`, rows get politeness-delay run times spaced that far apart, no earlier than `now` or the end of the
-   * previous reservation. Returns the new outbox rows; the caller queues them, then calls `released`.
+   * a row of the job's outbox, owned by `owner` (the discovering task), with its page task's taskId. Pacing (a
+   * politeness delay, a concurrency cap) is not decided here: the scheduler applies it when the rows are queued.
+   * Returns the new outbox rows; the caller queues them, then calls `released`.
    */
   schedule(id: string, owner: string | undefined, candidates: LinkCandidate[], opts: ScheduleOptions): Promise<OutboxTask[]>;
   /** The outbox rows `owner` left behind: tasks it scheduled but may not have queued before it crashed. */
@@ -137,17 +135,13 @@ export interface LinkCandidate {
 export interface ScheduleOptions {
   limit: number;
   depth: number;
-  /** Politeness delay between page fetches; 0 = none. */
-  intervalMs: number;
-  now: number;
 }
 
-/** A page task scheduled by `schedule` and not yet confirmed queued. `runAt` (ms since epoch) is 0 for no delay. */
+/** A page task scheduled by `schedule` and not yet confirmed queued. */
 export interface OutboxTask {
   taskId: string;
   url: string;
   depth: number;
-  runAt: number;
 }
 
 export type Task =
@@ -155,9 +149,36 @@ export type Task =
   | { type: "page"; jobId: string; taskId?: string; url: string; depth: number; options?: Record<string, unknown> }
   | { type: "extract"; jobId: string };
 
+/** A task and how the queue should hold it. Decided by the `JobScheduler`; the queue only carries it out. */
+export interface QueuedTask {
+  task: Task;
+  /** Not run before this many ms from now. */
+  delayMs?: number;
+  /**
+   * Where the task waits. Without a lane it goes ahead of every lane's tasks (the queue serves tasks outside any lane
+   * first); tasks of one lane share its cap (`TaskQueue.capLane`) and are served in turn with the other lanes, so a
+   * lane with thousands of tasks cannot push another lane's tasks to the back.
+   */
+  lane?: Lane;
+}
+
+export interface Lane {
+  id: string;
+  /** After one of the lane's tasks has run, the lane starts no other task for this long. */
+  cooldownMs?: number;
+}
+
+/**
+ * What a handler reports. A "skipped" task did no work (its job was cancelled or finished), so it does not start its
+ * lane's cooldown: draining a cancelled job's pages must not take `delay` seconds each.
+ */
+export type TaskOutcome = "done" | "skipped";
+
 export interface TaskQueue {
-  add(tasks: Array<{ task: Task; delayMs?: number }>): Promise<void>;
+  add(tasks: QueuedTask[]): Promise<void>;
+  /** At most `limit` tasks of the lane run at once (no limit when undefined). Outlives a restart together with the queued tasks. */
+  capLane(lane: string, limit: number | undefined): Promise<void>;
   /** Starts consuming tasks in this process. */
-  startWorker(handler: (task: Task) => Promise<void>): void;
+  startWorker(handler: (task: Task) => Promise<TaskOutcome | void>): void;
   close(): Promise<void>;
 }

@@ -136,11 +136,11 @@ export async function startCrawl(engine: Engine, input: CrawlRequest, defaults: 
   compilePatterns(req.includePaths, "includePaths");
   compilePatterns(req.excludePaths, "excludePaths");
 
-  const { store, queue } = engine.jobs;
+  const { store, scheduler } = engine.jobs;
   const job = await store.create({ kind: "crawl", url: start.href, options: req as unknown as Record<string, unknown> });
   await store.incr(job.id, "pending", 1);
   try {
-    await queue.add([{ task: { type: "crawl-start", jobId: job.id, taskId: crypto.randomUUID() } }]);
+    await scheduler.add([{ task: { type: "crawl-start", jobId: job.id, taskId: crypto.randomUUID() } }]);
   } catch (err) {
     // Nothing will run or settle this task, so undo the count and fail the job.
     await store.incr(job.id, "pending", -1);
@@ -150,7 +150,7 @@ export async function startCrawl(engine: Engine, input: CrawlRequest, defaults: 
   return job;
 }
 
-/** Filters candidate links and enqueues the new ones as page tasks, respecting limit and delay. */
+/** Filters candidate links and enqueues the new ones as page tasks, respecting the limit. */
 async function enqueueLinks(
   engine: Engine,
   job: JobRecord,
@@ -185,8 +185,6 @@ async function enqueueLinks(
   const scheduled = await store.schedule(job.id, owner, found, {
     limit: plan.limit,
     depth,
-    intervalMs: (req.delay ?? 0) * 1000,
-    now: Date.now(),
   });
   await queuePages(engine, job, scheduled);
 }
@@ -198,15 +196,12 @@ async function enqueueLinks(
  */
 async function queuePages(engine: Engine, job: JobRecord, scheduled: OutboxTask[]) {
   if (!scheduled.length) return;
-  const { store, queue } = engine.jobs;
-  const now = Date.now();
+  const { store, scheduler } = engine.jobs;
   const ids = scheduled.map((t) => t.taskId);
   try {
-    await queue.add(
-      scheduled.map((t) => ({
-        task: { type: "page" as const, jobId: job.id, taskId: t.taskId, url: t.url, depth: t.depth },
-        delayMs: Math.max(0, t.runAt - now),
-      })),
+    await scheduler.add(
+      scheduled.map((t) => ({ task: { type: "page" as const, jobId: job.id, taskId: t.taskId, url: t.url, depth: t.depth } })),
+      job.options,
     );
   } catch (err) {
     // Nothing will run or settle these tasks (this one is not redelivered), so give their counts back.

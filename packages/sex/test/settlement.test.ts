@@ -332,8 +332,6 @@ describe("redelivery", () => {
     const [old] = await store.schedule(job.id, undefined, [{ key: `${site.url}/hub/old`, url: `${site.url}/hub/old`, blocked: false }], {
       limit: 5,
       depth: 1,
-      intervalMs: 0,
-      now: Date.now(),
     });
     const task: Task = { type: "page", jobId: job.id, taskId: old?.taskId, url: `${site.url}/hub/old`, depth: 1 };
 
@@ -359,8 +357,6 @@ describe("redelivery", () => {
     const [dup] = await store.schedule(job.id, undefined, [{ key: `${site.url}/hub/old2`, url: `${site.url}/hub/old`, blocked: false }], {
       limit: 5,
       depth: 1,
-      intervalMs: 0,
-      now: Date.now(),
     });
     await held(() => runTask(engine, { ...task, taskId: dup?.taskId }));
     expect((await store.documents(job.id, 0, 1e6)).data).toHaveLength(1);
