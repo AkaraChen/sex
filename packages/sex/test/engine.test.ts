@@ -189,6 +189,24 @@ describe("map", () => {
     expect(links.length).toBeGreaterThan(1);
   });
 
+  test("the entry page is downloaded once, not again to resolve redirects", async () => {
+    const methods: string[] = [];
+    const counting = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        if (new URL(req.url).pathname === "/") methods.push(req.method);
+        return fetch(`${site.url}${new URL(req.url).pathname}`, { method: req.method });
+      },
+    });
+    try {
+      await engine.map({ url: `http://127.0.0.1:${counting.port}/`, sitemap: "skip" });
+      expect(methods.filter((m) => m === "GET")).toHaveLength(1);
+    } finally {
+      counting.stop(true);
+    }
+  });
+
   test("the entry redirect decides the host", async () => {
     const hop = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.redirect(`${site.url}/docs/`, 302) });
     try {

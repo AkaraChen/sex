@@ -122,13 +122,20 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
 
   // Like Firecrawl, the site is the one the entry URL redirects to; safeFetch checks every hop.
   let warning: string | undefined;
+  const resolveOpts = {
+    deadline: deadline.slice(10_000),
+    allowPrivateNetwork: engine.config.allowPrivateNetwork,
+    userAgent: engine.config.userAgent,
+    headersOnly: true,
+  };
   try {
-    const res = await safeFetch(start.href, {
-      deadline: deadline.slice(10_000),
-      allowPrivateNetwork: engine.config.allowPrivateNetwork,
-      userAgent: engine.config.userAgent,
-      maxBodyBytes: engine.config.maxBodyBytes,
+    // HEAD where the server allows it; either way only the headers are read, the page itself is scraped below.
+    const head = await safeFetch(start.href, { ...resolveOpts, method: "HEAD" }).catch((err) => {
+      deadline.signal.throwIfAborted();
+      log.debug("map: HEAD on the start URL failed", { error: err instanceof Error ? err.message : String(err) });
+      return undefined;
     });
+    const res = head && head.status < 400 ? head : await safeFetch(start.href, resolveOpts);
     start = parseHttpUrl(res.url);
   } catch (err) {
     log.debug("map: resolving the start URL failed", { error: err instanceof Error ? err.message : String(err) });
