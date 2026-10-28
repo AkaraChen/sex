@@ -224,43 +224,42 @@ async function scrapeInner(
   };
   const warnings: string[] = [];
 
-  let finalUrl = url;
-  let status = 200;
-  let contentType = "";
-  let rawHtml = "";
-  let extracted: PageExtractResult | undefined;
-  let plainMarkdown: string | undefined;
-  let pdfMeta: { title?: string; numPages?: number } | undefined;
   const parsers = fileParsers(options.parsers);
   let browserResult: BrowserScrapeResult | undefined;
+  /** Why the browser's answer was not used, once the page is fetched over plain HTTP instead (see `browserFallbackReason`). */
+  let fallback: { reason: string } | undefined;
 
   // Documents and images have nothing for a browser to render, so they go straight to the HTTP fetch.
   if (browser && !fileKindOf(new URL(url)) && url === sourceUrl) {
-    browserResult = await browser.scrape({
-      url,
-      deadline,
-      headers,
-      userAgent: config.userAgent,
-      mobile: options.mobile,
-      skipTlsVerification: options.skipTlsVerification,
-      blockAds: options.blockAds ?? true,
-      waitFor: options.waitFor,
-      actions: options.actions,
-      extract: extractOpts,
-      requestGuard: config.allowPrivateNetwork
-        ? undefined
-        : async (u) => {
-            try {
-              await assertPublicUrl(new URL(u), false);
-              return true;
-            } catch {
-              return false;
-            }
-          },
-    });
-    ({ url: finalUrl, status, contentType } = browserResult);
-    rawHtml = browserResult.rawHtml;
-    extracted = browserResult.extracted;
+    try {
+      browserResult = await browser.scrape({
+        url,
+        deadline,
+        headers,
+        userAgent: config.userAgent,
+        mobile: options.mobile,
+        skipTlsVerification: options.skipTlsVerification,
+        blockAds: options.blockAds ?? true,
+        waitFor: options.waitFor,
+        actions: options.actions,
+        extract: extractOpts,
+        requestGuard: config.allowPrivateNetwork
+          ? undefined
+          : async (u) => {
+              try {
+                await assertPublicUrl(new URL(u), false);
+                return true;
+              } catch {
+                return false;
+              }
+            },
+      });
+    } catch (err) {
+      if (deadline.signal.aborted) throw deadline.translate(err);
+      const reason = browserFallbackReason(err, options, deadline);
+      if (!reason) throw err;
+      fallback = { reason };
+    }
   } else if (options.waitFor) {
     warnings.push("waitFor is ignored without a browser");
   }
@@ -268,7 +267,7 @@ async function scrapeInner(
     warnings.push("waitFor is more than half of timeout, so little time is left to load and read the page; raise timeout or lower waitFor");
   }
 
-  if (!browserResult || browserResult.nonHtml) {
+  const fetchPage = async (warns: string[]): Promise<FetchedPage> => {
     const res = await safeFetch(url, {
       headers,
       deadline,
@@ -279,38 +278,66 @@ async function scrapeInner(
         ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
         : config.userAgent,
     });
-    finalUrl = res.url;
-    status = res.status;
-    contentType = res.contentType;
-    const isPdf = /application\/pdf/i.test(contentType) || startsWith(res.body, "%PDF-");
+    const out: FetchedPage = { url: res.url, status: res.status, contentType: res.contentType, rawHtml: "" };
+    const isPdf = /application\/pdf/i.test(out.contentType) || startsWith(res.body, "%PDF-");
     if (isPdf) {
       if (!parsers.pdf) throw new AppError("UNSUPPORTED_FILE", "PDF parsing is disabled by the parsers option");
       if (docs) {
-        const doc = await convertDocument(docs, res.body, finalUrl, parsers.maxPages, deadline, warnings);
-        plainMarkdown = doc.markdown;
-        pdfMeta = { numPages: doc.numPages };
+        const doc = await convertDocument(docs, res.body, out.url, parsers.maxPages, deadline, warns);
+        out.plainMarkdown = doc.markdown;
+        out.pdfMeta = { numPages: doc.numPages };
       } else {
         const pdf = await ctx.extractPool.pdf(res.body, parsers.maxPages, deadline);
-        plainMarkdown = pdf.markdown;
-        pdfMeta = { title: pdf.title, numPages: pdf.numPages };
+        out.plainMarkdown = pdf.markdown;
+        out.pdfMeta = { title: pdf.title, numPages: pdf.numPages };
       }
-      contentType ||= "application/pdf";
-    } else if (!contentType && docs && isConvertibleByExtension(finalUrl, parsers.image)) {
-      plainMarkdown = (await convertDocument(docs, res.body, finalUrl, undefined, deadline, warnings)).markdown;
-    } else if (!contentType || MARKUP_TYPE.test(contentType)) {
-      rawHtml = decodeBody(res.body, contentType);
-      extracted = await ctx.extractPool.html(rawHtml, { ...extractOpts, url: finalUrl }, deadline);
-    } else if (/^(text\/|application\/(json|javascript|x-ndjson))/i.test(contentType)) {
-      const text = decodeBody(res.body, contentType);
-      plainMarkdown = /json/i.test(contentType) ? `\`\`\`json\n${text}\n\`\`\`` : text;
-      rawHtml = text;
-    } else if (docs && (parsers.image || !/^image\//i.test(contentType))) {
+      out.contentType ||= "application/pdf";
+    } else if (!out.contentType && docs && isConvertibleByExtension(out.url, parsers.image)) {
+      out.plainMarkdown = (await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown;
+    } else if (!out.contentType || MARKUP_TYPE.test(out.contentType)) {
+      out.rawHtml = decodeBody(res.body, out.contentType);
+      out.extracted = await ctx.extractPool.html(out.rawHtml, { ...extractOpts, url: out.url }, deadline);
+    } else if (/^(text\/|application\/(json|javascript|x-ndjson))/i.test(out.contentType)) {
+      const text = decodeBody(res.body, out.contentType);
+      out.plainMarkdown = /json/i.test(out.contentType) ? `\`\`\`json\n${text}\n\`\`\`` : text;
+      out.rawHtml = text;
+    } else if (docs && (parsers.image || !/^image\//i.test(out.contentType))) {
       // Office documents, EPUB, RTF and (with the "image" parser) raster images; here-docs detects the format from the bytes.
-      plainMarkdown = (await convertDocument(docs, res.body, finalUrl, undefined, deadline, warnings)).markdown;
+      out.plainMarkdown = (await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown;
     } else {
-      throw new AppError("UNSUPPORTED_FILE", `Unsupported content type: ${contentType}`);
+      throw new AppError("UNSUPPORTED_FILE", `Unsupported content type: ${out.contentType}`);
+    }
+    return out;
+  };
+
+  let page: FetchedPage | undefined;
+  if (fallback) {
+    // The browser could not answer; the plain fetch is the last try, so its error is the one reported.
+    page = await fetchPage(warnings);
+    warnings.push(`Browser failed (${fallback.reason}); fell back to HTTP fetch, so scripts did not run.`);
+  } else if (!browserResult || browserResult.nonHtml) {
+    page = await fetchPage(warnings);
+  } else if (emptyBrowserPage(browserResult, options, deadline)) {
+    // A 2xx page without content is usually one whose content needs the HTML the browser did not wait for or was blocked from;
+    // the browser's answer stays unless the plain fetch finds something.
+    const warns: string[] = [];
+    const tried = await fetchPage(warns).catch((err: unknown) => {
+      if (deadline.signal.aborted) throw deadline.translate(err);
+      log.warn("HTTP fetch after an empty browser page failed", { url, error: toAppError(err).message });
+      return undefined;
+    });
+    if (tried?.extracted?.markdown.trim() && tried.status >= 200 && tried.status < 300) {
+      page = tried;
+      warnings.push(...warns, "Browser returned no content; fell back to HTTP fetch, so scripts did not run.");
+    } else {
+      warnings.push("Browser returned no content, and an HTTP fetch found none either.");
     }
   }
+  const { url: finalUrl, status, contentType, rawHtml, extracted, plainMarkdown, pdfMeta } = page ?? {
+    ...(browserResult as BrowserScrapeResult),
+    plainMarkdown: undefined,
+    pdfMeta: undefined,
+  };
 
   let markdown = plainMarkdown ?? extracted?.markdown ?? "";
   const metadata: Record<string, unknown> = { ...(extracted?.metadata ?? {}) };
@@ -411,6 +438,43 @@ async function scrapeInner(
   // The page script keeps mailto: links for the `links` format; crawl and map only follow http(s).
   const links = extracted?.links?.filter((l) => /^https?:/i.test(l));
   return { document: doc, links, linkTitles: extracted?.linkTitles };
+}
+
+/** What a plain HTTP fetch of the page yielded. */
+interface FetchedPage {
+  url: string;
+  status: number;
+  contentType: string;
+  rawHtml: string;
+  extracted?: PageExtractResult;
+  plainMarkdown?: string;
+  pdfMeta?: { title?: string; numPages?: number };
+}
+
+/** The least time a fallback HTTP fetch is started with; with less left the browser's own answer (or error) stands. */
+const FALLBACK_MIN_MS = 2_000;
+
+/**
+ * Whether a failed browser scrape may be answered by fetching the page over plain HTTP, and why. Which errors qualify is
+ * `ERRORS[code].fallback` alone; this adds what the catalog cannot know: a request with actions needs the browser, and
+ * the fetch must fit in the time the scrape has left. Returns undefined when the error should be thrown as it is.
+ */
+function browserFallbackReason(err: unknown, options: ScrapeOptions, deadline: Deadline): string | undefined {
+  if (!(err instanceof AppError) || !err.fallback) return undefined;
+  if (options.actions?.length || deadline.remaining() < FALLBACK_MIN_MS) return undefined;
+  return `${err.code}: ${err.message}`;
+}
+
+/** A 2xx page the browser rendered, whose content came out empty, and a fetch would still fit in the time left. */
+function emptyBrowserPage(result: BrowserScrapeResult, options: ScrapeOptions, deadline: Deadline): boolean {
+  return (
+    !!result.extracted &&
+    result.extracted.markdown.trim() === "" &&
+    result.status >= 200 &&
+    result.status < 300 &&
+    !options.actions?.length &&
+    deadline.remaining() >= FALLBACK_MIN_MS
+  );
 }
 
 /** Firecrawl `parsers`: which file parsers may run, and the PDF page budget. Omitted means every parser, all pages. */
