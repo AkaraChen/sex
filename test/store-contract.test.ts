@@ -348,7 +348,80 @@ for (const [name, makeLog] of backends) {
       expect((await store.documents(job.id, 2, 1e6)).data).toEqual([doc(30)]);
       expect((await store.documents(job.id, 3, 1e6)).data).toEqual([]);
     });
+
+    test("pushDocument stores a task's document once and counts it once", async () => {
+      const job = await store.create({ kind: "crawl", url: "https://e.com/", options: {} });
+      expect(await store.pushDocument(job.id, doc(10), "t1", true)).toBe(true);
+      expect(await store.pushDocument(job.id, doc(10), "t1", true)).toBe(false);
+      expect(await store.pushDocument(job.id, doc(20), "t2", true)).toBe(true);
+      // Without a taskId nothing is deduplicated, and without countCompleted nothing is counted.
+      expect(await store.pushDocument(job.id, doc(30))).toBe(true);
+      expect(await store.pushDocument(job.id, doc(30))).toBe(true);
+      expect((await store.documents(job.id, 0, 1e6)).data).toEqual([doc(10), doc(20), doc(30), doc(30)]);
+      expect((await store.get(job.id))?.completed).toBe(2);
+      // The same taskId in another job is a different task.
+      const other = await store.create({ kind: "crawl", url: "https://e.com/", options: {} });
+      expect(await store.pushDocument(other.id, doc(40), "t1")).toBe(true);
+      expect(await store.pushDocument("missing", doc(1), "t1")).toBe(false);
+    });
+
+    test("deliveries of one task racing each other store one document; the extra bytes are never read", async () => {
+      const job = await store.create({ kind: "crawl", url: "https://e.com/", options: {} });
+      const results = await Promise.all([1, 2, 3].map((n) => store.pushDocument(job.id, doc(n), "same", true)));
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.indexOf(true) + 1;
+      await store.pushDocument(job.id, doc(50), "next", true);
+      expect((await store.documents(job.id, 0, 1e6)).data).toEqual([doc(winner), doc(50)]);
+      expect((await store.get(job.id))?.completed).toBe(2);
+    });
+
+    test("a redelivered task's document is not written again", async () => {
+      const { log, count } = counted(makeLog().log);
+      const counting = new SqliteJobStore(":memory:", 60_000, log);
+      const job = await counting.create({ kind: "crawl", url: "https://e.com/", options: {} });
+      await counting.pushDocument(job.id, doc(10), "t1");
+      await counting.pushDocument(job.id, doc(10), "t1");
+      expect(count()).toBe(1);
+      await counting.close();
+    });
+
+    test("claimEffect is true once per task and effect", async () => {
+      const job = await store.create({ kind: "crawl", url: "https://e.com/", options: {} });
+      expect(await store.claimEffect(job.id, "t1", "started")).toBe(true);
+      expect(await store.claimEffect(job.id, "t1", "started")).toBe(false);
+      expect(await store.claimEffect(job.id, "t2", "started")).toBe(true);
+      expect(await store.claimEffect(job.id, undefined, "started")).toBe(true);
+      expect(await store.claimEffect(job.id, undefined, "started")).toBe(true);
+      expect(await store.claimEffect("missing", "t1", "started")).toBe(false);
+      expect(await store.claimEffect("missing", undefined, "started")).toBe(false);
+    });
+
+    test("effects of one task are independent: settle, document and error each happen once", async () => {
+      const job = await store.create({ kind: "batch_scrape", options: {} });
+      await store.incr(job.id, "pending", 2);
+      expect(await store.pushDocument(job.id, doc(1), "t1")).toBe(true);
+      await store.pushError(job.id, { id: "1", timestamp: "t", url: "u", error: "e" }, "t1");
+      await store.pushError(job.id, { id: "2", timestamp: "t", url: "u", error: "e" }, "t1");
+      expect(await store.settle(job.id, "t1", true)).toBe(1);
+      expect(await store.settle(job.id, "t1", true)).toBeNull();
+      expect((await store.errors(job.id)).map((e) => e.id)).toEqual(["1"]);
+      expect((await store.get(job.id))?.completed).toBe(1);
+    });
   });
+}
+
+/** Counts appends to a log. */
+function counted(inner: DocumentLog) {
+  let appends = 0;
+  const log: DocumentLog = {
+    append: (jobId, json) => {
+      appends++;
+      return inner.append(jobId, json);
+    },
+    read: (object, offset, length) => inner.read(object, offset, length),
+    drop: (jobId) => inner.drop(jobId),
+  };
+  return { log, count: () => appends };
 }
 
 /** A store on SQLite and JSONL files under `<dir>/<name>`, the layout `serve` uses. */
@@ -504,4 +577,44 @@ test("a database from before documents moved to files opens, without its documen
   await store.pushDocument("j", doc(1));
   expect((await store.documents("j", 0, 1e6)).data).toEqual([doc(1)]);
   await store.close();
+});
+
+test("a duplicate delivery's orphan bytes do not survive a restart or reach a page", async () => {
+  const { open, file } = fileStore("orphan");
+  const first = open();
+  const job = await first.create({ kind: "crawl", url: "https://e.com/", options: {} });
+  await Promise.all([first.pushDocument(job.id, doc(10), "t1"), first.pushDocument(job.id, doc(10), "t1")]);
+  await first.close();
+  expect(statSync(file(job.id)).size).toBe(lines(doc(10)) * 2);
+
+  const second = open();
+  expect(statSync(file(job.id)).size).toBe(lines(doc(10)));
+  expect((await second.documents(job.id, 0, 1e6)).data).toEqual([doc(10)]);
+  expect(await second.pushDocument(job.id, doc(10), "t1")).toBe(false);
+  expect(await second.pushDocument(job.id, doc(20), "t2")).toBe(true);
+  expect((await second.documents(job.id, 0, 1e6)).data).toEqual([doc(10), doc(20)]);
+  await second.close();
+});
+
+test("a database from before task_effects keeps its settled tasks", async () => {
+  const path = join(dir, "pre-effects.sqlite");
+  const first = new SqliteJobStore(path, 60_000, new MemoryDocumentLog());
+  const job = await first.create({ kind: "batch_scrape", options: {} });
+  await first.incr(job.id, "pending", 2);
+  await first.close();
+  const raw = new Database(path);
+  raw.run("DROP TABLE task_effects");
+  raw.run(
+    "CREATE TABLE settled (job_id TEXT NOT NULL REFERENCES jobs (id) ON DELETE CASCADE, task_id TEXT NOT NULL, PRIMARY KEY (job_id, task_id)) WITHOUT ROWID",
+  );
+  raw.run("INSERT INTO settled VALUES (?, 'old')", [job.id]);
+  raw.close();
+
+  const second = new SqliteJobStore(path, 60_000, new MemoryDocumentLog());
+  expect(await second.settle(job.id, "old")).toBeNull();
+  expect(await second.settle(job.id, "new")).toBe(1);
+  await second.close();
+  const check = new Database(path);
+  expect(check.query("SELECT 1 FROM sqlite_master WHERE name = 'settled'").get()).toBeNull();
+  check.close();
 });

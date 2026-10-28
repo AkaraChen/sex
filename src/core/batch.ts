@@ -1,6 +1,7 @@
 import { badRequest, notFound, toAppError } from "../errors.ts";
 import type { BatchScrapeRequest, ScrapeOptions } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
+import { taskEffects } from "./jobs/effects.ts";
 import { type JobRecord, sendWebhook, validateWebhook } from "./jobs/index.ts";
 import { assertPublicUrl, parseHttpUrl } from "./net.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "./scrape.ts";
@@ -71,16 +72,16 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
 }
 
 /** Scrapes one batch page. The page is counted in `completed` when its task settles (see runTask), exactly once per task. */
-export async function handleBatchPage(engine: Engine, job: JobRecord, url: string, taskOptions?: Record<string, unknown>) {
+export async function handleBatchPage(engine: Engine, job: JobRecord, url: string, taskOptions?: Record<string, unknown>, taskId?: string) {
   const { store } = engine.jobs;
+  const fx = taskEffects(engine, job, taskId);
   const source = taskOptions ?? job.options;
   const { webhook: _webhook, maxConcurrency: _mc, ...options } = source as ScrapeOptions & Record<string, unknown>;
   try {
     const { document } = await scrapeUrl(engine, url, options);
     if ((await store.get(job.id))?.status !== "scraping") return;
-    await store.pushDocument(job.id, document);
-    sendWebhook(engine.config, job, "page", [document]);
+    await fx.page(document);
   } catch (err) {
-    await store.pushError(job.id, { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: toAppError(err).message });
+    await fx.failure(url, toAppError(err).message);
   }
 }

@@ -4,7 +4,7 @@ import pLimit from "p-limit";
 import { log } from "../../log.ts";
 import type { Document } from "../../schemas.ts";
 import { type DocumentLog, READ_CONCURRENCY } from "./documents.ts";
-import type { CounterName, JobError, JobKind, JobPatch, JobRecord, JobState, JobStore } from "./types.ts";
+import type { CounterName, JobError, JobKind, JobPatch, JobRecord, JobState, JobStore, TaskEffect } from "./types.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS jobs (
@@ -55,10 +55,11 @@ CREATE TABLE IF NOT EXISTS seen (
   key TEXT NOT NULL,
   PRIMARY KEY (job_id, key)
 ) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS settled (
+CREATE TABLE IF NOT EXISTS task_effects (
   job_id TEXT NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
   task_id TEXT NOT NULL,
-  PRIMARY KEY (job_id, task_id)
+  effect TEXT NOT NULL,
+  PRIMARY KEY (job_id, task_id, effect)
 ) WITHOUT ROWID;
 `;
 
@@ -142,6 +143,12 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
  * warning, because on S3 that can be transient or a configuration problem (wrong bucket, permissions, lifecycle
  * rules) rather than lost data.
  *
+ * Every side effect of a task that must not repeat when the queue redelivers it (settling, its document, its failure,
+ * a webhook) is claimed as a row of `task_effects`, keyed by (job, taskId, effect), in the transaction of the write it
+ * guards. A document's bytes are appended before that transaction, so a redelivery that races its original (or finds
+ * the index gone after a crash) leaves bytes that nothing indexes: orphans, cut off at the end of a JSONL file on open
+ * and otherwise dropped with their job, never read because pages are chosen from the index.
+ *
  * Documents are only ever deleted by job id, for jobs this store deleted: the sweep leaves a tombstone in
  * `dropped_jobs` in the same transaction that deletes the job, and removes it once `drop` succeeded, so a crash or a
  * failed drop is retried by the next sweep (one runs on open). Nothing is deleted because it was found in the log,
@@ -174,6 +181,13 @@ export class SqliteJobStore implements JobStore {
       this.db.run("ALTER TABLE jobs DROP COLUMN doc_count");
     }
     this.db.run(SCHEMA);
+    // `settled` (job_id, task_id) became the "settle" rows of `task_effects`; tasks in flight keep their settlements.
+    if (this.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settled'").get()) {
+      this.db.transaction(() => {
+        this.db.run("INSERT OR IGNORE INTO task_effects (job_id, task_id, effect) SELECT job_id, task_id, 'settle' FROM settled");
+        this.db.run("DROP TABLE settled");
+      })();
+    }
     this.sweep();
     this.recovery = this.repair().catch((err) => log.warn("document repair failed", { error: errorText(err) }));
     // A log that appends in place must be repaired before the next append or read.
@@ -273,12 +287,25 @@ export class SqliteJobStore implements JobStore {
     return r?.[counter] ?? 0;
   }
 
+  /** Records that the task performed `effect`; false if it already had, or the job is gone. */
+  private claim(id: string, taskId: string, effect: TaskEffect) {
+    return (
+      this.exec("INSERT OR IGNORE INTO task_effects (job_id, task_id, effect) SELECT id, ?, ? FROM jobs WHERE id = ?", taskId, effect, id)
+        .changes > 0
+    );
+  }
+
+  private claimed(id: string, taskId: string, effect: TaskEffect) {
+    return this.db.query("SELECT 1 FROM task_effects WHERE job_id = ? AND task_id = ? AND effect = ?").get(id, taskId, effect) !== null;
+  }
+
+  async claimEffect(id: string, taskId: string | undefined, effect: TaskEffect) {
+    return taskId === undefined ? this.jobExists(id) : this.claim(id, taskId, effect);
+  }
+
   async settle(id: string, taskId: string | undefined, countCompleted = false) {
     return this.db.transaction(() => {
-      if (taskId !== undefined) {
-        const fresh = this.exec("INSERT OR IGNORE INTO settled (job_id, task_id) SELECT id, ? FROM jobs WHERE id = ?", taskId, id);
-        if (fresh.changes === 0) return null;
-      }
+      if (taskId !== undefined && !this.claim(id, taskId, "settle")) return null;
       const r = this.db
         .query<{ pending: number }, [number, string]>(
           "UPDATE jobs SET pending = pending - 1, completed = completed + ? WHERE id = ? RETURNING pending",
@@ -297,25 +324,34 @@ export class SqliteJobStore implements JobStore {
     return r?.start ?? now;
   }
 
-  async pushDocument(id: string, doc: Document) {
+  async pushDocument(id: string, doc: Document, taskId?: string, countCompleted = false) {
     await this.ready;
-    if (!this.jobExists(id)) return;
+    if (!this.jobExists(id)) return false;
+    // A redelivered task usually finds its document indexed already: skip the write instead of leaving orphan bytes.
+    if (taskId !== undefined && this.claimed(id, taskId, "document")) return false;
     const json = JSON.stringify(doc);
     const ref = await this.docs.append(id, json);
-    const added = this.exec(
-      `INSERT INTO documents (job_id, seq, object, offset, length, chars)
-       SELECT id, (SELECT coalesce(max(seq) + 1, 0) FROM documents WHERE job_id = ?1), ?2, ?3, ?4, ?5 FROM jobs WHERE id = ?1`,
-      id,
-      ref.object,
-      ref.offset,
-      ref.length,
-      json.length,
-    ).changes;
-    if (added === 0) {
+    const outcome = this.db.transaction((): "stored" | "duplicate" | "gone" => {
+      if (!this.jobExists(id)) return "gone";
+      if (taskId !== undefined && !this.claim(id, taskId, "document")) return "duplicate";
+      this.exec(
+        `INSERT INTO documents (job_id, seq, object, offset, length, chars)
+         VALUES (?1, (SELECT coalesce(max(seq) + 1, 0) FROM documents WHERE job_id = ?1), ?2, ?3, ?4, ?5)`,
+        id,
+        ref.object,
+        ref.offset,
+        ref.length,
+        json.length,
+      );
+      if (countCompleted) this.exec("UPDATE jobs SET completed = completed + 1 WHERE id = ?", id);
+      return "stored";
+    })();
+    if (outcome === "gone") {
       // The job expired while the document was being written, so the sweep's drop may have missed it.
       this.exec("INSERT OR IGNORE INTO dropped_jobs (job_id) VALUES (?)", id);
       await this.dropDocuments(id);
     }
+    return outcome === "stored";
   }
 
   async documentsJson(id: string, skip: number, maxChars: number): Promise<{ data: Uint8Array[]; nextSkip: number | null }> {
@@ -379,8 +415,11 @@ export class SqliteJobStore implements JobStore {
     return { data: data.map((bytes) => JSON.parse(text.decode(bytes)) as Document), nextSkip };
   }
 
-  async pushError(id: string, error: JobError) {
-    this.exec("INSERT INTO job_errors (job_id, json) SELECT id, ? FROM jobs WHERE id = ?", JSON.stringify(error), id);
+  async pushError(id: string, error: JobError, taskId?: string) {
+    this.db.transaction(() => {
+      if (taskId !== undefined && !this.claim(id, taskId, "error")) return;
+      this.exec("INSERT INTO job_errors (job_id, json) SELECT id, ? FROM jobs WHERE id = ?", JSON.stringify(error), id);
+    })();
   }
 
   async errors(id: string) {

@@ -57,7 +57,7 @@ function recordTasks(queue: TaskQueue): Task[] {
 
 async function finished(engine: Engine, id: string): Promise<JobRecord> {
   return waitFor(async () => {
-    const j = await engine.getJob(id, "batch_scrape");
+    const j = (await engine.jobs.store.get(id)) as JobRecord;
     return j.status !== "scraping" ? j : undefined;
   });
 }
@@ -167,5 +167,100 @@ describe("settlement", () => {
     }
     const jobs = await engine.jobs.store.active("batch_scrape");
     for (const j of jobs) expect(j.pending).toBe(0);
+  });
+});
+
+/**
+ * A task that crashes after its side effects but before it settles is delivered again. The crash is simulated by a
+ * settle that throws once; the same task then runs a second time, as the queue would after a restart.
+ */
+describe("redelivery", () => {
+  let site: ReturnType<typeof startSite>;
+  let hooks: ReturnType<typeof startHookServer>;
+  let engine: Engine;
+
+  beforeAll(() => {
+    site = startSite();
+    hooks = startHookServer();
+    engine = testEngine();
+  });
+
+  afterAll(async () => {
+    site.stop();
+    hooks.stop();
+    await engine.jobs.close();
+  });
+
+  /** Tasks added to the queue while `start` runs are held back instead of run. */
+  async function held<T>(start: () => Promise<T>): Promise<{ result: T; tasks: Task[] }> {
+    const { queue } = engine.jobs;
+    const realAdd = queue.add.bind(queue);
+    const tasks: Task[] = [];
+    queue.add = async (added) => {
+      tasks.push(...added.map((t) => t.task));
+    };
+    try {
+      return { result: await start(), tasks };
+    } finally {
+      queue.add = realAdd;
+    }
+  }
+
+  async function crashBeforeSettle(task: Task) {
+    const { store } = engine.jobs;
+    const realSettle = store.settle.bind(store);
+    store.settle = async () => {
+      store.settle = realSettle;
+      throw new Error("crashed before settle");
+    };
+    try {
+      await expect(runTask(engine, task)).rejects.toThrow("crashed before settle");
+    } finally {
+      store.settle = realSettle;
+    }
+  }
+
+  const count = (type: string) => hooks.types.filter((t) => t === type).length;
+
+  test("a batch page is stored, counted and announced once", async () => {
+    const before = count("batch_scrape.page");
+    const { result, tasks } = await held(() => engine.batchScrape({ urls: [`${site.url}/page`], webhook: hooks.url }));
+    const page = tasks[0] as Task;
+    await crashBeforeSettle(page);
+    await runTask(engine, page);
+
+    const done = await finished(engine, result.job.id);
+    expect(done).toMatchObject({ status: "completed", pending: 0, completed: 1 });
+    expect((await engine.jobs.store.documents(done.id, 0, 1e6)).data).toHaveLength(1);
+    await waitFor(() => (count("batch_scrape.completed") >= 1 ? true : undefined));
+    await Bun.sleep(100);
+    expect(count("batch_scrape.page") - before).toBe(1);
+  });
+
+  test("a crawl page is stored, counted and announced once, and the crawl announces its start once", async () => {
+    const pages = count("crawl.page");
+    const started = count("crawl.started");
+    const { result: job, tasks } = await held(() =>
+      engine.crawl({ url: `${site.url}/page`, limit: 5, sitemap: "skip", webhook: hooks.url } as Parameters<Engine["crawl"]>[0]),
+    );
+    const start = tasks[0] as Task;
+    expect(start.type).toBe("crawl-start");
+    const { tasks: pageTasks } = await held(async () => {
+      await crashBeforeSettle(start);
+      await runTask(engine, start);
+    });
+    // The second run finds the start URL already seen, so the first run's page task is the only one.
+    expect(pageTasks).toHaveLength(1);
+    const page = pageTasks[0] as Task;
+    await crashBeforeSettle(page);
+    await runTask(engine, page);
+
+    const done = await finished(engine, job.id);
+    expect(done).toMatchObject({ pending: 0, completed: 1 });
+    expect((await engine.jobs.store.documents(job.id, 0, 1e6)).data).toHaveLength(1);
+    await waitFor(() => (count("crawl.completed") >= 1 ? true : undefined));
+    await Bun.sleep(100);
+    expect(count("crawl.page") - pages).toBe(1);
+    expect(count("crawl.started") - started).toBe(1);
   });
 });

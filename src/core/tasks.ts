@@ -19,13 +19,13 @@ export async function runTask(engine: Engine, task: Task): Promise<void> {
   }
   let countCompleted = false;
   try {
-    if (task.type === "crawl-start") return await handleCrawlStart(engine, task.jobId);
+    if (task.type === "crawl-start") return await handleCrawlStart(engine, task.jobId, task.taskId);
     const job = await store.get(task.jobId);
     // Cancelled or failed jobs still drain their queued pages.
     if (job?.status !== "scraping") return;
-    if (job.kind === "crawl") return await handleCrawlPage(engine, job, task.url, task.depth);
+    if (job.kind === "crawl") return await handleCrawlPage(engine, job, task.url, task.depth, task.taskId);
     countCompleted = true;
-    return await handleBatchPage(engine, job, task.url, task.options);
+    return await handleBatchPage(engine, job, task.url, task.options, task.taskId);
   } finally {
     await settleTask(engine, task.jobId, task.taskId, countCompleted);
   }
