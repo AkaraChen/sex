@@ -288,6 +288,7 @@ async function acceptRedirect(
   plan: CrawlPlan,
   url: string,
   finalUrl: string | undefined,
+  taskId: string | undefined,
 ): Promise<boolean> {
   const fetched = normalizeUrl(url, false);
   const target = finalUrl ? normalizeUrl(finalUrl, false) : null;
@@ -307,8 +308,9 @@ async function acceptRedirect(
     await fx.failure(url, `Redirected to ${target}, which is outside the crawl scope`);
     return false;
   }
-  // A target that was already seen is crawled (or being crawled) under its own task.
-  return (await store.markSeen(job.id, [keyOf(target)]))[0] === true;
+  // A target that was already seen is crawled (or being crawled) under its own task; one this task marked itself,
+  // before it crashed, is this page.
+  return store.claimSeen(job.id, taskId, keyOf(target));
 }
 
 export async function handleCrawlPage(engine: Engine, job: JobRecord, url: string, depth: number, taskId?: string) {
@@ -320,7 +322,7 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
     const { document, links } = await scrapeUrl(engine, url, plan.req.scrapeOptions, { collectLinks: true });
     if ((await store.get(job.id))?.status !== "scraping") return;
     const start = normalizeUrl(plan.start.href, false);
-    if (url !== start && !(await acceptRedirect(store, fx, job, plan, url, document.metadata?.url as string | undefined))) return;
+    if (url !== start && !(await acceptRedirect(store, fx, job, plan, url, document.metadata?.url as string | undefined, taskId))) return;
     // The start page always feeds discovery but only counts as a result if it passes the filters.
     if (url !== start || matchesFilters(plan, new URL(url))) {
       await fx.page(document, { countCompleted: true });

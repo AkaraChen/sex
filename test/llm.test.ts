@@ -80,11 +80,18 @@ describe("result status (#5)", () => {
 });
 
 describe("errors (#6)", () => {
-  test("HTTP errors keep the status and the provider request id", async () => {
-    const s = serve(() => new Response("bad key", { status: 401, headers: { "x-request-id": "req_1" } }));
+  test.each([400, 401, 403, 404])("a %i from the endpoint is a configuration error, not a 502", async (status) => {
+    const s = serve(() => new Response("bad key", { status, headers: { "x-request-id": "req_1" } }));
     const err = await rejection(llmFor(s.url).summarize("page", NO_LIMIT));
-    expect(err).toMatchObject({ status: 502, code: "LLM_ERROR", details: { status: 401, requestId: "req_1" } });
+    expect(err).toMatchObject({ status: 500, code: "LLM_REQUEST_REJECTED", retryable: false, details: { status, requestId: "req_1" } });
     expect(err.message).toContain("req_1");
+    expect(err.message).toContain("SEX_LLM_API_KEY");
+  });
+
+  test("an upstream 5xx stays LLM_ERROR (502)", async () => {
+    const s = serve(() => new Response("boom", { status: 500, headers: { "x-request-id": "req_3" } }));
+    const err = await rejection(llmFor(s.url).summarize("page", NO_LIMIT));
+    expect(err).toMatchObject({ status: 502, code: "LLM_ERROR", retryable: true, details: { status: 500, requestId: "req_3" } });
   });
 
   test("an unreachable endpoint is LLM_UNAVAILABLE", async () => {

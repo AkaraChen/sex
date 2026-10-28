@@ -56,7 +56,9 @@ export type TaskEffect =
   /** The task's failure was recorded (see `pushError`). */
   | "error"
   /** The crawl's `started` webhook went out. */
-  | "started";
+  | "started"
+  /** The task marked its page's redirect target seen (see `claimSeen`). */
+  | "redirect";
 export type JobRecord = JobMeta & JobCounters;
 export type JobPatch = Partial<Pick<JobMeta, "error" | "warning" | "result" | "sources">>;
 
@@ -99,8 +101,12 @@ export interface JobStore {
   robotsTxt(id: string): Promise<string>;
   pushRobotsBlocked(id: string, url: string): Promise<void>;
   robotsBlocked(id: string): Promise<string[]>;
-  /** Adds keys to the job's seen-set; returns true for each key that was new. */
-  markSeen(id: string, keys: string[]): Promise<boolean[]>;
+  /**
+   * Marks one key seen on behalf of a task: true if it was new, or if this same task is the one that marked it (a
+   * redelivery after a crash, which must carry on with the page rather than find its own mark and drop it). The mark
+   * and the task's claim on it are one transaction. Without a taskId it only reports whether the key was new.
+   */
+  claimSeen(id: string, taskId: string | undefined, key: string): Promise<boolean>;
   /**
    * Crawl discovery as one atomic step, so a crash cannot mark a URL seen without leaving a page task for it. Each
    * candidate whose key is new is marked seen; a `blocked` one goes to the robots list, the others take a slot under

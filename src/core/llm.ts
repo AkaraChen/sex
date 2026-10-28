@@ -357,6 +357,14 @@ function toLlmError(err: unknown, baseUrl: string): AppError {
         retryAfterMs: retryAfter,
       });
     }
+    // A 4xx (except a request timeout) is the same on every try: bad key, wrong model name, request refused.
+    if (err.status >= 400 && err.status < 500 && err.status !== 408) {
+      return new AppError(
+        "LLM_REQUEST_REJECTED",
+        `The LLM endpoint rejected the request (${err.status})${suffix}: ${err.body.slice(0, 500)}. Check SEX_LLM_MODEL, SEX_LLM_BASE_URL and SEX_LLM_API_KEY.`,
+        { status: err.status, requestId: id },
+      );
+    }
     return new AppError("LLM_ERROR", `LLM request failed (${err.status})${suffix}: ${err.body.slice(0, 500)}`, {
       status: err.status,
       requestId: id,

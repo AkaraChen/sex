@@ -210,11 +210,16 @@ for (const [name, makeLog] of backends) {
       expect((await store.active("extract")).map((j) => j.id)).toContain(job.id);
     });
 
-    test("markSeen, errors and robots lists are per job and ordered", async () => {
+    test("claimSeen, errors and robots lists are per job and ordered", async () => {
       const a = await store.create({ kind: "crawl", url: "https://a/", options: {} });
       const b = await store.create({ kind: "crawl", url: "https://b/", options: {} });
-      expect(await store.markSeen(a.id, ["x", "y", "x"])).toEqual([true, true, false]);
-      expect(await store.markSeen(b.id, ["x"])).toEqual([true]);
+      expect([await store.claimSeen(a.id, undefined, "x"), await store.claimSeen(a.id, undefined, "y")]).toEqual([true, true]);
+      expect(await store.claimSeen(a.id, undefined, "x")).toBe(false);
+      expect(await store.claimSeen(b.id, undefined, "x")).toBe(true);
+      // The task that marked a key seen is let through again (a redelivery); another task is not.
+      expect(await store.claimSeen(a.id, "t1", "z")).toBe(true);
+      expect(await store.claimSeen(a.id, "t1", "z")).toBe(true);
+      expect(await store.claimSeen(a.id, "t2", "z")).toBe(false);
       await store.pushError(a.id, { id: "1", timestamp: "t", url: "u1", error: "e1" });
       await store.pushError(a.id, { id: "2", timestamp: "t", url: "u2", error: "e2" });
       expect((await store.errors(a.id)).map((e) => e.id)).toEqual(["1", "2"]);
@@ -230,7 +235,7 @@ for (const [name, makeLog] of backends) {
       const job = await first.create({ kind: "crawl", url: "https://e.com/", options: { limit: 3 } });
       await first.incr(job.id, "pending", 2);
       await first.pushDocument(job.id, { markdown: "kept", metadata: {} });
-      await first.markSeen(job.id, ["https://e.com/"]);
+      await first.claimSeen(job.id, undefined, "https://e.com/");
       await first.close();
 
       const second = new SqliteJobStore(path, 60_000, log);
@@ -238,7 +243,7 @@ for (const [name, makeLog] of backends) {
       expect((await second.documents(job.id, 0, 1e6)).data).toEqual([{ markdown: "kept", metadata: {} }]);
       await second.pushDocument(job.id, { markdown: "more", metadata: {} });
       expect((await second.documents(job.id, 0, 1e6)).data.map((d) => d.markdown)).toEqual(["kept", "more"]);
-      expect(await second.markSeen(job.id, ["https://e.com/"])).toEqual([false]);
+      expect(await second.claimSeen(job.id, undefined, "https://e.com/")).toBe(false);
       await second.close();
     });
 

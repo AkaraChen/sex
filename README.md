@@ -127,7 +127,7 @@ bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightp
 | `SEX_ALLOW_PRIVATE_NETWORK` | `--allow-private-network` | `search`/`fetch`：`true`；`serve`：`false` | 是否允许抓取回环、内网、link-local 地址 |
 | `SEX_USER_AGENT` | `--user-agent` | Chrome 桌面 UA | 页面抓取使用的 User-Agent |
 | `SEX_CONCURRENCY` | `--concurrency` | `8` | 单进程内同时进行的页面抓取数 |
-| `SEX_TIMEOUT` | `--timeout` | `30000`（毫秒，最小 1） | 单页默认超时 |
+| `SEX_TIMEOUT` | `--timeout` | `30000`（毫秒，最小 1） | 单页默认超时（请求用到 LLM（LLM 格式或 `checkPromptInjection`）且没传 `timeout` 时至少 60000）|
 | `SEX_MAX_BODY_BYTES` | — | `26214400`（25 MiB，最小 1024） | 单次页面下载的响应体上限 |
 | `SEX_EXTRACT_WILDCARD_PAGES` | — | `25` | extract 的 URL 以 `/*` 结尾时，最多展开的页面数 |
 | `SEX_EXTRACT_WORKERS` | — | `min(4, CPU 核数 - 1)`，至少 1 | HTML/PDF 解析的 worker 线程数；`0` 表示在主线程解析 |
@@ -188,8 +188,8 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - Google Docs / Slides / Sheets / Drive 链接会改写成导出链接再抓取（Docs、Slides → PDF，Sheets → CSV，Drive 文件 → 直接下载），`metadata.sourceURL` 仍是原链接；改写后的 URL 同样要过 SSRF 检查。URL 扩展名是文档（pdf / office / epub / rtf）或图片时不经过浏览器，直接 HTTP 抓取；响应没有 content-type 且开了 `--docs` 时，按扩展名交给 here-docs 转换，否则当作 HTML。sex 没有 `fastMode` 参数，所以不会按它跳过浏览器。
 - crawl 的 `delay` 通过给每个页面任务分配错开的执行时间来实现；`maxConcurrency` 不按单个任务限制，并发由 `SEX_CONCURRENCY` 决定。
 - crawl 遵守 robots.txt（RFC 9309）：robots.txt 返回 5xx 时视为全部禁止，返回 4xx 时视为全部允许。
-- **一个 deadline**：一次 scrape 只有一个期限，由 `timeout`（默认 `SEX_TIMEOUT`，从开始抓取算起，排队不算）和调用方的取消共同决定。抓取或渲染、`waitFor`、`wait` action、`executeJavascript`、页面脚本、正文抽取和文档转换都在这个期限内；到期返回 `408 SCRAPE_TIMEOUT`，浏览器页面随即关闭并释放名额。客户端断开或任务被取消返回 `408 TIMEOUT`。
-  - 和 Firecrawl 不同：LLM 格式（json / summary / question / highlights）和 `checkPromptInjection` 不算在 `timeout` 里，每次 LLM 调用由 `SEX_LLM_TIMEOUT`（默认 120 秒，比默认的 `timeout` 30 秒长）单独限制；它们仍受调用方取消和 search 的整体 deadline 约束。
+- **一个 deadline**：一次 scrape 只有一个期限，由 `timeout`（默认 `SEX_TIMEOUT`，从开始抓取算起，排队不算）和调用方的取消共同决定；请求用到 LLM（LLM 格式 json / summary / question / highlights，或 `checkPromptInjection`）且没传 `timeout` 时，默认值是 `max(SEX_TIMEOUT, 60000)`（Firecrawl 对 json 同样把 30 秒改成 60 秒）。抓取或渲染、`waitFor`、`wait` action、`executeJavascript`、页面脚本、正文抽取和文档转换都在这个期限内；到期返回 `408 SCRAPE_TIMEOUT`，浏览器页面随即关闭并释放名额。客户端断开或任务被取消返回 `408 TIMEOUT`。
+  - LLM 格式（json / summary / question / highlights）和 `checkPromptInjection` 的调用也在这个期限内，到期同样返回 `408 SCRAPE_TIMEOUT`；每次 LLM 调用的预算是 `min(SEX_LLM_TIMEOUT, 期限剩余时间)`。例外：extract 任务自己抓页面时开了 `checkPromptInjection`，它的 LLM 调用不受页面 `timeout` 约束，只受任务取消和 `SEX_LLM_TIMEOUT` 约束。
   - `waitFor` 加上所有 `wait` action 的 `milliseconds` 超过 60000 返回 `400`；`waitFor` 超过 `timeout` 的一半时不拒绝，只在 `warning` 里提醒。`wait` action 的 `milliseconds` 与 `selector` 必须二选一（以前两者都不给时默认等 1 秒）。
 - 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
 - `includePaths` / `excludePaths` 的正则会被启发式检查：带无界量词的分组再被无界量词修饰（`(a+)+`）、或分支相互重叠的量词分组（`(a|a)*`）会返回 `400`；每条 ≤ 1000 字符、≤ 100 条，匹配前 URL 截到 2048 字符。look-around 和反向引用仍然允许。
@@ -229,13 +229,14 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 | 422 | `LLM_REFUSED`、`LLM_INVALID_OUTPUT`、`LLM_INCOMPLETE_OUTPUT` | 模型拒答、输出不合法、输出被截断 / 过滤 / 为空 | 否 |
 | 422 | `DOCUMENT_PARSE_FAILED`、`PDF_PARSE_FAILED`、`EXTRACT_TIMEOUT` | 文档无法解析；正文抽取超过 worker 的上限 | 否 |
 | 429 | `LLM_RATE_LIMITED` | LLM 限流（已按 `retry-after` 重试过） | 是 |
+| 500 | `LLM_REQUEST_REJECTED` | LLM 接口返回 4xx（400 / 401 / 403 / 404 等：key 错、模型名错、请求被拒），是配置错误，重试没用；检查 `SEX_LLM_MODEL` / `SEX_LLM_BASE_URL` / `SEX_LLM_API_KEY` | 否 |
 | 500 | `SCRAPE_DNS_RESOLUTION_ERROR` | 域名解析失败（`ENOTFOUND` / `EAI_AGAIN` / `net::ERR_NAME_NOT_RESOLVED`） | 否 |
 | 500 | `SCRAPE_SSL_ERROR` | TLS 证书无效或握手失败；证书问题的提示里会说明可以传 `skipTlsVerification: true` | 否 |
 | 500 | `SCRAPE_SITE_ERROR` | 连接被拒绝 / 重置 / 中断，或浏览器报告其它 `net::ERR_*` | 是 |
 | 500 | `FETCH_FAILED` | 其它抓取失败 | 否 |
 | 500 | `EXTRACT_FAILED`、`DOCUMENT_CONVERT_FAILED`、`INTERNAL_ERROR` | 内部错误 | 否 |
 | 501 | `NOT_SUPPORTED`、`BROWSER_NOT_CONFIGURED`、`LLM_NOT_CONFIGURED`、`BROWSER_INTERCEPTION_UNSUPPORTED` | 功能不支持或没配置 | 否 |
-| 502 | `LLM_ERROR`、`SEARCH_BACKEND_ERROR` | 上游（LLM 服务、SearXNG）自己返回了错误；SearXNG 的 5xx 可重试 | 是 / 否 |
+| 502 | `LLM_ERROR`、`SEARCH_BACKEND_ERROR` | 上游（LLM 服务、SearXNG）自己返回了 5xx 或其它错误；SearXNG 的 5xx 可重试 | 是 / 否 |
 | 502 | `BROWSER_UNAVAILABLE`、`DOCS_UNAVAILABLE`、`LLM_UNAVAILABLE`、`SEARCH_BACKEND_UNAVAILABLE` | 后端起不来或连不上 | 是 |
 
 和 Firecrawl 的差异：DNS 解析失败时 Firecrawl 返回 HTTP 200 加 `success: false`，sex 仍用 HTTP 状态码表示错误（`500 SCRAPE_DNS_RESOLUTION_ERROR`），错误码相同。`ACTION_FAILED` 没有改名成 `SCRAPE_ACTION_ERROR`。

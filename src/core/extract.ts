@@ -96,7 +96,7 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
     [...targets].map((url) =>
       limit(async () => {
         try {
-          const { document } = await scrapeUrl(engine, url, options, { signal });
+          const { document } = await scrapeUrl(engine, url, options, { signal, llmOutsideTimeout: true });
           if (document.warning) warnings.push(`${url}: ${document.warning}`);
           // The guard scans the first GUARD_MAX_CHARS of a page (scrapeUrl warns about the rest); only that part goes on.
           const markdown = document.markdown ?? "";
