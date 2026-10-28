@@ -162,3 +162,17 @@ test("error messages never include the API key", () => {
   expect(err.message).toContain("SEX_TIMEOUT");
   expect(err.message).not.toContain("sk-secret");
 });
+
+test("SEX_LLM_SMALL_MODEL is read next to the main model, and needs it", () => {
+  expect(resolveConfig({}, undefined, { SEX_LLM_MODEL: "big", SEX_LLM_SMALL_MODEL: "tiny" }).llm).toMatchObject({
+    model: "big",
+    smallModel: "tiny",
+  });
+  expect(resolveConfig({ llmModel: "big", llmSmallModel: "flag" }, undefined, { SEX_LLM_SMALL_MODEL: "tiny" }).llm?.smallModel).toBe(
+    "flag",
+  );
+  expect(resolveConfig({}, undefined, { SEX_LLM_MODEL: "big", SEX_LLM_SMALL_MODEL: "" }).llm?.smallModel).toBeUndefined();
+  const err = configError(() => resolveConfig({}, undefined, { SEX_LLM_SMALL_MODEL: "tiny" }));
+  expect(err.code).toBe("CONFIG_INVALID");
+  expect(err.message).toContain("SEX_LLM_SMALL_MODEL");
+});

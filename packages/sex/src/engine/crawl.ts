@@ -8,7 +8,7 @@ import { CrawlRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
 import { type TaskEffects, taskEffects } from "./jobs/effects.ts";
 import { type JobRecord, type JobStore, type OutboxTask, sendWebhook, validateWebhook } from "./jobs/index.ts";
-import { normalizeUrl, sitemapUrls } from "./map.ts";
+import { mapSite, normalizeUrl, sitemapUrls } from "./map.ts";
 import { parseRobots, type Robots, robotsTextFor } from "./robots.ts";
 import { basePathOf, compilePatterns, isAcceptablePattern, isSkippableFile, matchesPatterns } from "./url-filter.ts";
 
@@ -48,10 +48,34 @@ function validateDerived(out: Record<string, unknown>): Record<string, unknown> 
   return valid;
 }
 
-/** Uses the LLM to turn a natural-language prompt into crawl options. */
+/** URLs of the site shown to the model that turns a crawl prompt into options (Firecrawl's is 50 too). */
+const SITE_STRUCTURE_URLS = 50;
+/** Mapping the site must not hold up starting the crawl for long. */
+const SITE_STRUCTURE_TIMEOUT_MS = 15_000;
+
+/**
+ * Uses the LLM to turn a natural-language prompt into crawl options. It is shown a sample of the site's URLs
+ * (sitemap and the start page's links, over the whole site) so path regexes match real paths; a site that
+ * cannot be mapped means the model works from the prompt alone.
+ */
 export async function crawlParamsFromPrompt(engine: Engine, url: string, prompt: string): Promise<Record<string, unknown>> {
   engine.llm.require("Crawl prompts");
-  const out = await engine.llm.crawlOptions(url, prompt, Deadline.unbounded());
+  let siteUrls: string[] = [];
+  try {
+    const { links } = await mapSite(
+      engine,
+      { url, limit: SITE_STRUCTURE_URLS, sitemap: "include", filterByPath: false, timeout: SITE_STRUCTURE_TIMEOUT_MS },
+      undefined,
+      { skipSearch: true },
+    );
+    // The start URL alone says nothing about the site's structure.
+    if (links.length > 1) siteUrls = links.map((l) => l.url);
+  } catch (err) {
+    log.debug("crawl prompt: mapping the site failed, continuing without its structure", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  const out = await engine.llm.crawlOptions(url, prompt, Deadline.unbounded(), siteUrls);
   return validateDerived(out ?? {});
 }
 

@@ -88,7 +88,9 @@ export class Engine extends BaseEngine<Config> {
     return {
       ...super.describe(),
       browser: this.browser.enabled ? (this.config.cdpUrl ?? "lightpanda") : "off (Defuddle/linkedom)",
-      llm: this.config.llm ? `${this.config.llm.model} @ ${this.config.llm.baseUrl}` : "off",
+      llm: this.config.llm
+        ? `${this.config.llm.model}${this.config.llm.smallModel ? ` (small: ${this.config.llm.smallModel})` : ""} @ ${this.config.llm.baseUrl}`
+        : "off",
       docs: this.docs.enabled ? "here-docs (structured PDF/office, OCR)" : "off (unpdf text only)",
       jobs: this.config.dataDir ? `sqlite (${this.config.dataDir})` : "memory",
       documents: documentsLocation(this.config),
