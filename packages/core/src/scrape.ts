@@ -14,7 +14,7 @@ import {
 import { type ChangeTrackingRequest, trackChanges } from "./change-tracking.ts";
 import type { CoreConfig } from "./config.ts";
 import { Deadline } from "./deadline.ts";
-import { AppError, badRequest, browserRequired, CHANGE_TRACKING_HINT, llmRequired, toAppError, unsupported } from "./errors.ts";
+import { AppError, badRequest, browserRequired, CHANGE_TRACKING_HINT, isBlocked, llmRequired, toAppError, unsupported } from "./errors.ts";
 import type { ExtractPool } from "./extract-pool.ts";
 import { log } from "./log.ts";
 import { markdownToHtml } from "./markdown-html.ts";
@@ -183,13 +183,20 @@ function assertSupportedOptions(ctx: ScrapeContext, options: ScrapeOptions, form
     if (options.actions?.length) throw badRequest("actions need a browser render and cannot be used with the rawBase64 format");
   }
   if (options.fastMode && options.actions?.length) throw badRequest("fastMode skips the browser, which actions need");
+  if (startsWithStealth(ctx.config, options) && options.actions?.length) {
+    throw badRequest('proxy "stealth" fetches over plain HTTP through the stealth proxy, which skips the browser that actions need');
+  }
 }
 
+/** `proxy: "stealth"` on a server that has a stealth proxy: the page is fetched through it from the first request, over plain HTTP. */
+const startsWithStealth = (config: Pick<CoreConfig, "stealthProxyUrl">, options: ScrapeOptions): boolean =>
+  !!config.stealthProxyUrl && options.proxy === "stealth";
+
 /** Options that are accepted but have no effect; Firecrawl's wording for a scrape that may be missing something. */
-function ignoredOptionWarnings(options: ScrapeOptions): string[] {
+function ignoredOptionWarnings(config: Pick<CoreConfig, "stealthProxyUrl">, options: ScrapeOptions): string[] {
   const partial = "your scrape may be partial";
   const out: string[] = [];
-  if (options.proxy === "stealth" || options.proxy === "enhanced") {
+  if (options.proxy === "enhanced" || (options.proxy === "stealth" && !config.stealthProxyUrl)) {
     out.push(`proxy "${options.proxy}" is not available; the page was fetched directly -- ${partial}`);
   }
   if (options.location?.country) out.push(`location.country is not used for geo-targeting -- ${partial}`);
@@ -327,8 +334,13 @@ async function scrapeInner(
   internal: ScrapeInternalOptions,
 ): Promise<ScrapeOutcome> {
   const { config } = ctx;
+  // The stealth proxy: `proxy: "stealth"` fetches through it from the start (so no browser, which has one fixed proxy); otherwise a
+  // fetch the site blocked is retried through it once, unless the request said "basic" (or both proxies are the same).
+  const stealthProxy = config.stealthProxyUrl;
+  const stealthFirst = startsWithStealth(config, options);
+  const stealthRetry = !!stealthProxy && !stealthFirst && options.proxy !== "basic" && stealthProxy !== config.proxyUrl;
   // fastMode: no rendering, only the HTTP fetch.
-  const renderer = ctx.browser?.enabled && !options.fastMode && !internal.upload ? ctx.browser : undefined;
+  const renderer = ctx.browser?.enabled && !options.fastMode && !stealthFirst && !internal.upload ? ctx.browser : undefined;
   const plan = cachePlan(ctx, url, options, formats, internal, !!renderer);
   if (!plan && isCacheOnly(options)) {
     throw noCachedData("lockdown and minAge only read from the cache, and this request (actions, headers, rawBase64) is never cached.");
@@ -354,28 +366,60 @@ async function scrapeInner(
     wantImages: formats.images,
     attributes: formats.attributes,
   };
-  const warnings: string[] = ignoredOptionWarnings(options);
+  const warnings: string[] = ignoredOptionWarnings(config, options);
+  if (stealthFirst && ctx.browser?.enabled && !options.fastMode) {
+    warnings.push('proxy "stealth": fetched over plain HTTP through the stealth proxy, so scripts did not run');
+  }
 
   /** The last response `fetchBody` got from the network, which is what the cache stores when the plain fetch answered. */
   let fetched: FetchedResponse | undefined;
-  const fetchBody = async (): Promise<FetchedResponse> => {
+  /** The proxy of that response. */
+  let fetchedVia: "basic" | "stealth" = "basic";
+  const fetchBody = async (opts: { stealth?: boolean } = {}): Promise<FetchedResponse> => {
     if (internal.upload) {
       return { url, status: 200, headers: new Headers(), contentType: internal.upload.contentType, body: internal.upload.body };
     }
     if (cached)
       return { url: cached.url, status: cached.status, headers: new Headers(), contentType: cached.contentType, body: cached.body };
-    fetched = await safeFetch(url, {
-      headers,
-      deadline,
-      allowPrivateNetwork: config.allowPrivateNetwork,
-      proxy: config.proxyUrl,
-      maxBodyBytes: config.maxBodyBytes,
-      skipTlsVerification: options.skipTlsVerification,
-      userAgent: options.mobile
-        ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
-        : config.userAgent,
-    });
-    return fetched;
+    const attempt = (via: "basic" | "stealth") =>
+      safeFetch(url, {
+        headers,
+        deadline,
+        allowPrivateNetwork: config.allowPrivateNetwork,
+        proxy: via === "stealth" ? stealthProxy : config.proxyUrl,
+        maxBodyBytes: config.maxBodyBytes,
+        skipTlsVerification: options.skipTlsVerification,
+        userAgent: options.mobile
+          ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+          : config.userAgent,
+      });
+    const first = stealthFirst || opts.stealth ? "stealth" : "basic";
+    let res: FetchedResponse | undefined;
+    let failure: unknown;
+    try {
+      res = await attempt(first);
+    } catch (err) {
+      failure = err;
+    }
+    fetchedVia = first;
+    // One retry, through the stealth proxy, in the time the scrape has left (the same deadline: it is cut short like any step).
+    const blocked = res ? isBlocked(res.status) : failure instanceof AppError && isBlocked(failure);
+    if (first === "basic" && stealthRetry && blocked && deadline.remaining() >= FALLBACK_MIN_MS) {
+      const was = res ? `HTTP ${res.status}` : (failure as AppError).code;
+      try {
+        res = await attempt("stealth");
+        failure = undefined;
+        warnings.push(`The site blocked the request (${was}); retried through the stealth proxy (HTTP ${res.status}).`);
+        fetchedVia = "stealth";
+      } catch (err) {
+        if (deadline.signal.aborted) throw deadline.translate(err);
+        log.warn("retry through the stealth proxy failed", { url, error: toAppError(err).message });
+        warnings.push(`The site blocked the request (${was}); the retry through the stealth proxy failed (${toAppError(err).code}).`);
+      }
+    }
+    if (!res) throw failure;
+    fetched = res;
+    return res;
   };
 
   // The file as it is, whatever it is: never rendered, so the browser is not involved.
@@ -383,7 +427,7 @@ async function scrapeInner(
     const res = await fetchBody();
     const document: Document = {
       rawBase64: Buffer.from(res.body).toString("base64"),
-      metadata: responseMetadata(sourceUrl, res.url, res.status, res.contentType),
+      metadata: responseMetadata(sourceUrl, res.url, res.status, res.contentType, fetchedVia),
     };
     if (warnings.length) document.warning = warnings.join("; ");
     return { document };
@@ -442,9 +486,9 @@ async function scrapeInner(
     return joinPages(pages, true);
   };
 
-  const fetchPage = async (warns: string[]): Promise<FetchedPage> => {
-    const res = await fetchBody();
-    const out: FetchedPage = { url: res.url, status: res.status, contentType: res.contentType, rawHtml: "" };
+  const fetchPage = async (warns: string[], opts?: { stealth?: boolean }): Promise<FetchedPage> => {
+    const res = await fetchBody(opts);
+    const out: FetchedPage = { url: res.url, status: res.status, contentType: res.contentType, rawHtml: "", proxyUsed: fetchedVia };
     /** A converted document's `html` and `rawHtml` are its Markdown rendered; only worked out when asked for. */
     const setMarkdown = (markdown: string) => {
       out.plainMarkdown = markdown;
@@ -523,6 +567,27 @@ async function scrapeInner(
     } else {
       warnings.push("Browser returned no content, and an HTTP fetch found none either.");
     }
+  } else if (stealthRetry && isBlocked(browserResult.status) && !options.actions?.length && deadline.remaining() >= FALLBACK_MIN_MS) {
+    // The browser has the one proxy it was started with; the stealth proxy can only be used by a plain fetch, which replaces
+    // the browser's page only if it is not blocked too.
+    const warns: string[] = [];
+    const tried = await fetchPage(warns, { stealth: true }).catch((err: unknown) => {
+      if (deadline.signal.aborted) throw deadline.translate(err);
+      log.warn("HTTP fetch through the stealth proxy after a blocked browser page failed", { url, error: toAppError(err).message });
+      return undefined;
+    });
+    const blockedBy = `The browser was blocked by the site (HTTP ${browserResult.status})`;
+    if (tried && !isBlocked(tried.status)) {
+      page = tried;
+      warnings.push(
+        ...warns,
+        `${blockedBy}; fetched over plain HTTP through the stealth proxy instead (HTTP ${tried.status}), so scripts did not run.`,
+      );
+    } else {
+      warnings.push(
+        `${blockedBy}; a plain HTTP fetch through the stealth proxy ${tried ? `was blocked too (HTTP ${tried.status})` : "failed"}.`,
+      );
+    }
   } else {
     const type = browserResult.contentType.split(";")[0]?.trim() || "text/html";
     storable = {
@@ -580,7 +645,7 @@ async function scrapeInner(
   }
   if (pdfMeta?.numPages) metadata.numPages = pdfMeta.numPages;
   if (pdfMeta?.totalPages) metadata.totalPages = pdfMeta.totalPages;
-  Object.assign(metadata, responseMetadata(sourceUrl, finalUrl, status, contentType, cached?.storedAt));
+  Object.assign(metadata, responseMetadata(sourceUrl, finalUrl, status, contentType, page?.proxyUsed ?? "basic", cached?.storedAt));
   // Without a browser (none configured, fastMode, or it failed) only the User-Agent says "mobile". (A cached page keeps
   // the answer it was stored with; a rendered one is not told apart from a fetched one here, so it gets no warning.)
   if (options.mobile && (page || !browserResult) && !(cached && renderer)) {
@@ -669,14 +734,21 @@ async function scrapeInner(
 }
 
 /** The metadata every document has, whatever produced it. */
-function responseMetadata(sourceUrl: string, finalUrl: string, status: number, contentType: string, cachedAt?: number) {
+function responseMetadata(
+  sourceUrl: string,
+  finalUrl: string,
+  status: number,
+  contentType: string,
+  proxyUsed: "basic" | "stealth",
+  cachedAt?: number,
+) {
   return {
     sourceURL: sourceUrl,
     url: finalUrl,
     statusCode: status,
     contentType: contentType.split(";")[0]?.trim() || undefined,
     scrapeId: randomUUID(),
-    proxyUsed: "basic",
+    proxyUsed,
     cacheState: cachedAt === undefined ? "miss" : "hit",
     cachedAt: cachedAt === undefined ? undefined : new Date(cachedAt).toISOString(),
   };
@@ -749,6 +821,8 @@ interface FetchedPage {
   status: number;
   contentType: string;
   rawHtml: string;
+  /** The proxy the response came through (`metadata.proxyUsed`). */
+  proxyUsed: "basic" | "stealth";
   extracted?: PageExtractResult;
   plainMarkdown?: string;
   /** The PDF page by page, when the converter could tell. */

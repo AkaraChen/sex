@@ -9,14 +9,23 @@
  * - `fallback`: whether a failure of the browser path can be answered by fetching the page over plain HTTP instead.
  *   False when the HTTP fetch would fail the same way (DNS, TLS, blocked address) or the request asked for something
  *   only a browser does (that check is made by the caller: actions).
+ * - `blocked`: whether the failure is how a site turns a bot away (a reset or dropped connection), which another egress
+ *   address may get past. With `BLOCKED_STATUSES` this is the one rule for "worth retrying through SEX_STEALTH_PROXY_URL"
+ *   (`isBlocked`); call sites ask it instead of listing statuses or codes of their own.
  */
 export interface ErrorSpec {
   readonly status: number;
   readonly retryable: boolean;
   readonly fallback: boolean;
+  readonly blocked: boolean;
 }
 
-const spec = (status: number, retryable = false, fallback = false): ErrorSpec => ({ status, retryable, fallback });
+const spec = (status: number, retryable = false, fallback = false, blocked = false): ErrorSpec => ({
+  status,
+  retryable,
+  fallback,
+  blocked,
+});
 
 export const ERRORS = {
   // The request itself is wrong.
@@ -46,7 +55,7 @@ export const ERRORS = {
   SCRAPE_DNS_RESOLUTION_ERROR: spec(500),
   SCRAPE_SSL_ERROR: spec(500),
   /** The site refused, reset or dropped the connection, or the browser reported another `net::ERR_*`. */
-  SCRAPE_SITE_ERROR: spec(500, true, true),
+  SCRAPE_SITE_ERROR: spec(500, true, true, true),
   /** Any other failure to fetch the page. */
   FETCH_FAILED: spec(500, false, true),
   TOO_MANY_REDIRECTS: spec(508),
@@ -81,6 +90,17 @@ export const ERRORS = {
 
 export type ErrorCode = keyof typeof ERRORS;
 
+/** Statuses a site answers a bot with (forbidden, rate limited); see `isBlocked`. */
+export const BLOCKED_STATUSES: readonly number[] = [403, 429];
+
+/**
+ * Whether the site turned the request away in a way another proxy may fix: a response with a status in `BLOCKED_STATUSES`,
+ * or an error whose catalog entry says `blocked`. An `AppError` is judged by its code, never its HTTP status: a
+ * `PRIVATE_NETWORK_BLOCKED` is a 403 of ours, and a different proxy does not change it.
+ */
+export const isBlocked = (outcome: number | AppError): boolean =>
+  typeof outcome === "number" ? BLOCKED_STATUSES.includes(outcome) : outcome.blocked;
+
 export const isErrorCode = (code: unknown): code is ErrorCode => typeof code === "string" && Object.hasOwn(ERRORS, code);
 
 /**
@@ -92,6 +112,7 @@ export class AppError extends Error {
   readonly status: number;
   readonly retryable: boolean;
   readonly fallback: boolean;
+  readonly blocked: boolean;
 
   /** `overrides.retryable` is for the few codes whose answer depends on the instance (SearXNG: a 5xx is worth retrying, a 403 is not). */
   constructor(
@@ -106,6 +127,7 @@ export class AppError extends Error {
     this.status = s.status;
     this.retryable = overrides?.retryable ?? s.retryable;
     this.fallback = s.fallback;
+    this.blocked = s.blocked;
   }
 }
 

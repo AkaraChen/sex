@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Stands in for the SearXNG binary in test/searxng.test.ts. The settings file picks the behaviour:
-// a line "fake: crash" exits at once, anything else serves /healthz and a one-result /search.
+// a line "fake: crash" exits at once, anything else serves /healthz, a one-result /search and /settings (the file as it read it).
 import { readFileSync } from "node:fs";
 
 const settings = readFileSync(process.env.SEARXNG_SETTINGS_PATH ?? "", "utf8");
@@ -15,6 +15,7 @@ Bun.serve({
   fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === "/healthz") return new Response("OK");
+    if (url.pathname === "/settings") return new Response(settings);
     if (url.pathname === "/search") {
       const q = url.searchParams.get("q");
       return Response.json({ results: [{ url: "https://example.com/", title: `fake: ${q}`, content: `pid ${process.pid}` }] });

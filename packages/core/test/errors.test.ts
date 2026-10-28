@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AppError, ERRORS, type ErrorCode, isErrorCode, toAppError } from "../src/errors.ts";
+import { AppError, BLOCKED_STATUSES, ERRORS, type ErrorCode, isBlocked, isErrorCode, toAppError } from "../src/errors.ts";
 import { networkError } from "../src/net.ts";
 
 describe("error catalog", () => {
@@ -12,6 +12,24 @@ describe("error catalog", () => {
   test("retryable can be decided per instance for codes that depend on the cause", () => {
     expect(new AppError("SEARCH_BACKEND_ERROR", "5xx", undefined, { retryable: true }).retryable).toBe(true);
     expect(new AppError("SEARCH_BACKEND_ERROR", "403").retryable).toBe(false);
+  });
+
+  test("isBlocked is the one rule for a block worth a retry through another proxy", () => {
+    expect(BLOCKED_STATUSES).toEqual([403, 429]);
+    for (const status of [200, 301, 401, 404, 500, 503]) expect(isBlocked(status)).toBe(false);
+    for (const status of BLOCKED_STATUSES) expect(isBlocked(status)).toBe(true);
+    expect(isBlocked(new AppError("SCRAPE_SITE_ERROR", "reset"))).toBe(true);
+    // Judged by code, not by the 403 these carry: a different proxy changes neither.
+    expect(isBlocked(new AppError("PRIVATE_NETWORK_BLOCKED", "private"))).toBe(false);
+    expect(isBlocked(new AppError("SCRAPE_PROMPT_INJECTION_DETECTED", "injection"))).toBe(false);
+    expect(isBlocked(new AppError("SCRAPE_TIMEOUT", "slow"))).toBe(false);
+    expect(isBlocked(new AppError("FETCH_FAILED", "other"))).toBe(false);
+  });
+
+  test("only retryable failures are blocks", () => {
+    const blocked = Object.entries(ERRORS).filter(([, spec]) => spec.blocked);
+    expect(blocked.map(([code]) => code)).toEqual(["SCRAPE_SITE_ERROR"]);
+    for (const [, spec] of blocked) expect(spec.retryable).toBe(true);
   });
 
   test("502 and 503 are kept for backends that are down or answering with an error of their own", () => {

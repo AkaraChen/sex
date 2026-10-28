@@ -203,7 +203,9 @@ export const ScrapeOptions = z
     proxy: z
       .enum(["basic", "stealth", "enhanced", "auto"])
       .optional()
-      .describe('Every request is fetched directly ("basic"); "stealth" and "enhanced" add a warning.'),
+      .describe(
+        'Which proxy fetches the page. Default (also "auto"): the server\'s SEX_PROXY_URL, or directly; with SEX_STEALTH_PROXY_URL set, a fetch the site blocks (403, 429, a reset connection) is retried once through it. "basic": never the stealth proxy. "stealth": through the stealth proxy from the start, over plain HTTP (no browser). Without SEX_STEALTH_PROXY_URL, and for "enhanced", the page is fetched as usual and a warning is added.',
+      ),
     fastMode: z.boolean().optional().describe("Skip the browser and fetch the page over plain HTTP, so scripts do not run."),
     maxAge: z
       .number()

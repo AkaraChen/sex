@@ -1,7 +1,11 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type SearxngServer, StartServerError, startServer } from "@searxng-js/searxng";
 import type { CoreConfig as Config } from "./config.ts";
 import { AppError } from "./errors.ts";
 import { log } from "./log.ts";
+import { generatedSettings, proxyHost, redactProxy } from "./searxng-settings.ts";
 
 /** How long a managed SearXNG gets to answer /healthz; the first start unpacks the binary. */
 const STARTUP_TIMEOUT_MS = 60_000;
@@ -81,22 +85,38 @@ export class SearxngService {
       );
     }
     const started = performance.now();
+    const { proxyUrl } = this.config;
+    const generated = generatedSettings(this.config);
+    if (proxyUrl && !generated && this.managed) {
+      log.info("SEX_PROXY_URL is not applied to SearXNG: SEX_SEARXNG_SETTINGS is the operator's file; set outgoing.proxies in it");
+    }
     let server: SearxngServer;
+    let settingsDir: string | undefined;
     try {
+      let settingsPath = this.config.searxngSettings;
+      if (generated !== undefined) {
+        // The file holds the proxy's credentials: private directory and mode, and gone as soon as SearXNG has read it.
+        settingsDir = await mkdtemp(join(tmpdir(), "sex-searxng-"));
+        settingsPath = join(settingsDir, "settings.yml");
+        await writeFile(settingsPath, generated, { mode: 0o600 });
+        log.info("searxng outgoing requests go through the proxy", { proxy: proxyHost(this.config.proxyUrl as string) });
+      }
       server = await startServer({
         binaryPath: this.config.searxngPath,
-        settingsPath: this.config.searxngSettings,
+        settingsPath,
         timeoutMs: STARTUP_TIMEOUT_MS,
-        onOutput: (chunk) => log.debug("searxng", { output: chunk.trimEnd() }),
+        onOutput: (chunk) => log.debug("searxng", { output: redactProxy(chunk.trimEnd(), proxyUrl) }),
       });
     } catch (err) {
-      const output = err instanceof StartServerError ? tail(err.output) : "";
-      const reason = (err instanceof Error ? err.message : String(err)).split("\n--- server output ---")[0];
+      const output = err instanceof StartServerError ? redactProxy(tail(err.output), proxyUrl) : "";
+      const reason = redactProxy((err instanceof Error ? err.message : String(err)).split("\n--- server output ---")[0] ?? "", proxyUrl);
       const failure = unavailable(
         `SearXNG did not start: ${reason}${output ? ` (output: ${output})` : ""}. Set SEX_SEARXNG_URL to use a running SearXNG instead.`,
       );
       this.recordStartFailure(failure.message);
       throw failure;
+    } finally {
+      if (settingsDir) await rm(settingsDir, { recursive: true, force: true });
     }
     this.startFailures = [];
     this.running = server;

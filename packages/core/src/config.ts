@@ -13,6 +13,11 @@ export interface CoreConfig {
   allowPrivateNetwork: boolean;
   /** Outbound http(s) proxy for every fetch of a user-supplied URL (plain HTTP and the browser); SEX_PROXY_URL, env only. */
   proxyUrl?: string;
+  /**
+   * A second outbound proxy (same shape as `proxyUrl`) that a fetch blocked by the site is retried through once; SEX_STEALTH_PROXY_URL, env only.
+   * Unset: no retry, and `proxy: "stealth"` is not available.
+   */
+  stealthProxyUrl?: string;
   userAgent: string;
   /** Global cap on concurrent page scrapes. */
   concurrency: number;
@@ -93,6 +98,7 @@ export const CORE_FIELDS = {
   searxngUrl: urlField,
   allowPrivateNetwork: flagField,
   proxyUrl: urlField,
+  stealthProxyUrl: urlField,
   corsOrigins: corsOriginsField,
   allowedHosts: allowedHostsField,
   strictRequests: flagField,
@@ -109,6 +115,7 @@ export const CORE_FIELD_RULES: FieldRules<keyof typeof CORE_FIELDS> = {
   searxngUrl: ["SEX_SEARXNG_URL", "an http(s) URL"],
   allowPrivateNetwork: ["SEX_ALLOW_PRIVATE_NETWORK", FLAG_WORDS],
   proxyUrl: ["SEX_PROXY_URL", "an http(s) URL"],
+  stealthProxyUrl: ["SEX_STEALTH_PROXY_URL", "an http(s) URL"],
   corsOrigins: ["SEX_CORS_ORIGINS", "comma-separated origins like https://app.example.com (no path)"],
   allowedHosts: ["SEX_ALLOWED_HOSTS", "comma-separated hostnames without a port"],
   strictRequests: ["SEX_STRICT_REQUESTS", FLAG_WORDS],
@@ -127,6 +134,7 @@ export function coreRawValues(o: CoreConfigOverrides, env: Env) {
     searxngUrl: str(o.searxngUrl) ?? str(env.SEX_SEARXNG_URL),
     allowPrivateNetwork: flag(o.allowPrivateNetwork, str(env.SEX_ALLOW_PRIVATE_NETWORK)),
     proxyUrl: str(env.SEX_PROXY_URL),
+    stealthProxyUrl: str(env.SEX_STEALTH_PROXY_URL),
     corsOrigins: str(o.corsOrigins) ?? str(env.SEX_CORS_ORIGINS),
     allowedHosts: str(o.allowedHosts) ?? str(env.SEX_ALLOWED_HOSTS),
     strictRequests: str(env.SEX_STRICT_REQUESTS),
@@ -145,7 +153,7 @@ export function parseFields<S extends z.ZodRawShape>(
     const [name, expected] = rules[key];
     const value = raw[key] as string | number;
     // A proxy URL usually carries credentials, which must not end up in an error message or a log.
-    const shown = key === "proxyUrl" ? "<redacted>" : JSON.stringify(String(value));
+    const shown = key === "proxyUrl" || key === "stealthProxyUrl" ? "<redacted>" : JSON.stringify(String(value));
     throw new AppError("CONFIG_INVALID", `${name} must be ${expected} (got ${shown})`);
   }
   return parsed.data;
@@ -164,6 +172,7 @@ export function coreConfigFrom(
     searxngSettings: str(o.searxngSettings) ?? str(env.SEX_SEARXNG_SETTINGS),
     allowPrivateNetwork: v.allowPrivateNetwork ?? defaults.allowPrivateNetwork,
     proxyUrl: v.proxyUrl,
+    stealthProxyUrl: v.stealthProxyUrl,
     userAgent: str(o.userAgent) ?? str(env.SEX_USER_AGENT) ?? DEFAULT_UA,
     concurrency: v.concurrency ?? 8,
     timeout: v.timeout ?? 30_000,
