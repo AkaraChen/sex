@@ -4,7 +4,19 @@ import pLimit from "p-limit";
 import { log } from "../../log.ts";
 import type { Document } from "../../schemas.ts";
 import { type DocumentLog, READ_CONCURRENCY } from "./documents.ts";
-import type { CounterName, JobError, JobKind, JobPatch, JobRecord, JobState, JobStore, TaskEffect } from "./types.ts";
+import type {
+  CounterName,
+  JobError,
+  JobKind,
+  JobPatch,
+  JobRecord,
+  JobState,
+  JobStore,
+  LinkCandidate,
+  OutboxTask,
+  ScheduleOptions,
+  TaskEffect,
+} from "./types.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS jobs (
@@ -55,6 +67,16 @@ CREATE TABLE IF NOT EXISTS seen (
   key TEXT NOT NULL,
   PRIMARY KEY (job_id, key)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS outbox (
+  job_id TEXT NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL,
+  owner TEXT,
+  url TEXT NOT NULL,
+  depth INTEGER NOT NULL,
+  run_at INTEGER NOT NULL,
+  PRIMARY KEY (job_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS outbox_owner ON outbox (job_id, owner);
 CREATE TABLE IF NOT EXISTS task_effects (
   job_id TEXT NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
   task_id TEXT NOT NULL,
@@ -79,6 +101,7 @@ interface JobRow {
   pending: number;
   scheduled: number;
   slots: number;
+  next_slot_at: number;
 }
 
 const COUNTERS = new Set<CounterName>(["total", "completed", "pending", "scheduled", "slots"]);
@@ -315,15 +338,6 @@ export class SqliteJobStore implements JobStore {
     })();
   }
 
-  async reserveSlots(id: string, count: number, intervalMs: number, now: number) {
-    const r = this.db
-      .query<{ start: number }, [number, number, number, string]>(
-        "UPDATE jobs SET next_slot_at = max(?1, next_slot_at) + ?2 * ?3 WHERE id = ?4 RETURNING next_slot_at - ?2 * ?3 AS start",
-      )
-      .get(now, count, intervalMs, id);
-    return r?.start ?? now;
-  }
-
   async pushDocument(id: string, doc: Document, taskId?: string, countCompleted = false) {
     await this.ready;
     if (!this.jobExists(id)) return false;
@@ -451,6 +465,54 @@ export class SqliteJobStore implements JobStore {
   async markSeen(id: string, keys: string[]) {
     const insert = this.db.query("INSERT OR IGNORE INTO seen (job_id, key) SELECT id, ? FROM jobs WHERE id = ?");
     return this.db.transaction(() => keys.map((k) => insert.run(k, id).changes > 0))();
+  }
+
+  async schedule(id: string, owner: string | undefined, candidates: LinkCandidate[], opts: ScheduleOptions) {
+    return this.db.transaction((): OutboxTask[] => {
+      const job = this.row(id);
+      if (!job) return [];
+      const seen = this.db.query("INSERT OR IGNORE INTO seen (job_id, key) VALUES (?, ?)");
+      let room = Math.max(0, opts.limit - job.scheduled);
+      const accepted: LinkCandidate[] = [];
+      for (const c of candidates) {
+        if (seen.run(id, c.key).changes === 0) continue;
+        if (c.blocked) this.exec("INSERT INTO robots_blocked (job_id, url) VALUES (?, ?)", id, c.url);
+        else if (room > 0) {
+          accepted.push(c);
+          room--;
+        }
+      }
+      if (!accepted.length) return [];
+      const n = accepted.length;
+      this.exec("UPDATE jobs SET scheduled = scheduled + ?1, total = total + ?1, pending = pending + ?1 WHERE id = ?2", n, id);
+      let first = 0;
+      if (opts.intervalMs) {
+        first = Math.max(opts.now, job.next_slot_at);
+        this.exec("UPDATE jobs SET next_slot_at = ? WHERE id = ?", first + n * opts.intervalMs, id);
+      }
+      const insert = this.db.query("INSERT INTO outbox (job_id, task_id, owner, url, depth, run_at) VALUES (?, ?, ?, ?, ?, ?)");
+      return accepted.map((c, i) => {
+        const task = { taskId: randomUUID(), url: c.url, depth: opts.depth, runAt: opts.intervalMs ? first + i * opts.intervalMs : 0 };
+        insert.run(id, task.taskId, owner ?? null, task.url, task.depth, task.runAt);
+        return task;
+      });
+    })();
+  }
+
+  async outbox(id: string, owner: string) {
+    return this.db
+      .query<{ taskId: string; url: string; depth: number; runAt: number }, [string, string]>(
+        "SELECT task_id AS taskId, url, depth, run_at AS runAt FROM outbox WHERE job_id = ? AND owner = ? ORDER BY rowid",
+      )
+      .all(id, owner);
+  }
+
+  async released(id: string, taskIds: string[], queued: boolean) {
+    this.db.transaction(() => {
+      const remove = this.db.query("DELETE FROM outbox WHERE job_id = ? AND task_id = ?");
+      const removed = taskIds.filter((t) => remove.run(id, t).changes > 0).length;
+      if (!queued && removed) this.exec("UPDATE jobs SET pending = pending - ? WHERE id = ?", removed, id);
+    })();
   }
 
   async active(kind: JobKind) {

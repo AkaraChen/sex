@@ -70,8 +70,6 @@ export interface JobStore {
   incr(id: string, counter: CounterName, by?: number): Promise<number>;
   /** Decrements `pending` once for this task; returns the new value, or null if `taskId` was already settled. With `countCompleted` the same step also increments `completed`, so a redelivered task is not counted twice. Without a taskId it behaves like `incr(id, "pending", -1)`. */
   settle(id: string, taskId: string | undefined, countCompleted?: boolean): Promise<number | null>;
-  /** Reserves `count` fetch slots spaced `intervalMs` apart, starting no earlier than `now` or the end of the previous reservation. Returns the start time (ms) of the first slot. */
-  reserveSlots(id: string, count: number, intervalMs: number, now: number): Promise<number>;
   /**
    * Claims `effect` for this task: true the first time, false if the task already claimed it (a redelivery) or the job
    * is gone. Without a taskId nothing can be deduplicated, so it is true for any job that exists. The claim is not
@@ -101,8 +99,47 @@ export interface JobStore {
   robotsBlocked(id: string): Promise<string[]>;
   /** Adds keys to the job's seen-set; returns true for each key that was new. */
   markSeen(id: string, keys: string[]): Promise<boolean[]>;
+  /**
+   * Crawl discovery as one atomic step, so a crash cannot mark a URL seen without leaving a page task for it. Each
+   * candidate whose key is new is marked seen; a `blocked` one goes to the robots list, the others take a slot under
+   * `limit` (past it they are seen but not crawled). Every slot counts `scheduled`, `total` and `pending` and becomes
+   * a row of the job's outbox, owned by `owner` (the discovering task), with its page task's taskId. With
+   * `intervalMs`, rows get politeness-delay run times spaced that far apart, no earlier than `now` or the end of the
+   * previous reservation. Returns the new outbox rows; the caller queues them, then calls `released`.
+   */
+  schedule(id: string, owner: string | undefined, candidates: LinkCandidate[], opts: ScheduleOptions): Promise<OutboxTask[]>;
+  /** The outbox rows `owner` left behind: tasks it scheduled but may not have queued before it crashed. */
+  outbox(id: string, owner: string): Promise<OutboxTask[]>;
+  /**
+   * Removes outbox rows once their tasks are queued. With `queued: false` (the queue refused them) their `pending`
+   * counts are given back too, since nothing will run or settle those tasks. Rows already removed count for nothing.
+   */
+  released(id: string, taskIds: string[], queued: boolean): Promise<void>;
   active(kind: JobKind): Promise<JobRecord[]>;
   close(): Promise<void>;
+}
+
+/** A crawl link after filtering: `key` is its deduplication key, `blocked` means robots.txt forbids it. */
+export interface LinkCandidate {
+  key: string;
+  url: string;
+  blocked: boolean;
+}
+
+export interface ScheduleOptions {
+  limit: number;
+  depth: number;
+  /** Politeness delay between page fetches; 0 = none. */
+  intervalMs: number;
+  now: number;
+}
+
+/** A page task scheduled by `schedule` and not yet confirmed queued. `runAt` (ms since epoch) is 0 for no delay. */
+export interface OutboxTask {
+  taskId: string;
+  url: string;
+  depth: number;
+  runAt: number;
 }
 
 export type Task =

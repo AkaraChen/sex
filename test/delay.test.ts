@@ -64,13 +64,17 @@ describe("crawl delay slots", () => {
     }
   }, 15_000);
 
-  test("reserveSlots hands out non-overlapping slots", async () => {
+  test("schedule hands out non-overlapping run times", async () => {
     const store = new SqliteJobStore(":memory:", 60_000, new MemoryDocumentLog());
     try {
       const job = await store.create({ kind: "crawl", url: "http://example.test/", options: {} });
-      expect(await store.reserveSlots(job.id, 3, 100, 1000)).toBe(1000);
-      expect(await store.reserveSlots(job.id, 2, 100, 1050)).toBe(1300);
-      expect(await store.reserveSlots(job.id, 1, 100, 5000)).toBe(5000);
+      const links = (prefix: string, n: number) =>
+        Array.from({ length: n }, (_, i) => ({ key: `${prefix}${i}`, url: `http://example.test/${prefix}${i}`, blocked: false }));
+      const runAts = async (prefix: string, n: number, now: number) =>
+        (await store.schedule(job.id, "owner", links(prefix, n), { limit: 100, depth: 1, intervalMs: 100, now })).map((t) => t.runAt);
+      expect(await runAts("a", 3, 1000)).toEqual([1000, 1100, 1200]);
+      expect(await runAts("b", 2, 1050)).toEqual([1300, 1400]);
+      expect(await runAts("c", 1, 5000)).toEqual([5000]);
     } finally {
       await store.close();
     }
