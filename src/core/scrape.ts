@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { AppError, browserRequired, llmRequired, unsupported } from "../errors.ts";
+import { AppError, browserRequired, llmRequired, toAppError, unsupported } from "../errors.ts";
+import { log } from "../log.ts";
 import type { Document, FormatOption, ScrapeOptions } from "../schemas.ts";
 import type { BrowserScrapeResult } from "./browser.ts";
 import type { Engine } from "./engine.ts";
@@ -305,7 +306,7 @@ async function scrapeInner(
     const { text: content, truncated } = engine.llm.fit(`${title ? `# ${title}\n\n` : ""}${markdown}`);
     if (truncated) warnings.push(`The page was too long for the LLM; only its first ${engine.llm.maxInputChars} characters were used.`);
     const { llm } = engine;
-    const [json, summary, answer, highlights] = await Promise.all([
+    const settled = await Promise.allSettled([
       formats.json ? llm.extractJson(content, { ...formats.json, url: finalUrl }, sig) : undefined,
       formats.summary ? llm.summarize(content, sig, finalUrl) : undefined,
       formats.question
@@ -315,10 +316,20 @@ async function scrapeInner(
         : undefined,
       formats.highlights ? llm.selectLines(content, formats.highlights, "highlights", sig, finalUrl) : undefined,
     ]);
-    if (formats.json) doc.json = json;
-    if (summary !== undefined) doc.summary = summary;
-    if (answer !== undefined) doc.answer = answer;
-    if (highlights !== undefined) doc.highlights = highlights;
+    // A failed format must not throw away the rest of the page; only configuration, injection and cancellation do.
+    const labels = ["JSON extraction", "Summary", "Question answering", "Highlights"];
+    const values: unknown[] = settled.map((r, i) => {
+      if (r.status === "fulfilled") return r.value;
+      const err = toAppError(r.reason);
+      if (sig?.aborted || err.status === 501 || err.code === "SCRAPE_PROMPT_INJECTION_DETECTED") throw r.reason;
+      log.warn("LLM format failed", { format: labels[i], code: err.code, error: err.message });
+      warnings.push(`${labels[i]} failed: ${err.message}`);
+      return undefined;
+    });
+    if (formats.json) doc.json = (values[0] as typeof doc.json | undefined) ?? null;
+    if (values[1] !== undefined) doc.summary = values[1] as string;
+    if (values[2] !== undefined) doc.answer = values[2] as typeof doc.answer;
+    if (values[3] !== undefined) doc.highlights = values[3] as typeof doc.highlights;
   }
   if (warnings.length) doc.warning = warnings.join("; ");
 

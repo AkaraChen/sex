@@ -50,16 +50,17 @@ describe("outbound deadlines", () => {
     servers.push(llm);
     const engine = testEngine({ llmModel: "m", llmBaseUrl: `http://127.0.0.1:${llm.port}/v1`, llmTimeout: 1000 });
     const started = Date.now();
-    const err = await rejection(engine.scrape({ url: `${site.url}/docs/a`, formats: ["summary"] }));
+    const doc = await engine.scrape({ url: `${site.url}/docs/a`, formats: ["markdown", "summary"] });
     expect(Date.now() - started).toBeLessThan(3000);
-    expect(err.code).toBe("TIMEOUT");
-    expect(err.status).toBe(408);
+    expect(doc.summary).toBeUndefined();
+    expect(doc.markdown).toContain("Doc A");
+    expect(doc.warning).toContain("Summary failed");
   }, 10_000);
 
   test("an unreachable LLM is reported as LLM_UNAVAILABLE naming the endpoint", async () => {
     const engine = testEngine({ llmModel: "m", llmBaseUrl: "http://127.0.0.1:1/v1" });
-    const err = await rejection(engine.scrape({ url: `${site.url}/docs/a`, formats: ["summary"] }));
-    expect(err.code).toBe("LLM_UNAVAILABLE");
-    expect(err.message).toContain("127.0.0.1:1");
+    const doc = await engine.scrape({ url: `${site.url}/docs/a`, formats: ["markdown", "summary"] });
+    expect(doc.summary).toBeUndefined();
+    expect(doc.warning).toContain("127.0.0.1:1");
   }, 10_000);
 });

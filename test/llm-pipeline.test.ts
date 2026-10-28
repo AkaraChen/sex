@@ -106,6 +106,31 @@ describe("line selection", () => {
   });
 });
 
+describe("LLM format failures", () => {
+  test("a failed json format becomes null with a warning and the other formats survive", async () => {
+    reply = (system) => (system.includes("JSON") ? "not json" : "A summary.");
+    const doc = await engine.scrape({
+      url: `${site.url}/docs/a`,
+      formats: ["markdown", "summary", { type: "json", prompt: "Get the title" }],
+    });
+    expect(doc.markdown).toContain("Doc A");
+    expect(doc.summary).toBe("A summary.");
+    expect(doc.json).toBeNull();
+    expect(doc.warning).toContain("JSON extraction failed: ");
+  });
+
+  test("a failed non-json format is omitted with a warning", async () => {
+    reply = () => "not json";
+    const doc = await engine.scrape({
+      url: `${site.url}/docs/a`,
+      formats: ["markdown", { type: "query", prompt: "what?", mode: "directQuote" }],
+    });
+    expect(doc.markdown).toContain("Doc A");
+    expect(doc.answer).toBeUndefined();
+    expect(doc.warning).toContain("Question answering failed: ");
+  });
+});
+
 describe("checkPromptInjection", () => {
   test("a detection fails the scrape with 403 before any LLM format runs", async () => {
     llm.requests.length = 0;
