@@ -503,7 +503,8 @@ async function convertDocument(
   const filename = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "") || undefined;
   const doc = await docs.convert(body, { filename, maxPages, deadline });
   for (const w of doc.warnings) warnings.push(w.message);
-  if (doc.numPages !== undefined && doc.pagesConverted !== undefined && doc.pagesConverted < doc.numPages) {
+  // Only when `maxPages` was what stopped the conversion; a timeout's partial result carries its own warning.
+  if (maxPages !== undefined && doc.numPages !== undefined && doc.pagesConverted === maxPages && doc.pagesConverted < doc.numPages) {
     warnings.push(`Converted the first ${doc.pagesConverted} of ${doc.numPages} pages (parsers maxPages)`);
   }
   return doc;
