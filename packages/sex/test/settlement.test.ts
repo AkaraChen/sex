@@ -198,13 +198,14 @@ describe("redelivery", () => {
     await engine.jobs.close();
   });
 
-  /** Tasks added to the queue while `start` runs are held back instead of run. */
+  /** Tasks added to the queue while `start` runs are held back instead of run; webhook deliveries are not job work and go on. */
   async function held<T>(start: () => Promise<T>): Promise<{ result: T; tasks: Task[] }> {
     const { queue } = engine.jobs;
     const realAdd = queue.add.bind(queue);
     const tasks: Task[] = [];
     queue.add = async (added) => {
-      tasks.push(...added.map((t) => t.task));
+      tasks.push(...added.map((t) => t.task).filter((t) => t.type !== "webhook"));
+      await realAdd(added.filter((t) => t.task.type === "webhook"));
     };
     try {
       return { result: await start(), tasks };

@@ -176,6 +176,7 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 | `SEX_DATA_DIR` | `--data-dir` | `serve`：`$XDG_DATA_HOME/sex` 或 `~/.local/share/sex`；Docker：`/data` | 任务数据库和任务队列（SQLite）所在目录，抓到的文档默认也在这里（`documents/`）；`search` / `fetch` 不使用 |
 | `SEX_DOCUMENTS_URL` | `serve --documents-url` | `SEX_DATA_DIR/documents` | 任务抓到的文档存在哪里：`s3://bucket/prefix`（prefix 可省略；endpoint、凭据、region 读 Bun 的 `S3_ENDPOINT`、`S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY`、`S3_REGION`，或对应的 `AWS_*`）或 `file:///绝对路径`，其它值报 `CONFIG_INVALID`。一个 prefix（或目录）只能给一个 sex 实例用。见[任务队列](#任务队列) |
 | `SEX_JOB_TTL_MS` | — | `86400000`（24 小时，最小 60000） | 任务结束后的保留时间（从结束时开始算，运行中的任务不会过期） |
+| `SEX_WEBHOOK_SECRET` | —（不提供命令行参数，免得出现在进程列表里） | 空（不签名） | 设了之后，每个 webhook 的请求体用它做 HMAC-SHA256，结果放进请求头 `X-Firecrawl-Signature: sha256=<hex>`。见[Webhook](#webhook) |
 | `SEX_LOG_LEVEL` | `--log-level` | `info` | `debug` / `info` / `warn` / `error` / `silent` |
 | `SEX_STRICT_REQUESTS` | — | `false` | HTTP API 收到 schema 里没有的请求字段（含 `scrapeOptions` 等嵌套对象里的）时返回 `400`，而不是丢掉；不影响 MCP |
 | `SEX_CORS_ORIGINS` | `--cors-origin` | 空（CORS 关闭） | 允许跨域调用 HTTP API 和 MCP 端点的浏览器 origin，逗号分隔，不带路径 |
@@ -195,8 +196,20 @@ crawl、batch scrape、extract 都是异步任务。任务按页拆分：crawl �
   - 同一个 S3 prefix（或 `file://` 目录）只能给一个 sex 实例用。sex 只按任务 id 删除它自己删掉的任务的文档，不会去删 bucket 或目录里的其它内容。
 - **持久性**：JSONL 文件不做 fsync，和 SQLite 的 `synchronous = NORMAL` 一致：sex 进程崩溃（包括 `kill -9`）不丢已写入的文档，机器断电或系统崩溃可能丢掉最近写入的一部分。S3 的写入在请求返回时就已经持久。先写文档再写索引，所以崩溃最多留下没有索引的字节：JSONL 文件末尾的这部分在下次启动时截掉；S3 上的这种对象随任务一起删除。JSONL 文件被截短（系统崩溃丢了文件末尾）时，启动时把指向截掉部分的索引删掉。读取时从不改索引：某个文档读不到（对象不存在、没有权限、bucket 或 prefix 配错、刚写入还读不到）或者内容不完整时，这一页里跳过它并记一条警告，问题解决后它会重新出现，不会返回坏数据。删除任务时先在同一个事务里删任务、记一条墓碑（`dropped_jobs`），文档删掉之后再删墓碑；删到一半崩溃或者删除失败，墓碑留下，下次清理（启动时和之后每 10 分钟）会重试。
 - **重启**：进程重启（包括被 `kill -9`）后，队列里的任务和延迟任务会继续执行；崩溃时正在跑的页面任务在锁过期后重新投递，不会重复计数。
+- **反复崩溃的任务**：同一个任务被打断 3 次（每次都是进程在它运行时死掉）后，队列不再投递它。下次启动时 sex 读队列的死信队列，给这一页记一条失败（出现在 `/errors` 里，并发 `success: false` 的 `page` webhook）并结算，job 照常结束；crawl 的起始任务或 extract 被放弃时，整个 job 记为 `failed`。运行中因心跳超时进入死信队列的任务，同样在下次启动时处理。
 - **单进程**：同一个数据目录同一时间只能有一个 sex 进程在用。
 - `SEX_REDIS_URL` / `SEX_REDIS_PREFIX` 已经不再支持，设置了会在启动时报 `CONFIG_INVALID`。
+
+## Webhook
+
+crawl、batch scrape、extract 的请求都可以带 `webhook`（URL 字符串，或 `{ url, headers, metadata, events }`）。事件类型是 `<kind>.<event>`：`crawl` / `batch_scrape` / `extract` 加上 `started` / `page` / `completed` / `failed`；`events` 不写就是全部。
+
+- **载荷**：`{ success, type, id, webhookId, data, metadata, error? }`。`webhookId` 是这次投递的唯一 id，重试时不变，接收方可以用它去重。
+- **`page`**：每页一个，`data` 是该页的 Document。页面失败时同样发 `page`，`success: false`，`error` 是原因，`data` 是 `[{ metadata: { sourceURL } }]`。crawl / batch 都是这样。
+- **extract**：`started`、`completed`（`data: [结果]`）、`failed` 各一次。
+- **签名**：设了 `SEX_WEBHOOK_SECRET` 就带 `X-Firecrawl-Signature: sha256=<hex>`（对原始请求体的 HMAC-SHA256）。请求里的 `headers` 不能设这个头，否则 400。
+- **重试**：每次投递是任务队列里的一个任务（和页面任务一样，进程重启后继续）。2xx 算成功；网络错误、超时、5xx、408、429 会重试，其它 4xx 不重试。一共最多 5 次，间隔 5 s、10 s、20 s、40 s。每次最多 10 s。同时进行的投递最多 2 个（所有 job 共用），接收方慢不会占满页面的 worker。最后一次也失败只记日志，job 不受影响。投递是尽力而为：进程在一次尝试中途崩溃，这次尝试就丢了，不会重发。
+- webhook 的 URL 同样经过 SSRF 检查（每次投递、每次重定向都检查）。
 
 ## HTTP API（Firecrawl v2 兼容）
 

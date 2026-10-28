@@ -43,6 +43,8 @@ export interface Config extends CoreConfig {
   documentsUrl?: string;
   /** Max characters of page content sent to the LLM in one call. */
   llmMaxInputChars: number;
+  /** HMAC-SHA256 key that signs webhook bodies (`X-Firecrawl-Signature`); unset means unsigned. */
+  webhookSecret?: string;
   /** How long finished jobs are kept, in ms. */
   jobTtlMs: number;
   /** Pages mapped for an extract URL ending in `/*`. */
@@ -64,6 +66,8 @@ export interface ConfigOverrides extends CoreConfigOverrides {
   dataDir?: string;
   documentsUrl?: string;
   llmMaxInputChars?: number;
+  /** Not a CLI flag (it would show in the process list); tests and embedders pass it here. */
+  webhookSecret?: string;
 }
 
 const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1";
@@ -161,6 +165,7 @@ export function resolveConfig(
     dataDir: str(o.dataDir) ?? str(env.SEX_DATA_DIR) ?? defaults.dataDir,
     documentsUrl: v.documentsUrl,
     llmMaxInputChars: v.llmMaxInputChars ?? 200_000,
+    webhookSecret: str(o.webhookSecret) ?? str(env.SEX_WEBHOOK_SECRET),
     jobTtlMs: v.jobTtlMs ?? 24 * 60 * 60 * 1000,
     extractWildcardPages: v.extractWildcardPages ?? 25,
   };

@@ -44,7 +44,7 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
     taskOptions = { ...rest };
   } else {
     job = await store.create({ kind: "batch_scrape", options: { ...rest, webhook } as Record<string, unknown> });
-    sendWebhook(engine.config, job, "started");
+    await sendWebhook(engine, job, "started");
     await store.incr(job.id, "pending", valid.length);
   }
   await store.incr(job.id, "total", valid.length);
@@ -62,9 +62,9 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
     const left = await store.incr(job.id, "pending", -valid.length);
     if (left <= 0) {
       if (appendToId) {
-        if (await store.finish(job.id, "completed")) sendWebhook(engine.config, job, "completed");
+        if (await store.finish(job.id, "completed")) await sendWebhook(engine, job, "completed");
       } else if (await store.finish(job.id, "failed", { error: toAppError(err).message })) {
-        sendWebhook(engine.config, job, "failed", [], toAppError(err).message);
+        await sendWebhook(engine, job, "failed", [], toAppError(err).message);
       }
     }
     throw err;

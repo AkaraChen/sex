@@ -405,8 +405,8 @@ for (const [name, makeLog] of backends) {
       const job = await store.create({ kind: "batch_scrape", options: {} });
       await store.incr(job.id, "pending", 2);
       expect(await store.pushDocument(job.id, doc(1), "t1")).toBe(true);
-      await store.pushError(job.id, { id: "1", timestamp: "t", url: "u", error: "e" }, "t1");
-      await store.pushError(job.id, { id: "2", timestamp: "t", url: "u", error: "e" }, "t1");
+      expect(await store.pushError(job.id, { id: "1", timestamp: "t", url: "u", error: "e" }, "t1")).toBe(true);
+      expect(await store.pushError(job.id, { id: "2", timestamp: "t", url: "u", error: "e" }, "t1")).toBe(false);
       expect(await store.settle(job.id, "t1", true)).toBe(1);
       expect(await store.settle(job.id, "t1", true)).toBeNull();
       expect((await store.errors(job.id)).map((e) => e.id)).toEqual(["1"]);

@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Engine } from "../src/engine/engine.ts";
 import { JobScheduler, pageLimits, type Task, type TaskOutcome } from "../src/engine/jobs/index.ts";
 import { BunqueueTaskQueue } from "../src/engine/jobs/queue.ts";
+import { WEBHOOK_CONCURRENCY } from "../src/engine/jobs/scheduler.ts";
 import { runTask } from "../src/engine/tasks.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
@@ -53,6 +54,25 @@ describe("the queue under the scheduler", () => {
     const log = await run(tasks, {});
     expect(peak(log.filter((e) => e.job === "capped"))).toBe(1);
     expect(peak(log.filter((e) => e.job === "free"))).toBeGreaterThan(1);
+  });
+
+  test("webhook deliveries share one lane capped at WEBHOOK_CONCURRENCY, and do not hold back pages", async () => {
+    const hook = (i: number): Task => ({
+      type: "webhook",
+      jobId: `j${i % 3}`,
+      taskId: `w${i}`,
+      attempt: 1,
+      payload: { success: true, type: "crawl.page", id: `j${i % 3}`, webhookId: `id${i}`, data: [], metadata: {} },
+    });
+    const tasks = [
+      ...Array.from({ length: 8 }, (_, i) => ({ task: hook(i), options: {} })),
+      ...Array.from({ length: 4 }, (_, i) => ({ task: page("pages", i), options: {} })),
+    ];
+    const log = await run(tasks, { workers: 4, ms: 60 });
+    // Timer jitter makes a task that began as another ended look like an overlap of a millisecond or two; ignore that.
+    const hooks = log.filter((e) => e.id.startsWith("w")).map((e) => ({ start: e.start + 10, end: e.end }));
+    expect(peak(hooks)).toBe(WEBHOOK_CONCURRENCY);
+    expect(peak(log)).toBeGreaterThan(WEBHOOK_CONCURRENCY);
   });
 
   test("a cap of 2 allows two at once", async () => {

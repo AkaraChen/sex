@@ -117,6 +117,12 @@ test("integer bounds and boolean words are enforced", () => {
   expect(resolveConfig({}, undefined, { SEX_LIGHTPANDA: "Off" }).lightpanda).toBe(false);
 });
 
+test("SEX_WEBHOOK_SECRET signs webhooks; unset or empty means unsigned", () => {
+  expect(resolveConfig({}, undefined, {}).webhookSecret).toBeUndefined();
+  expect(resolveConfig({}, undefined, { SEX_WEBHOOK_SECRET: "" }).webhookSecret).toBeUndefined();
+  expect(resolveConfig({}, undefined, { SEX_WEBHOOK_SECRET: "k" }).webhookSecret).toBe("k");
+});
+
 test("SEX_BLOCK_MEDIA is off by default; the flag wins over the env", () => {
   expect(resolveConfig({}, undefined, {}).blockMedia).toBe(false);
   expect(resolveConfig({}, undefined, { SEX_BLOCK_MEDIA: "1" }).blockMedia).toBe(true);

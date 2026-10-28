@@ -441,9 +441,9 @@ export class SqliteJobStore implements JobStore {
   }
 
   async pushError(id: string, error: JobError, taskId?: string) {
-    this.db.transaction(() => {
-      if (taskId !== undefined && !this.claim(id, taskId, "error")) return;
-      this.exec("INSERT INTO job_errors (job_id, json) SELECT id, ? FROM jobs WHERE id = ?", JSON.stringify(error), id);
+    return this.db.transaction(() => {
+      if (taskId !== undefined && !this.claim(id, taskId, "error")) return false;
+      return this.exec("INSERT INTO job_errors (job_id, json) SELECT id, ? FROM jobs WHERE id = ?", JSON.stringify(error), id).changes > 0;
     })();
   }
 

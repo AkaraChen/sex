@@ -9,7 +9,8 @@ import pLimit from "p-limit";
 import type { ExtractRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
 import { arrayKeys, mergeAll, splitSchema, withProperty } from "./extract-merge.ts";
-import type { JobRecord } from "./jobs/index.ts";
+import { taskEffects } from "./jobs/effects.ts";
+import { type JobRecord, sendWebhook, validateWebhook } from "./jobs/index.ts";
 import { compileJsonSchema, describeSchemaErrors } from "./json-schema.ts";
 import { mapSite } from "./map.ts";
 import { RELEVANCE_FIELD_DESCRIPTION } from "./prompts.ts";
@@ -24,6 +25,7 @@ export async function startExtract(engine: Engine, req: ExtractRequest): Promise
   if (!req.prompt && !req.schema) throw badRequest("Provide a prompt and/or a schema");
   if (req.schema) compileJsonSchema(req.schema);
   assertScrapeCapabilities(engine, { ...req.scrapeOptions, formats: ["markdown"] });
+  await validateWebhook(engine, req.webhook);
 
   const valid: string[] = [];
   const invalid: string[] = [];
@@ -39,14 +41,14 @@ export async function startExtract(engine: Engine, req: ExtractRequest): Promise
   }
 
   const job = await engine.jobs.store.create({ kind: "extract", options: { ...req, urls: valid } as Record<string, unknown> });
-  await engine.jobs.scheduler.add([{ task: { type: "extract", jobId: job.id } }]);
+  await engine.jobs.scheduler.add([{ task: { type: "extract", jobId: job.id, taskId: crypto.randomUUID() } }]);
   return { job, invalidURLs: req.ignoreInvalidURLs ? invalid : undefined };
 }
 
 /** How often a running extract checks whether its job was cancelled. */
 const CANCEL_POLL_MS = 2000;
 
-export async function handleExtract(engine: Engine, job: JobRecord) {
+export async function handleExtract(engine: Engine, job: JobRecord, taskId?: string) {
   const { store } = engine.jobs;
   // Cancelling a job finishes it in the store; poll for that so in-flight map/search/scrape/LLM work stops too.
   const controller = new AbortController();
@@ -60,17 +62,18 @@ export async function handleExtract(engine: Engine, job: JobRecord) {
   }, CANCEL_POLL_MS);
   try {
     const req = job.options as unknown as ExtractRequest;
+    await taskEffects(engine, job, taskId).started();
     const { result, sources, warning, total, completed } = await runExtract(engine, job.id, req, req.urls ?? [], controller.signal);
     if (controller.signal.aborted) return;
     await store.incr(job.id, "total", total);
     await store.incr(job.id, "completed", completed);
-    await store.finish(job.id, "completed", { result, sources, warning });
+    if (await store.finish(job.id, "completed", { result, sources, warning })) await sendWebhook(engine, job, "completed", [result]);
   } catch (err) {
     // Cancelled jobs were already finished by cancelJob; do not overwrite that.
     if (controller.signal.aborted) return;
     const e = toAppError(err);
     log.error("extract failed", { id: job.id, error: e.message });
-    await store.finish(job.id, "failed", { error: e.message });
+    if (await store.finish(job.id, "failed", { error: e.message })) await sendWebhook(engine, job, "failed", [], e.message);
   } finally {
     clearInterval(timer);
   }
@@ -117,14 +120,14 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
   const ok = pages.filter((p): p is Page => !!p && p.markdown.trim().length > 0);
   if (!ok.length) throw new Error(`Could not scrape any of the ${targets.size} source pages`);
 
-  const { result, used } = await extractFromPages(engine, req, ok, limit, signal, (url, err) =>
-    engine.jobs.store.pushError(jobId, {
+  const { result, used } = await extractFromPages(engine, req, ok, limit, signal, async (url, err) => {
+    await engine.jobs.store.pushError(jobId, {
       id: crypto.randomUUID(),
       timestamp: new Date().toISOString(),
       url,
       error: toAppError(err).message,
-    }),
-  );
+    });
+  });
 
   return {
     result,

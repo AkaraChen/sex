@@ -266,7 +266,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: s
     const e = toAppError(err);
     if (await store.finish(jobId, "failed", { error: e.message })) {
       const job = await store.get(jobId);
-      if (job) sendWebhook(engine.config, job, "failed", [], e.message);
+      if (job) await sendWebhook(engine, job, "failed", [], e.message);
     }
   }
 }
