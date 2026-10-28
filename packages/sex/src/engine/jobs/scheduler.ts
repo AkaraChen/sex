@@ -1,5 +1,9 @@
 import type { Lane, QueuedTask, Task, TaskQueue } from "./types.ts";
 
+export const WEBHOOK_LANE = "webhook";
+/** Webhook deliveries running at once, over all jobs. */
+export const WEBHOOK_CONCURRENCY = 2;
+
 /**
  * Who goes first, and how fast one job may go. The queue (`TaskQueue`) only carries out what is decided here, so the
  * policy lives in one place and a new kind of task gets its place by adding one case to `laneOf`.
@@ -17,10 +21,11 @@ import type { Lane, QueuedTask, Task, TaskQueue } from "./types.ts";
  *   (`pending`), documents and failures stay exactly as `task_effects` and the outbox already guarantee for crash
  *   redelivery.
  *
- * Webhook retries (#46) come in as a third kind of task: a `webhook` case in `laneOf` that gives them a lane of their
- * own (`webhook:<jobId>`, so a slow receiver neither delays the job's pages nor takes more than its share of workers),
- * `delayMs` for the backoff, and a new `TaskEffect` for "attempt n delivered". A retry is a new task with its own
- * taskId, queued through `JobScheduler.add` like everything else, so it never shares a page's settlement.
+ * Webhook deliveries are a third kind of task. They share one lane (`webhook`), capped at `WEBHOOK_CONCURRENCY`, so a
+ * receiver that answers slowly (each attempt may take its whole timeout) holds at most that many workers and the jobs'
+ * pages keep the rest. A retry is a new task with its own taskId, queued here with `delayMs` for the backoff, so it
+ * never shares a page's settlement. The lane is one for all jobs, not one per job, because a lane's cap is stored by
+ * the queue until removed and a job's webhooks can still be in flight after the job is done.
  */
 export interface PageLimits {
   /** Most pages of the job running at once; undefined = only the server-wide `SEX_CONCURRENCY`. */
@@ -44,6 +49,8 @@ function laneOf(task: Task, limits: PageLimits | undefined): Lane | undefined {
       return undefined;
     case "page":
       return { id: task.jobId, cooldownMs: limits?.cooldownMs };
+    case "webhook":
+      return { id: WEBHOOK_LANE };
   }
 }
 
@@ -60,6 +67,7 @@ export class JobScheduler {
     for (const jobId of new Set(tasks.filter((t) => t.task.type === "page").map((t) => t.task.jobId))) {
       await this.cap(jobId, limits?.concurrency);
     }
+    if (tasks.some((t) => t.task.type === "webhook")) await this.cap(WEBHOOK_LANE, WEBHOOK_CONCURRENCY);
     await this.queue.add(tasks.map((t): QueuedTask => ({ ...t, lane: laneOf(t.task, limits) })));
   }
 

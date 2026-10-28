@@ -11,7 +11,7 @@ let openQueues = 0;
 
 /**
  * How many times a task may be interrupted (the process died, or its lock ran out) before bunqueue gives up on it and
- * moves it to its dead-letter queue. Startup recovery counts every interrupted delivery as an attempt and dead-letters
+ * moves it to its dead-letter queue, from which `startWorker` hands it to `onAbandoned`. Startup recovery counts every interrupted delivery as an attempt and dead-letters
  * the task once `attempts` is reached, so `attempts: 1` meant a task running at SIGKILL was never redelivered. A task
  * that keeps killing the process stops after this many deliveries instead of looping.
  */
@@ -50,6 +50,7 @@ function logTaskFailure(task: Task | undefined, err: unknown) {
 export class BunqueueTaskQueue implements TaskQueue {
   private readonly queue: Queue<Envelope>;
   private worker?: Worker<Envelope | Task, TaskOutcome | void>;
+  private abandoned?: Promise<void>;
   private closed = false;
 
   /** A persistent queue keeps a fixed name so a restarted process finds its tasks; in memory each queue gets its own. */
@@ -90,7 +91,7 @@ export class BunqueueTaskQueue implements TaskQueue {
     else await this.queue.setGroupConcurrency(lane, Math.max(1, Math.floor(limit)));
   }
 
-  startWorker(handler: (task: Task) => Promise<TaskOutcome | void>) {
+  startWorker(handler: (task: Task) => Promise<TaskOutcome | void>, onAbandoned?: (task: Task) => Promise<void>) {
     if (this.worker || this.closed) return;
     // A throw would make bunqueue retry the task (`attempts` is for interruptions), so errors end here.
     const run = async (task: Task) => {
@@ -114,11 +115,36 @@ export class BunqueueTaskQueue implements TaskQueue {
       worker.rateLimitGroup(job, cooldownMs).catch((err) => log.warn("lane cooldown failed", { error: String(err) }));
     });
     worker.on("failed", (job, err) => logTaskFailure(job ? unwrap(job.data).task : undefined, err));
+    if (onAbandoned)
+      this.abandoned = this.drainDeadLetters(onAbandoned).catch((err) =>
+        log.error("dead-letter queue could not be read", { error: String(err) }),
+      );
+  }
+
+  /**
+   * Hands the tasks in bunqueue's dead-letter queue to `onAbandoned`, then removes them. bunqueue emits no event when
+   * its startup recovery dead-letters a task (it writes the entry straight to storage), so the queue is read once when
+   * the worker starts, after recovery. A task that stalls into the DLQ while the process runs stays there until the
+   * next start. An entry is removed only after `onAbandoned` returned, so a failure there is retried at the next start.
+   */
+  private async drainDeadLetters(onAbandoned: (task: Task) => Promise<void>) {
+    for (const entry of await this.queue.getDlqAsync()) {
+      if (this.closed) return;
+      const { task } = unwrap(entry.job.data);
+      log.warn("task abandoned by the queue", { type: task.type, job: task.jobId, reason: entry.reason, error: entry.error });
+      try {
+        await onAbandoned(task);
+        await this.queue.removeDlqJobAsync(String(entry.job.id));
+      } catch (err) {
+        logTaskFailure(task, err);
+      }
+    }
   }
 
   async close() {
     if (this.closed) return;
     this.closed = true;
+    await this.abandoned;
     await this.worker?.close();
     await this.queue.close();
     if (--openQueues === 0) shutdownManager();

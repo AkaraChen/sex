@@ -44,7 +44,7 @@ export type CounterName = keyof JobCounters;
 /**
  * A side effect a task performs at most once per job, however often the queue delivers the task. The store keeps one
  * record per (job, taskId, effect); `claimEffect`, `settle`, `pushDocument` and `pushError` each claim their effect
- * in the same transaction as the write they guard. New effects (e.g. a webhook delivery task) are added here.
+ * in the same transaction as the write they guard. New effects are added here.
  */
 export type TaskEffect =
   /** `pending` decremented (see `settle`). */
@@ -53,8 +53,10 @@ export type TaskEffect =
   | "document"
   /** The task's failure was recorded (see `pushError`). */
   | "error"
-  /** The crawl's `started` webhook went out. */
+  /** The job's `started` webhook was queued. */
   | "started"
+  /** A webhook delivery attempt was made (see `deliverWebhook`); each attempt is a task of its own. */
+  | "webhook"
   /** The task marked its page's redirect target seen (see `claimSeen`). */
   | "redirect";
 export type JobRecord = JobMeta & JobCounters;
@@ -90,8 +92,8 @@ export interface JobStore {
   documents(id: string, skip: number, maxChars: number): Promise<{ data: Document[]; nextSkip: number | null }>;
   /** The same page as `documents`, each document as its JSON text (UTF-8), so it can be sent without parsing it first. */
   documentsJson(id: string, skip: number, maxChars: number): Promise<{ data: Uint8Array[]; nextSkip: number | null }>;
-  /** Records a failure, once per task when a taskId is given (a redelivered task does not list it twice). */
-  pushError(id: string, error: JobError, taskId?: string): Promise<void>;
+  /** Records a failure, once per task when a taskId is given (a redelivered task does not list it twice). Returns true if this call recorded it. */
+  pushError(id: string, error: JobError, taskId?: string): Promise<boolean>;
   errors(id: string): Promise<JobError[]>;
   /** Stores the robots.txt body fetched once per crawl and shared by all workers ("" = none). Kept out of the job record so status reads stay small. */
   setRobotsTxt(id: string, text: string): Promise<void>;
@@ -144,10 +146,23 @@ export interface OutboxTask {
   depth: number;
 }
 
+/** The body of a webhook POST (Firecrawl's payload). `webhookId` names the delivery and stays the same over its retries. */
+export interface WebhookPayload {
+  success: boolean;
+  type: string;
+  id: string;
+  webhookId: string;
+  data: unknown[];
+  metadata: Record<string, unknown>;
+  error?: string;
+}
+
 export type Task =
   | { type: "crawl-start"; jobId: string; taskId?: string }
   | { type: "page"; jobId: string; taskId?: string; url: string; depth: number; options?: Record<string, unknown> }
-  | { type: "extract"; jobId: string };
+  | { type: "extract"; jobId: string; taskId?: string }
+  /** One delivery attempt of a webhook (`attempt` counts from 1). It is not part of the job's `pending`: a job never waits for its webhooks. */
+  | { type: "webhook"; jobId: string; taskId: string; attempt: number; payload: WebhookPayload };
 
 /** A task and how the queue should hold it. Decided by the `JobScheduler`; the queue only carries it out. */
 export interface QueuedTask {
@@ -178,7 +193,12 @@ export interface TaskQueue {
   add(tasks: QueuedTask[]): Promise<void>;
   /** At most `limit` tasks of the lane run at once (no limit when undefined). Outlives a restart together with the queued tasks. */
   capLane(lane: string, limit: number | undefined): Promise<void>;
-  /** Starts consuming tasks in this process. */
-  startWorker(handler: (task: Task) => Promise<TaskOutcome | void>): void;
+  /**
+   * Starts consuming tasks in this process. Tasks the queue gave up on (interrupted `MAX_DELIVERIES` times, so no
+   * handler can ever finish them) are passed to `onAbandoned` once, when the worker starts; the queue forgets a task
+   * only after `onAbandoned` returned for it, so one that throws is offered again at the next start. Without
+   * `onAbandoned` they stay where they are.
+   */
+  startWorker(handler: (task: Task) => Promise<TaskOutcome | void>, onAbandoned?: (task: Task) => Promise<void>): void;
   close(): Promise<void>;
 }

@@ -27,11 +27,19 @@ export const MapResponse = z.object({ success: z.literal(true), links: z.array(M
 
 // ---------------------------------------------------------------- jobs
 
+/** The header that carries the HMAC of the body (see `SEX_WEBHOOK_SECRET`); sex sets it, a request may not. */
+export const WEBHOOK_SIGNATURE_HEADER = "X-Firecrawl-Signature";
+
 export const WebhookConfig = z.union([
   z.string(),
   z.object({
     url: z.string(),
-    headers: z.record(z.string(), z.string()).optional(),
+    headers: z
+      .record(z.string(), z.string())
+      .refine((headers) => !Object.keys(headers).some((name) => name.toLowerCase() === WEBHOOK_SIGNATURE_HEADER.toLowerCase()), {
+        message: `The ${WEBHOOK_SIGNATURE_HEADER} header is set by the server and cannot be overridden`,
+      })
+      .optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
     events: z.array(z.enum(["completed", "failed", "page", "started"])).optional(),
   }),
@@ -136,6 +144,7 @@ export const ExtractRequest = z.object({
   allowExternalLinks: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
   showSources: z.boolean().optional(),
   ignoreInvalidURLs: z.boolean().optional(),
+  webhook: WebhookConfig.optional().describe("Receives extract.started, extract.completed (with the result) and extract.failed"),
   scrapeOptions: ScrapeOptions.optional(),
 });
 export type ExtractRequest = z.infer<typeof ExtractRequest>;

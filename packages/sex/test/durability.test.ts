@@ -175,6 +175,64 @@ test("a task running when the process is SIGKILLed is redelivered and its job co
   }
 }, 90_000);
 
+test("a page that kills the process three times is given up on: the job records it as failed and completes (#78)", async () => {
+  // The site never answers /never, so the task running it is what each SIGKILL interrupts. bunqueue redelivers it twice
+  // and moves it to its dead-letter queue when it is recovered the third time, at the next start.
+  let never = 0;
+  const site = Bun.serve({
+    port: 0,
+    fetch(req) {
+      if (new URL(req.url).pathname === "/never") {
+        never++;
+        return new Promise<Response>(() => {});
+      }
+      return new Response(
+        "<html><head><title>ok</title></head><body><article><h1>ok</h1><p>" +
+          "Some words on a page. ".repeat(40) +
+          "</p></article></body></html>",
+        {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        },
+      );
+    },
+  });
+  try {
+    const port = freePort();
+    const dataDir = mkdtempSync(join(dir, "data-"));
+    let base = await serve(port, dataDir);
+    const started = (await (
+      await fetch(`${base}/v2/batch/scrape`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ urls: [`http://127.0.0.1:${site.port}/never`, `http://127.0.0.1:${site.port}/fast`] }),
+      })
+    ).json()) as { id: string };
+    const status = async () =>
+      (await (await fetch(`${base}/v2/batch/scrape/${started.id}`)).json()) as { status: string; completed: number; total: number };
+    for (let crash = 1; crash <= 3; crash++) {
+      // The fast page is done before the first kill, so only /never is ever interrupted.
+      await waitFor(async () => (never === crash && (await status()).completed === 1 ? true : undefined), 20_000);
+      child?.kill("SIGKILL");
+      await child?.exited;
+      base = await serve(port, dataDir);
+    }
+    // No fourth delivery: the restart after the third interruption finds the task in the dead-letter queue.
+    const done = await waitFor(async () => {
+      const s = await status();
+      return s.status === "scraping" ? undefined : s;
+    }, 30_000);
+    expect(never).toBe(3);
+    expect(done).toMatchObject({ status: "completed", completed: 2, total: 2 });
+    const { errors } = (await (await fetch(`${base}/v2/batch/scrape/${started.id}/errors`)).json()) as {
+      errors: Array<{ url: string; error: string }>;
+    };
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.url).toBe(`http://127.0.0.1:${site.port}/never`);
+  } finally {
+    site.stop(true);
+  }
+}, 120_000);
+
 test("a job's maxConcurrency still holds after a restart", async () => {
   // Every page takes a moment and the site counts how many are being served at once; a request the client
   // abandoned (the killed process) stops counting when its connection drops.

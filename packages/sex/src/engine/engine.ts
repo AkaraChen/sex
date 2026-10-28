@@ -11,7 +11,7 @@ import { documentsLocation } from "./jobs/documents.ts";
 import { createJobBackend, type JobBackend, type JobKind, type JobRecord } from "./jobs/index.ts";
 import { Llm } from "./llm.ts";
 import { mapSite } from "./map.ts";
-import { runTask } from "./tasks.ts";
+import { abandonTask, runTask } from "./tasks.ts";
 
 /** Everything the HTTP, MCP and CLI front-ends share: the core search and fetch, plus browser, LLM, documents and jobs. */
 export class Engine extends BaseEngine<Config> {
@@ -33,7 +33,10 @@ export class Engine extends BaseEngine<Config> {
   get jobs(): JobBackend {
     if (!this.backend) {
       this.backend = createJobBackend(this.config);
-      this.backend.queue.startWorker((task) => runTask(this, task));
+      this.backend.queue.startWorker(
+        (task) => runTask(this, task),
+        (task) => abandonTask(this, task),
+      );
     }
     return this.backend;
   }
