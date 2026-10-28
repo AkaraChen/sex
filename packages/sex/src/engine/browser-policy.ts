@@ -10,7 +10,9 @@
  */
 
 import { AppError } from "@sex/core/errors.ts";
+import { log } from "@sex/core/log.ts";
 import type { HTTPRequest, Page } from "puppeteer-core";
+import { type AdBlockList, siteOf } from "./adblock.ts";
 
 /** What a policy gets to see. `headers` are lowercase and already include the changes of earlier policies. */
 export interface PolicyRequest {
@@ -41,6 +43,8 @@ export interface RequestPolicy {
   readonly purpose: string;
   /** How to proceed on a browser without interception, appended to that error. */
   readonly remedy?: string;
+  /** Nice to have, not a safeguard: on a browser that cannot intercept the policy is dropped instead of failing the scrape. */
+  readonly optional?: boolean;
   decide(req: PolicyRequest): PolicyDecision | Promise<PolicyDecision>;
 }
 
@@ -107,6 +111,52 @@ export class PrivateNetworkPolicy implements RequestPolicy {
     if (await verdict) return { type: "continue" };
     if (req.isMainFrameNavigation) this.blockedNavigations.push(req.url.href);
     return { type: "abort", reason: "blockedbyclient" };
+  }
+}
+
+// --- Policy: ads and trackers -------------------------------------------------------------------------------------------
+
+/**
+ * Aborts requests to the ad and tracker domains of EasyList / EasyPrivacy (`blockAds`). The page itself is never blocked: a
+ * main-frame navigation, redirects included, is what the caller asked for. Third-party-only rules apply when the request leaves
+ * the registrable domain of the target.
+ */
+export class AdBlockPolicy implements RequestPolicy {
+  readonly name = "ad-block";
+  readonly purpose = "ad blocking";
+  readonly optional = true;
+  /** Requests aborted so far, for this page. */
+  blocked = 0;
+  private readonly pageSite: string;
+
+  constructor(
+    private readonly list: AdBlockList,
+    pageUrl: string,
+  ) {
+    this.pageSite = siteOf(new URL(pageUrl).hostname);
+  }
+
+  decide(req: PolicyRequest): PolicyDecision {
+    if (req.isMainFrameNavigation || !this.list.blocks(req.url.hostname, this.pageSite)) return { type: "continue" };
+    this.blocked++;
+    return { type: "abort", reason: "blockedbyclient" };
+  }
+}
+
+// --- Policy: images and media ---------------------------------------------------------------------------------------------
+
+const MEDIA_TYPES: ReadonlySet<string> = new Set(["image", "media"]);
+
+/** Aborts image and audio / video requests (`SEX_BLOCK_MEDIA`): a text scrape does not need the bytes. */
+export class MediaBlockPolicy implements RequestPolicy {
+  readonly name = "media-block";
+  readonly purpose = "media blocking";
+  readonly optional = true;
+
+  decide(req: PolicyRequest): PolicyDecision {
+    return !req.isMainFrameNavigation && MEDIA_TYPES.has(req.resourceType)
+      ? { type: "abort", reason: "blockedbyclient" }
+      : { type: "continue" };
   }
 }
 
@@ -181,6 +231,10 @@ export interface RequestPolicyOptions {
   headers?: Record<string, string>;
   /** Resolves true when the origin may be contacted. Absent when private networks are allowed. */
   requestGuard?: (origin: string) => Promise<boolean>;
+  /** Block the ad and tracker domains of this list; absent means no ad blocking. */
+  adBlockList?: AdBlockList;
+  /** Block image and media requests. */
+  blockMedia?: boolean;
 }
 
 export type PolicyPage = Pick<Page, "setExtraHTTPHeaders" | "setCookie" | "setRequestInterception" | "on" | "mainFrame">;
@@ -188,6 +242,8 @@ export type PolicyPage = Pick<Page, "setExtraHTTPHeaders" | "setCookie" | "setRe
 export interface AppliedPolicies {
   /** Main-frame navigations refused by the private-network policy (empty when that policy is off). */
   blockedNavigations: readonly string[];
+  /** Requests aborted as ads or trackers so far. */
+  adsBlocked(): number;
 }
 
 /**
@@ -215,12 +271,19 @@ export async function applyRequestPolicies(page: PolicyPage, opts: RequestPolicy
 
   const privateNetwork = opts.requestGuard ? new PrivateNetworkPolicy(opts.requestGuard) : undefined;
   const credentials = { ...scoped, ...(cookieHeader ? { cookie: cookieHeader } : {}) };
+  const adBlock = opts.adBlockList ? new AdBlockPolicy(opts.adBlockList, opts.url) : undefined;
+  // Cheap local verdicts first, so a blocked request never costs the private-network policy a DNS lookup.
   const policies: RequestPolicy[] = [
+    ...(opts.blockMedia ? [new MediaBlockPolicy()] : []),
+    ...(adBlock ? [adBlock] : []),
     ...(privateNetwork ? [privateNetwork] : []),
     ...(Object.keys(credentials).length ? [new OriginScopedCredentialsPolicy(target.origin, credentials)] : []),
   ];
   const pipeline = new RequestPolicyPipeline(policies);
-  const applied: AppliedPolicies = { blockedNavigations: privateNetwork?.blockedNavigations ?? [] };
+  const applied: AppliedPolicies = {
+    blockedNavigations: privateNetwork?.blockedNavigations ?? [],
+    adsBlocked: () => adBlock?.blocked ?? 0,
+  };
   if (!pipeline.active) return applied;
 
   const interceptable = await page.setRequestInterception(true).then(
@@ -228,10 +291,15 @@ export async function applyRequestPolicies(page: PolicyPage, opts: RequestPolicy
     () => false,
   );
   if (!interceptable) {
-    const remedies = policies.flatMap((p) => (p.remedy ? [p.remedy] : []));
+    const required = policies.filter((p) => !p.optional);
+    if (!required.length) {
+      log.debug("browser cannot intercept requests; ad and media blocking skipped");
+      return applied;
+    }
+    const remedies = required.flatMap((p) => (p.remedy ? [p.remedy] : []));
     throw new AppError(
       "BROWSER_INTERCEPTION_UNSUPPORTED",
-      `This browser cannot intercept requests, so ${policies.map((p) => p.purpose).join(" and ")} cannot be enforced. Use a browser with CDP Fetch support${remedies.length ? ` ${remedies.join(" ")}` : ""}.`,
+      `This browser cannot intercept requests, so ${required.map((p) => p.purpose).join(" and ")} cannot be enforced. Use a browser with CDP Fetch support${remedies.length ? ` ${remedies.join(" ")}` : ""}.`,
     );
   }
 

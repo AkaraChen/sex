@@ -153,7 +153,12 @@ export const ScrapeOptions = z
       .boolean()
       .optional()
       .describe("Have the LLM check the page for prompt injection first; a detection fails with 403 SCRAPE_PROMPT_INJECTION_DETECTED"),
-    blockAds: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+    blockAds: z
+      .boolean()
+      .optional()
+      .describe(
+        "Block ad and tracker requests (EasyList / EasyPrivacy) while the browser renders the page. Default true; no effect without a browser.",
+      ),
     proxy: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
     maxAge: z.number().optional().describe("Accepted for Firecrawl compatibility; ignored (there is no cache)."),
     storeInCache: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),

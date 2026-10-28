@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { HTTPRequest } from "puppeteer-core";
+import { AdBlockList } from "../src/engine/adblock.ts";
 import {
+  AdBlockPolicy,
   applyRequestPolicies,
+  MediaBlockPolicy,
   OriginScopedCredentialsPolicy,
   type PolicyDecision,
   type PolicyPage,
@@ -109,6 +112,48 @@ describe("PrivateNetworkPolicy", () => {
   });
 });
 
+describe("AdBlockPolicy", () => {
+  const list = AdBlockList.parse("ads.test\n~pixel.test\n@fine.ads.test\n");
+
+  test("aborts ad domains and counts them, lets everything else through", () => {
+    const policy = new AdBlockPolicy(list, "https://news.test/story");
+    expect(policy.decide(req("https://ads.test/x.js"))).toEqual({ type: "abort", reason: "blockedbyclient" });
+    expect(policy.decide(req("https://cdn.ads.test/x.js"))).toEqual({ type: "abort", reason: "blockedbyclient" });
+    expect(policy.decide(req("https://fine.ads.test/x.js"))).toEqual({ type: "continue" });
+    expect(policy.decide(req("https://news.test/app.js"))).toEqual({ type: "continue" });
+    expect(policy.blocked).toBe(2);
+  });
+
+  test("never blocks the page itself, redirects included", () => {
+    const policy = new AdBlockPolicy(list, "https://ads.test/");
+    expect(policy.decide(req("https://ads.test/", { resourceType: "document", isMainFrameNavigation: true }))).toEqual({
+      type: "continue",
+    });
+    expect(policy.decide(req("https://ads.test/frame", { resourceType: "document" })).type).toBe("abort");
+    expect(policy.blocked).toBe(1);
+  });
+
+  test("third-party-only rules are judged against the page's site", () => {
+    expect(new AdBlockPolicy(list, "https://news.test/").decide(req("https://pixel.test/p.gif")).type).toBe("abort");
+    expect(new AdBlockPolicy(list, "https://www.pixel.test/").decide(req("https://img.pixel.test/p.gif")).type).toBe("continue");
+  });
+});
+
+describe("MediaBlockPolicy", () => {
+  test("aborts images and media only", () => {
+    const policy = new MediaBlockPolicy();
+    for (const resourceType of ["image", "media"]) {
+      expect(policy.decide(req("https://a.test/x", { resourceType }))).toEqual({ type: "abort", reason: "blockedbyclient" });
+    }
+    for (const resourceType of ["script", "stylesheet", "xhr", "font", "document"]) {
+      expect(policy.decide(req("https://a.test/x", { resourceType }))).toEqual({ type: "continue" });
+    }
+    expect(policy.decide(req("https://a.test/pic.png", { resourceType: "image", isMainFrameNavigation: true }))).toEqual({
+      type: "continue",
+    });
+  });
+});
+
 describe("OriginScopedCredentialsPolicy", () => {
   const creds = new OriginScopedCredentialsPolicy("https://site.test", { authorization: "Bearer T", "proxy-authorization": "Basic P" });
 
@@ -195,7 +240,10 @@ function fakePage(opts: { interceptable?: boolean; cookies?: boolean } = {}) {
   } as unknown as PolicyPage;
 
   /** Fires a request and resolves with how it was answered. */
-  async function fire(url: string, init: { headers?: Record<string, string>; navigation?: boolean; frame?: unknown } = {}): Promise<Call> {
+  async function fire(
+    url: string,
+    init: { headers?: Record<string, string>; navigation?: boolean; frame?: unknown; type?: string } = {},
+  ): Promise<Call> {
     let done!: (c: Call) => void;
     const result = new Promise<Call>((resolve) => {
       done = resolve;
@@ -204,7 +252,7 @@ function fakePage(opts: { interceptable?: boolean; cookies?: boolean } = {}) {
       isInterceptResolutionHandled: () => false,
       url: () => url,
       method: () => "GET",
-      resourceType: () => (init.navigation ? "document" : "script"),
+      resourceType: () => init.type ?? (init.navigation ? "document" : "script"),
       isNavigationRequest: () => !!init.navigation,
       frame: () => init.frame ?? main,
       headers: () => init.headers ?? { accept: "*/*" },
@@ -311,6 +359,68 @@ describe("applyRequestPolicies", () => {
     expect((err as Error).message).toContain("--allow-private-network");
     // Nothing to enforce, nothing to ask of the browser.
     await applyRequestPolicies(fakePage({ interceptable: false }).page, { url: target });
+  });
+
+  describe("ad and media blocking", () => {
+    const adBlockList = AdBlockList.parse("ads.test\n");
+
+    test("an ad list turns interception on and blocks its domains, even when private networks are allowed", async () => {
+      const f = fakePage();
+      const applied = await applyRequestPolicies(f.page, { url: target, adBlockList });
+      expect(f.log.interception).toBe(true);
+      expect(await f.fire("https://ads.test/x.js")).toEqual({ type: "abort", arg: "blockedbyclient" });
+      expect(await f.fire("https://site.test/app.js")).toEqual({ type: "continue", arg: undefined });
+      expect(applied.adsBlocked()).toBe(1);
+    });
+
+    test("without a list (blockAds: false) there is no interception and nothing is blocked", async () => {
+      const f = fakePage();
+      const applied = await applyRequestPolicies(f.page, { url: target });
+      expect(f.hasListener()).toBe(false);
+      expect(applied.adsBlocked()).toBe(0);
+    });
+
+    test("an ad is refused before the private-network guard is asked about it", async () => {
+      const f = fakePage();
+      const asked: string[] = [];
+      await applyRequestPolicies(f.page, {
+        url: target,
+        adBlockList,
+        requestGuard: async (origin) => {
+          asked.push(origin);
+          return true;
+        },
+      });
+      expect(await f.fire("https://ads.test/x.js")).toEqual({ type: "abort", arg: "blockedbyclient" });
+      expect(asked).toEqual([]);
+      expect(await f.fire("https://site.test/app.js")).toMatchObject({ type: "continue" });
+      expect(asked).toEqual(["https://site.test"]);
+    });
+
+    test("blockMedia aborts images", async () => {
+      const f = fakePage();
+      await applyRequestPolicies(f.page, { url: target, blockMedia: true });
+      expect(f.log.interception).toBe(true);
+      expect(await f.fire("https://site.test/pic.png", { type: "image" })).toEqual({ type: "abort", arg: "blockedbyclient" });
+      expect(await f.fire("https://site.test/clip.mp4", { type: "media" })).toEqual({ type: "abort", arg: "blockedbyclient" });
+      expect(await f.fire("https://site.test/app.js")).toMatchObject({ type: "continue" });
+    });
+
+    test("a browser without interception goes without ad blocking instead of failing; a safeguard still fails", async () => {
+      const f = fakePage({ interceptable: false });
+      const applied = await applyRequestPolicies(f.page, { url: target, adBlockList, blockMedia: true });
+      expect(f.hasListener()).toBe(false);
+      expect(applied.adsBlocked()).toBe(0);
+      const err = await applyRequestPolicies(fakePage({ interceptable: false }).page, {
+        url: target,
+        adBlockList,
+        requestGuard: async () => true,
+      }).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: "BROWSER_INTERCEPTION_UNSUPPORTED" });
+      // Only the safeguard is named.
+      expect((err as Error).message).toContain("private-network protection");
+      expect((err as Error).message).not.toContain("ad blocking");
+    });
   });
 
   test("a browser without a cookie jar gets the Cookie header on the target's origin only", async () => {

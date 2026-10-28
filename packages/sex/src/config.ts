@@ -28,6 +28,8 @@ export interface Config extends CoreConfig {
   /** Spawn a local Lightpanda process and use it as the browser. */
   lightpanda: boolean;
   lightpandaPath?: string;
+  /** Abort image and audio / video requests of browser scrapes. */
+  blockMedia: boolean;
   /** Convert PDFs, office documents and images with here-docs (structured text + OCR). */
   docs: boolean;
   llm?: { baseUrl: string; apiKey?: string; model: string };
@@ -50,6 +52,7 @@ export interface ConfigOverrides extends CoreConfigOverrides {
   cdpUrl?: string;
   lightpanda?: boolean;
   lightpandaPath?: string;
+  blockMedia?: boolean;
   docs?: boolean;
   llmBaseUrl?: string;
   llmApiKey?: string;
@@ -83,6 +86,7 @@ const FIELDS = {
   llmMaxInputChars: intField(1000),
   llmBaseUrl: urlField,
   lightpanda: flagField,
+  blockMedia: flagField,
   docs: flagField,
   documentsUrl: documentsUrlField,
 };
@@ -95,6 +99,7 @@ const FIELD_RULES: FieldRules<keyof typeof FIELDS> = {
   llmMaxInputChars: ["SEX_LLM_MAX_INPUT_CHARS", "an integer >= 1000"],
   llmBaseUrl: ["SEX_LLM_BASE_URL", "an http(s) URL"],
   lightpanda: ["SEX_LIGHTPANDA", FLAG_WORDS],
+  blockMedia: ["SEX_BLOCK_MEDIA", FLAG_WORDS],
   docs: ["SEX_DOCS", FLAG_WORDS],
   documentsUrl: ["SEX_DOCUMENTS_URL", "an s3://bucket[/prefix] or file:///absolute/path URL"],
 };
@@ -125,6 +130,7 @@ export function resolveConfig(
     llmMaxInputChars: o.llmMaxInputChars ?? str(env.SEX_LLM_MAX_INPUT_CHARS),
     llmBaseUrl: str(o.llmBaseUrl) ?? str(env.SEX_LLM_BASE_URL) ?? str(env.OPENAI_BASE_URL),
     lightpanda: flag(o.lightpanda, str(env.SEX_LIGHTPANDA)),
+    blockMedia: flag(o.blockMedia, str(env.SEX_BLOCK_MEDIA)),
     docs: flag(o.docs, str(env.SEX_DOCS)),
     documentsUrl: str(o.documentsUrl) ?? str(env.SEX_DOCUMENTS_URL),
   });
@@ -135,6 +141,7 @@ export function resolveConfig(
     cdpUrl: str(o.cdpUrl) ?? str(env.SEX_CDP_URL),
     lightpanda: v.lightpanda ?? false,
     lightpandaPath: str(o.lightpandaPath) ?? str(env.SEX_LIGHTPANDA_PATH) ?? str(env.LIGHTPANDA_EXECUTABLE_PATH),
+    blockMedia: v.blockMedia ?? false,
     docs: v.docs ?? false,
     llm: llmModel
       ? {

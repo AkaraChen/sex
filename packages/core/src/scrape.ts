@@ -243,6 +243,7 @@ async function scrapeInner(
       userAgent: config.userAgent,
       mobile: options.mobile,
       skipTlsVerification: options.skipTlsVerification,
+      blockAds: options.blockAds ?? true,
       waitFor: options.waitFor,
       actions: options.actions,
       extract: extractOpts,
