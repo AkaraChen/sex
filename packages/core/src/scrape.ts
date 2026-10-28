@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { LimitFunction } from "p-limit";
-import { type BrowserScrapeResult, GUARD_MAX_CHARS, type ScrapeBrowser, type ScrapeDocs, type ScrapeLlm } from "./capabilities.ts";
+import {
+  type BrowserScrapeResult,
+  type CachedPage,
+  type CacheKey,
+  GUARD_MAX_CHARS,
+  type ScrapeBrowser,
+  type ScrapeCache,
+  type ScrapeDocs,
+  type ScrapeLlm,
+} from "./capabilities.ts";
 import type { CoreConfig } from "./config.ts";
 import { Deadline } from "./deadline.ts";
 import { AppError, badRequest, browserRequired, llmRequired, toAppError, unsupported } from "./errors.ts";
@@ -22,6 +31,8 @@ export interface ScrapeContext {
   readonly browser?: ScrapeBrowser;
   readonly llm?: ScrapeLlm;
   readonly docs?: ScrapeDocs;
+  /** Fetched pages kept for `maxAge`; without one nothing is read or stored, and `lockdown` / `minAge` are 404s. */
+  readonly cache?: ScrapeCache;
   /** How to get a missing browser or LLM, for the 501 errors; defaults to sex's flags. */
   readonly missingHints?: MissingHints;
 }
@@ -121,7 +132,7 @@ export function needsLlm(f: NormalizedFormats): string | undefined {
 /** Validates options that need a browser or LLM so jobs can fail before doing any work. */
 export function assertScrapeCapabilities(ctx: ScrapeContext, options: ScrapeOptions | undefined): NormalizedFormats {
   const formats = normalizeFormats(options?.formats);
-  if (options) assertSupportedOptions(options, formats);
+  if (options) assertSupportedOptions(ctx, options, formats);
   const unsupportedAction = options?.actions?.find((a) => a.type === "screenshot" || a.type === "pdf");
   if (unsupportedAction) throw unsupported(`The "${unsupportedAction.type}" action`);
   if (!ctx.browser?.enabled) {
@@ -134,16 +145,13 @@ export function assertScrapeCapabilities(ctx: ScrapeContext, options: ScrapeOpti
 }
 
 /** Options that ask for something this server cannot do: refused instead of silently dropped. */
-function assertSupportedOptions(options: ScrapeOptions, formats: NormalizedFormats): void {
+function assertSupportedOptions(ctx: ScrapeContext, options: ScrapeOptions, formats: NormalizedFormats): void {
   if (options.redactPII) throw unsupported("redactPII");
   if (options.zeroDataRetention) throw unsupported("zeroDataRetention");
   if (options.onlyCleanContent) throw unsupported("onlyCleanContent");
-  // Both ask for stored data only; nothing is stored, and a live fetch would break what the caller asked for.
-  if (options.lockdown || options.minAge !== undefined) {
-    throw new AppError(
-      "SCRAPE_NO_CACHED_DATA",
-      `No cached data is available: ${options.lockdown ? "lockdown" : "minAge"} only reads from a cache, and this server has none.`,
-    );
+  // Both ask for stored data only; a live fetch would break what the caller asked for.
+  if (!ctx.cache && isCacheOnly(options)) {
+    throw noCachedData(`${options.lockdown ? "lockdown" : "minAge"} only reads from a cache, and this server has none.`);
   }
   if (formats.rawBase64) {
     if (options.checkPromptInjection)
@@ -295,7 +303,16 @@ async function scrapeInner(
 ): Promise<ScrapeOutcome> {
   const { config } = ctx;
   // fastMode: no rendering, only the HTTP fetch.
-  const browser = ctx.browser?.enabled && !options.fastMode && !internal.upload ? ctx.browser : undefined;
+  const renderer = ctx.browser?.enabled && !options.fastMode && !internal.upload ? ctx.browser : undefined;
+  const plan = cachePlan(ctx, url, options, formats, internal, !!renderer);
+  if (!plan && isCacheOnly(options)) {
+    throw noCachedData("lockdown and minAge only read from the cache, and this request (actions, headers, rawBase64) is never cached.");
+  }
+  const cached = plan ? await plan.cache.get(plan.key, plan.age) : undefined;
+  if (!cached && isCacheOnly(options))
+    throw noCachedData("lockdown and minAge only read from the cache, and it has no such entry for this page.");
+  // A cached page is answered like a fetched one, from its bytes; there is nothing for the browser to render.
+  const browser = cached ? undefined : renderer;
   const docs = ctx.docs?.enabled ? ctx.docs : undefined;
   const onlyMainContent = options.onlyMainContent ?? true;
   const headers: Record<string, string> = { ...(options.headers ?? {}) };
@@ -314,19 +331,26 @@ async function scrapeInner(
   };
   const warnings: string[] = ignoredOptionWarnings(options);
 
-  const fetchBody = async (): Promise<FetchedResponse> =>
-    internal.upload
-      ? { url, status: 200, headers: new Headers(), contentType: internal.upload.contentType, body: internal.upload.body }
-      : safeFetch(url, {
-          headers,
-          deadline,
-          allowPrivateNetwork: config.allowPrivateNetwork,
-          maxBodyBytes: config.maxBodyBytes,
-          skipTlsVerification: options.skipTlsVerification,
-          userAgent: options.mobile
-            ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
-            : config.userAgent,
-        });
+  /** The last response `fetchBody` got from the network, which is what the cache stores when the plain fetch answered. */
+  let fetched: FetchedResponse | undefined;
+  const fetchBody = async (): Promise<FetchedResponse> => {
+    if (internal.upload) {
+      return { url, status: 200, headers: new Headers(), contentType: internal.upload.contentType, body: internal.upload.body };
+    }
+    if (cached)
+      return { url: cached.url, status: cached.status, headers: new Headers(), contentType: cached.contentType, body: cached.body };
+    fetched = await safeFetch(url, {
+      headers,
+      deadline,
+      allowPrivateNetwork: config.allowPrivateNetwork,
+      maxBodyBytes: config.maxBodyBytes,
+      skipTlsVerification: options.skipTlsVerification,
+      userAgent: options.mobile
+        ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+        : config.userAgent,
+    });
+    return fetched;
+  };
 
   // The file as it is, whatever it is: never rendered, so the browser is not involved.
   if (formats.rawBase64) {
@@ -375,7 +399,7 @@ async function scrapeInner(
       if (!reason) throw err;
       fallback = { reason };
     }
-  } else if (options.waitFor) {
+  } else if (options.waitFor && !(cached && renderer)) {
     warnings.push("waitFor is ignored without a browser");
   }
   if (browser && options.waitFor && options.waitFor > scrapeTimeout(config, options, formats) / 2) {
@@ -449,12 +473,15 @@ async function scrapeInner(
   };
 
   let page: FetchedPage | undefined;
+  /** What goes into the cache: the browser's rendered HTML, or the plain fetch's response. Never a fallback's or an empty page. */
+  let storable: CachedPage | undefined;
   if (fallback) {
     // The browser could not answer; the plain fetch is the last try, so its error is the one reported.
     page = await fetchPage(warnings);
     warnings.push(`Browser failed (${fallback.reason}); fell back to HTTP fetch, so scripts did not run.`);
   } else if (!browserResult || browserResult.nonHtml) {
     page = await fetchPage(warnings);
+    if (fetched) storable = { url: fetched.url, status: fetched.status, contentType: fetched.contentType, body: fetched.body };
   } else if (emptyBrowserPage(browserResult, options, deadline)) {
     // A 2xx page without content is usually one whose content needs the HTML the browser did not wait for or was blocked from;
     // the browser's answer stays unless the plain fetch finds something.
@@ -470,7 +497,16 @@ async function scrapeInner(
     } else {
       warnings.push("Browser returned no content, and an HTTP fetch found none either.");
     }
+  } else {
+    const type = browserResult.contentType.split(";")[0]?.trim() || "text/html";
+    storable = {
+      url: browserResult.url,
+      status: browserResult.status,
+      contentType: `${type}; charset=utf-8`,
+      body: new TextEncoder().encode(browserResult.rawHtml),
+    };
   }
+  if (plan?.write && storable && storable.status >= 200 && storable.status < 300) await plan.cache.put(plan.key, storable);
   const {
     url: finalUrl,
     status,
@@ -518,9 +554,10 @@ async function scrapeInner(
   }
   if (pdfMeta?.numPages) metadata.numPages = pdfMeta.numPages;
   if (pdfMeta?.totalPages) metadata.totalPages = pdfMeta.totalPages;
-  Object.assign(metadata, responseMetadata(sourceUrl, finalUrl, status, contentType));
-  // Without a browser (none configured, fastMode, or it failed) only the User-Agent says "mobile".
-  if (options.mobile && (page || !browserResult)) {
+  Object.assign(metadata, responseMetadata(sourceUrl, finalUrl, status, contentType, cached?.storedAt));
+  // Without a browser (none configured, fastMode, or it failed) only the User-Agent says "mobile". (A cached page keeps
+  // the answer it was stored with; a rendered one is not told apart from a fetched one here, so it gets no warning.)
+  if (options.mobile && (page || !browserResult) && !(cached && renderer)) {
     warnings.push("mobile only changes the User-Agent without a browser, and no mobile viewport is used -- your scrape may be partial");
   }
 
@@ -589,7 +626,7 @@ async function scrapeInner(
 }
 
 /** The metadata every document has, whatever produced it. */
-function responseMetadata(sourceUrl: string, finalUrl: string, status: number, contentType: string) {
+function responseMetadata(sourceUrl: string, finalUrl: string, status: number, contentType: string, cachedAt?: number) {
   return {
     sourceURL: sourceUrl,
     url: finalUrl,
@@ -597,7 +634,64 @@ function responseMetadata(sourceUrl: string, finalUrl: string, status: number, c
     contentType: contentType.split(";")[0]?.trim() || undefined,
     scrapeId: randomUUID(),
     proxyUsed: "basic",
-    cacheState: "miss",
+    cacheState: cachedAt === undefined ? "miss" : "hit",
+    cachedAt: cachedAt === undefined ? undefined : new Date(cachedAt).toISOString(),
+  };
+}
+
+const isCacheOnly = (options: ScrapeOptions) => !!options.lockdown || options.minAge !== undefined;
+
+const noCachedData = (why: string) => new AppError("SCRAPE_NO_CACHED_DATA", `No cached data is available: ${why}`);
+
+/** What the cache is asked and told for one scrape. */
+interface CachePlan {
+  cache: ScrapeCache;
+  key: CacheKey;
+  age: { minAge?: number; maxAge: number };
+  /** Store what the scrape fetched. */
+  write: boolean;
+}
+
+/**
+ * Whether and how this scrape uses the cache; undefined when it must not: no cache, uploads, `rawBase64` (the original bytes of
+ * a rendered page do not exist), actions (they change the page), custom headers (they may be a login), `maxAge: 0`.
+ * `lockdown` / `minAge` read only and take any entry up to `retention` old when `maxAge` is not given.
+ *
+ * The key holds what changes the stored bytes: the fetched URL, whether the browser rendered it (and `waitFor`, `blockAds`),
+ * `mobile`, `skipTlsVerification` and the languages (an `Accept-Language` header). The formats, selectors, `parsers` and LLM
+ * options act on the stored bytes afterwards, so they are not in it and one entry serves every request for the page.
+ */
+function cachePlan(
+  ctx: ScrapeContext,
+  url: string,
+  options: ScrapeOptions,
+  formats: NormalizedFormats,
+  internal: ScrapeInternalOptions,
+  rendered: boolean,
+): CachePlan | undefined {
+  const { cache } = ctx;
+  if (!cache || internal.upload || formats.rawBase64 || options.actions?.length || Object.keys(options.headers ?? {}).length)
+    return undefined;
+  const cacheOnly = isCacheOnly(options);
+  const maxAge = Math.min(Math.max(options.maxAge ?? (cacheOnly ? cache.retention : cache.defaultMaxAge), 0), cache.retention);
+  if (maxAge === 0 && !cacheOnly) return undefined;
+  const target = new URL(url);
+  target.hash = "";
+  const variant = [
+    rendered ? "browser" : "http",
+    rendered && options.blockAds === false ? "ads" : "",
+    rendered && options.waitFor ? `wait=${options.waitFor}` : "",
+    options.mobile ? "mobile" : "",
+    options.skipTlsVerification ? "insecure" : "",
+    options.location?.languages?.length ? `lang=${options.location.languages.join(",")}` : "",
+  ]
+    .filter(Boolean)
+    .join(";");
+  return {
+    cache,
+    key: { url: target.href, variant },
+    age: { minAge: options.minAge, maxAge },
+    write: !cacheOnly && options.storeInCache !== false,
   };
 }
 

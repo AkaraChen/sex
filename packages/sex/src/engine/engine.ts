@@ -1,9 +1,11 @@
+import { join } from "node:path";
 import { BaseEngine } from "@sex/core/engine.ts";
 import { AppError, notFound } from "@sex/core/errors.ts";
 import type { Config } from "../config.ts";
 import type { BatchScrapeRequest, CrawlRequest, ExtractRequest, MapRequest, MapResult } from "../schemas.ts";
 import { startBatchScrape } from "./batch.ts";
 import { BrowserPool } from "./browser.ts";
+import { SqliteScrapeCache } from "./cache.ts";
 import { crawlParamsFromPrompt, startCrawl } from "./crawl.ts";
 import { DocsConverter } from "./docs.ts";
 import { startExtract } from "./extract.ts";
@@ -19,9 +21,18 @@ export class Engine extends BaseEngine<Config> {
   override readonly llm: Llm;
   /** PDFs, office documents and images via here-docs, when SEX_DOCS is on. */
   override readonly docs: DocsConverter;
+  /** Fetched pages for `maxAge`, in `<dataDir>/cache.sqlite`; none without a data dir (one-shot CLI, tests). */
+  declare readonly cache?: SqliteScrapeCache;
 
   constructor(config: Config) {
     super(config);
+    if (config.dataDir) {
+      this.cache = new SqliteScrapeCache(join(config.dataDir, "cache.sqlite"), {
+        defaultMaxAge: config.cacheMaxAgeMs,
+        ttlMs: config.cacheTtlMs,
+        maxBytes: config.cacheMaxBytes,
+      });
+    }
     this.browser = new BrowserPool(config);
     this.llm = new Llm(config);
     this.docs = new DocsConverter(config);
@@ -94,6 +105,9 @@ export class Engine extends BaseEngine<Config> {
       docs: this.docs.enabled ? "here-docs (structured PDF/office, OCR)" : "off (unpdf text only)",
       jobs: this.config.dataDir ? `sqlite (${this.config.dataDir})` : "memory",
       documents: documentsLocation(this.config),
+      cache: this.cache
+        ? `sqlite (${this.config.dataDir}/cache.sqlite, default maxAge ${this.config.cacheMaxAgeMs} ms)`
+        : "off (no data dir)",
     };
   }
 
@@ -101,6 +115,7 @@ export class Engine extends BaseEngine<Config> {
     await this.backend?.close();
     await this.browser.close();
     await this.docs.close();
+    this.cache?.close();
     await super.close();
   }
 }

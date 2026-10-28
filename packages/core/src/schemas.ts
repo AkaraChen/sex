@@ -182,10 +182,23 @@ export const ScrapeOptions = z
       .optional()
       .describe('Every request is fetched directly ("basic"); "stealth" and "enhanced" add a warning.'),
     fastMode: z.boolean().optional().describe("Skip the browser and fetch the page over plain HTTP, so scripts do not run."),
-    maxAge: z.number().optional().describe("Ignored: there is no cache, so the page is always fetched fresh."),
-    storeInCache: z.boolean().optional().describe("Ignored: nothing is cached."),
-    minAge: z.number().int().min(0).optional().describe("Cache only; there is no cache, so this returns 404 SCRAPE_NO_CACHED_DATA."),
-    lockdown: z.boolean().optional().describe("Cache only; there is no cache, so true returns 404 SCRAPE_NO_CACHED_DATA."),
+    maxAge: z
+      .number()
+      .optional()
+      .describe(
+        "Use a cached copy of the page up to this many ms old (the server default is SEX_CACHE_MAX_AGE_MS, 0 = always fetch; 0 also skips storing). Without a cache (sex-lite) the page is always fetched fresh.",
+      ),
+    storeInCache: z
+      .boolean()
+      .optional()
+      .describe("Set false to not store this fetch in the cache (default true). No effect without a cache."),
+    minAge: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Cache only: return a cached copy at least this many ms old, never fetch; 404 SCRAPE_NO_CACHED_DATA if there is none."),
+    lockdown: z.boolean().optional().describe("Cache only: return a cached copy, never fetch; 404 SCRAPE_NO_CACHED_DATA if there is none."),
     redactPII: z
       .union([z.boolean(), z.record(z.string(), z.unknown())])
       .optional()
