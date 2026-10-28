@@ -11,16 +11,43 @@
 
 一个二进制，三个子命令：`search`、`fetch`、`serve`。`serve` 在同一个端口上同时提供 HTTP API 和 MCP（`/mcp`，只有 streamable HTTP，没有 stdio）；`http` 是 `serve` 的旧名，目前仍作为别名保留。
 
+只要搜索和抓取的话，还有一个轻量版 [sex-lite](#sex-lite)。
+
+仓库是 Bun workspace，三个包：
+
+| 包 | 内容 |
+|---|---|
+| `packages/core`（`@sex/core`） | 两个产品共用的部分：SearXNG 搜索、HTTP 抓取 + Defuddle 提取、SSRF 防护、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` 两个 MCP 工具、CLI 的公共部分 |
+| `packages/sex` | 完整版：在 core 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
+| `packages/sex-lite` | 轻量版：只用 core |
+
 ## 快速开始
 
 ```bash
 bun install                          # 同时装上本平台的 SearXNG 二进制
-bun src/cli.ts search "defuddle"     # sex 自己启动 SearXNG 子进程，用完即停
-bun src/cli.ts fetch https://stephango.com/saw
-bun src/cli.ts serve                 # HTTP API: http://127.0.0.1:3002/docs，MCP: http://127.0.0.1:3002/mcp
+bun run dev search "defuddle"        # 即 bun packages/sex/src/cli.ts；sex 自己启动 SearXNG 子进程，用完即停
+bun run dev fetch https://stephango.com/saw
+bun run dev serve                    # HTTP API: http://127.0.0.1:3002/docs，MCP: http://127.0.0.1:3002/mcp
 
 bun run build                        # 单文件可执行：dist/sex（内置 SearXNG、Lightpanda 和 here-docs）
 ```
+
+### sex-lite
+
+只有 `web_search` 和 `web_fetch`：没有浏览器、LLM、here-docs，也没有 map / crawl / batch / extract 和任务存储。CLI、HTTP API 和 MCP 都有，用法和 sex 一样：
+
+```bash
+bun run dev:lite search "defuddle"   # 即 bun packages/sex-lite/src/cli.ts
+bun run dev:lite fetch https://stephango.com/saw -f markdown,links
+bun run dev:lite serve               # POST /v2/search、POST /v2/scrape（兼容 Firecrawl），/docs，/health，MCP 在 /mcp
+
+bun run build:lite                   # dist/sex-lite（内置 SearXNG，约 130 MB；dist/sex 约 330 MB）
+docker build --target lite -t sex-lite .
+```
+
+- 能力：搜索（可带 `scrapeOptions`）；抓取支持 `markdown` / `html` / `rawHtml` / `links` / `images` / `attributes` 格式，HTML 用 Defuddle 提取，PDF 用 unpdf 抽纯文本。
+- 需要浏览器的选项（`actions`）和 LLM 格式（`json`、`summary` 等）返回 `501`，提示改用 sex；其它路由（如 `/v2/crawl`）是 `404`。
+- 配置：只认下表里 SearXNG、抓取、HTTP 相关的那些变量（`PORT`、`HOST`、`SEX_SEARXNG_*`、`SEX_ALLOW_PRIVATE_NETWORK`、`SEX_USER_AGENT`、`SEX_CONCURRENCY`、`SEX_TIMEOUT`、`SEX_MAX_BODY_BYTES`、`SEX_EXTRACT_WORKERS`、`SEX_LOG_LEVEL`、`SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`），含义相同。
 
 需要 LLM 功能时，先 `cp .env.example .env`，取消注释并填写 `SEX_LLM_MODEL`、`SEX_LLM_API_KEY` 等。
 
@@ -70,7 +97,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*`、`SEX_DOCS` 和 `SEX_SEARXNG_URL`。�
 - **超时和取消**：转换受请求的 `timeout`（默认 `SEX_TIMEOUT`）约束，超时返回 `408 SCRAPE_TIMEOUT`；客户端断开或任务被取消时立即停止，返回 408。OCR 一页大约几百毫秒，长扫描件需要调大 `timeout` 或用 `maxPages`。
 - **资源**：引擎在 `serve` 启动时加载（约 1–3 秒），每个进程一份，空闲时大约 200 MB 内存；OCR 吃 CPU，但跑在原生线程里，不阻塞事件循环。加载失败时 `serve` 直接以 `error: DOCS_UNAVAILABLE: ...` 退出。
 
-**运行方式**：`bun run build` 把 here-docs 和当前平台的原生引擎（约 160 MiB）一起打进 `dist/sex`（约 260 MiB）。原生库只能从磁盘上的真实文件加载，所以开了 `--docs` 后，第一次用到时会把它们解压到 `$XDG_CACHE_HOME/sex/docs-<hash>`（默认 `~/.cache/sex`，约 0.3–0.6 秒，之后复用；换版本自动换目录）。从源码运行（`bun src/cli.ts`）时直接用 `node_modules` 里的 here-docs。`bun scripts/build.ts --target bun-linux-arm64` 等可以构建其它平台，前提是 `node_modules` 里装了那个平台的原生包。支持的平台：Linux x64 / arm64（glibc 和 musl）、macOS arm64、Windows x64；Intel Mac 不支持。
+**运行方式**：`bun run build` 把 here-docs 和当前平台的原生引擎（约 160 MiB）一起打进 `dist/sex`（约 260 MiB）。原生库只能从磁盘上的真实文件加载，所以开了 `--docs` 后，第一次用到时会把它们解压到 `$XDG_CACHE_HOME/sex/docs-<hash>`（默认 `~/.cache/sex`，约 0.3–0.6 秒，之后复用；换版本自动换目录）。从源码运行（`bun run dev`）时直接用 `node_modules` 里的 here-docs。`bun packages/sex/scripts/build.ts --target bun-linux-arm64` 等可以构建其它平台，前提是 `node_modules` 里装了那个平台的原生包。支持的平台：Linux x64 / arm64（glibc 和 musl）、macOS arm64、Windows x64；Intel Mac 不支持。
 
 ### 浏览器
 
@@ -78,13 +105,13 @@ compose 通过 `.env` 读取 `SEX_LLM_*`、`SEX_DOCS` 和 `SEX_SEARXNG_URL`。�
 - **`--cdp-url ws://...`**（`SEX_CDP_URL`）：连接已经在运行的 CDP 浏览器，比如 Chrome，或者单独部署的 Lightpanda。sex 不启动任何进程；和 `--lightpanda` 同时设置时以 `--cdp-url` 为准。
 - 都不设：不用浏览器。
 
-`dist/sex`（以及 Docker 镜像）内置了 Lightpanda，`--lightpanda` 开箱即用：第一次用到时解压到 `$XDG_CACHE_HOME/sex/lightpanda-<版本>-<hash>/`（约 76 MB），之后复用。版本和每个平台的 SHA-256 固定在 `scripts/lightpanda.ts`（目前是 1.0.2），`bun run build` 第一次会从 GitHub Releases 下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`，压缩后让 `dist/sex` 增大约 23 MB。预编译版本只有 Linux x64 / arm64（glibc ≥ 2.35）和 macOS x64 / arm64，Windows 和 musl 没有。
+`dist/sex`（以及 Docker 镜像）内置了 Lightpanda，`--lightpanda` 开箱即用：第一次用到时解压到 `$XDG_CACHE_HOME/sex/lightpanda-<版本>-<hash>/`（约 76 MB），之后复用。版本和每个平台的 SHA-256 固定在 `packages/sex/scripts/lightpanda.ts`（目前是 1.0.2），`bun run build` 第一次会从 GitHub Releases 下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`，压缩后让 `dist/sex` 增大约 23 MB。预编译版本只有 Linux x64 / arm64（glibc ≥ 2.35）和 macOS x64 / arm64，Windows 和 musl 没有。
 
-从源码运行（`bun src/cli.ts`）时没有内置的二进制，需要自己放到 PATH 上，或用 `--lightpanda-path`（`SEX_LIGHTPANDA_PATH`）指定；`--lightpanda-path` 也会覆盖内置的版本：
+从源码运行（`bun run dev`）时没有内置的二进制，需要自己放到 PATH 上，或用 `--lightpanda-path`（`SEX_LIGHTPANDA_PATH`）指定；`--lightpanda-path` 也会覆盖内置的版本：
 
 ```bash
 gh release download 1.0.2 -R lightpanda-io/browser -p lightpanda-x86_64-linux -O lightpanda && chmod +x lightpanda
-bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightpanda
+bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpanda
 ```
 
 **子进程的回收**：`SIGINT` / `SIGTERM` 时 sex 会先关掉子进程再退出，但 `SIGKILL` 无法被捕获。所以在 Linux 上，sex 用 `setpriv --pdeathsig TERM -- lightpanda serve ...` 启动子进程（`setpriv` 属于 util-linux ≥ 2.33，Debian / Ubuntu 和 Docker 镜像里都有）：sex 被 `kill -9` 后，内核会给子进程发 `SIGTERM`，不会留下孤儿。macOS 没有对应机制（pdeathsig 是 Linux 特有的），Linux 上没有 `setpriv` 时也一样，sex 只能直接 spawn，此时 `kill -9` sex 会留下孤儿 Lightpanda 进程，需要自己清理。`lightpanda started` 日志里的 `spawn=setpriv` / `spawn=direct` 标明了实际用的是哪种方式。
@@ -175,7 +202,7 @@ const fc = new Firecrawl({ apiUrl: "http://localhost:3002", apiKey: "anything" }
 await fc.scrape("https://example.com", { formats: ["markdown"] });
 ```
 
-`bun test/sdk-smoke.ts http://localhost:3002` 会用官方 JS SDK 把主要接口跑一遍。
+`bun packages/sex/test/sdk-smoke.ts http://localhost:3002` 会用官方 JS SDK 把主要接口跑一遍。
 
 **和 Firecrawl 的差异**
 
@@ -191,7 +218,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - **一个 deadline**：一次 scrape 只有一个期限，由 `timeout`（默认 `SEX_TIMEOUT`，从开始抓取算起，排队不算）和调用方的取消共同决定；请求用到 LLM（LLM 格式 json / summary / question / highlights，或 `checkPromptInjection`）且没传 `timeout` 时，默认值是 `max(SEX_TIMEOUT, 60000)`（Firecrawl 对 json 同样把 30 秒改成 60 秒）。抓取或渲染、`waitFor`、`wait` action、`executeJavascript`、页面脚本、正文抽取和文档转换都在这个期限内；到期返回 `408 SCRAPE_TIMEOUT`，浏览器页面随即关闭并释放名额。客户端断开或任务被取消返回 `408 TIMEOUT`。
   - LLM 格式（json / summary / question / highlights）和 `checkPromptInjection` 的调用也在这个期限内，到期同样返回 `408 SCRAPE_TIMEOUT`；每次 LLM 调用的预算是 `min(SEX_LLM_TIMEOUT, 期限剩余时间)`。例外：extract 任务自己抓页面时开了 `checkPromptInjection`，它的 LLM 调用不受页面 `timeout` 约束，只受任务取消和 `SEX_LLM_TIMEOUT` 约束。
   - `waitFor` 加上所有 `wait` action 的 `milliseconds` 超过 60000 返回 `400`；`waitFor` 超过 `timeout` 的一半时不拒绝，只在 `warning` 里提醒。`wait` action 的 `milliseconds` 与 `selector` 必须二选一（以前两者都不给时默认等 1 秒）。
-- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
+- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `packages/core/src/schemas.ts` 和 `packages/sex/src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
 - `includePaths` / `excludePaths` 的正则会被启发式检查：带无界量词的分组再被无界量词修饰（`(a+)+`）、或分支相互重叠的量词分组（`(a|a)*`）会返回 `400`；每条 ≤ 1000 字符、≤ 100 条，匹配前 URL 截到 2048 字符。look-around 和反向引用仍然允许。
 - LLM 相关的格式（json / summary / question / highlights）和 extract：
   - 带 JSON Schema 时，模型输出会按原始 schema 校验（Ajv，按 `$schema` 选择 draft-07 / 2019-09 / 2020-12，未写时按 2020-12；`format` 不校验）。输出不是合法 JSON 或不符合 schema 时，会把错误发回给模型修正一次，仍不符合才返回 `422 LLM_INVALID_OUTPUT`。schema 本身不合法时，在开始抓取之前就返回 `400 BAD_REQUEST`。根节点是数组的 schema 会包成 `{ items }` 发给模型（structured output 要求根节点是对象），返回时再拆开。
@@ -216,7 +243,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 
 ### 错误码
 
-错误响应是 `{ "success": false, "code", "error", "retryable", "details"? }`（请求体校验失败的 400 没有 `retryable`），HTTP 状态码表示错误类别：不管重试几次结果都一样的失败不会用 502/503，因为官方 SDK 会自动重试 502（LLM 费用和延迟会翻几倍）。`retryable` 表示重试同一个请求是否可能成功。所有错误码、状态码和 `retryable` 集中定义在 `src/errors.ts` 的 `ERRORS` 里。
+错误响应是 `{ "success": false, "code", "error", "retryable", "details"? }`（请求体校验失败的 400 没有 `retryable`），HTTP 状态码表示错误类别：不管重试几次结果都一样的失败不会用 502/503，因为官方 SDK 会自动重试 502（LLM 费用和延迟会翻几倍）。`retryable` 表示重试同一个请求是否可能成功。所有错误码、状态码和 `retryable` 集中定义在 `packages/core/src/errors.ts` 的 `ERRORS` 里。
 
 | 状态 | code | 说明 | `retryable` |
 |---|---|---|---|
@@ -282,15 +309,15 @@ HTTP 传输（`serve`，端点 `/mcp`）始终是无状态的（SDK v2 的行为
 ```bash
 bun run verify    # bun check && bun run lint && bun test
 bun run format    # biome --write
-bun test          # 单元 + 集成测试（本地 fixture 站点、mock SearXNG、mock LLM，不依赖外网；test/docs.test.ts 会真的跑 here-docs，平台不支持时自动跳过）
+bun test          # 单元 + 集成测试（本地 fixture 站点、mock SearXNG、mock LLM，不依赖外网；packages/sex/test/docs.test.ts 会真的跑 here-docs，平台不支持时自动跳过）
 ```
 
 可选的集成测试需要外部服务，没有设置对应变量时会跳过：
 
 ```bash
-SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test test/browser.test.ts   # 需要一个正在运行的 CDP 浏览器（如 Lightpanda 或 Chrome）
-SEX_TEST_SEARXNG=1 bun test test/searxng.test.ts                      # 启动真的 SearXNG 二进制（可用 SEX_TEST_SEARXNG_PATH 指定），需要外网
-SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
+SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test packages/sex/test/browser.test.ts   # 需要一个正在运行的 CDP 浏览器（如 Lightpanda 或 Chrome）
+SEX_TEST_SEARXNG=1 bun test packages/core/test/searxng.test.ts                   # 启动真的 SearXNG 二进制（可用 SEX_TEST_SEARXNG_PATH 指定），需要外网
+SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test packages/sex/test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
 ```
 
 其它检查：`bun check`（类型检查），`bun run lint`（Biome）。

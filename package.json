@@ -1,16 +1,19 @@
 {
-  "name": "sex",
+  "name": "sex-workspace",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.3",
+  "workspaces": ["packages/*"],
   "scripts": {
-    "dev": "bun src/cli.ts",
+    "dev": "bun packages/sex/src/cli.ts",
+    "dev:lite": "bun packages/sex-lite/src/cli.ts",
     "typecheck": "bun check",
-    "lint": "biome check src test scripts",
-    "format": "biome check --write src test scripts",
+    "lint": "biome check packages",
+    "format": "biome check --write packages",
     "test": "bun test",
     "verify": "bun check && bun run lint && bun test",
-    "build": "bun scripts/build.ts"
+    "build": "bun packages/sex/scripts/build.ts",
+    "build:lite": "bun packages/sex-lite/scripts/build.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.3",
@@ -20,30 +23,5 @@
   },
   "peerDependencies": {
     "typescript": "^7.0.2"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/server": "^2.4.0",
-    "@orpc/openapi": "^1.16.1",
-    "@orpc/server": "^1.16.1",
-    "@orpc/zod": "^1.16.1",
-    "@searxng-js/searxng": "0.1.0",
-    "ajv": "^8.20.0",
-    "bunqueue": "2.9.20",
-    "citty": "^0.2.2",
-    "defuddle": "^0.19.6",
-    "here-docs": "github:AkaraChen/here-docs#40febc7",
-    "hono": "^4.13.14",
-    "ipaddr.js": "^2",
-    "linkedom": "^0.18.14",
-    "p-limit": "^7.3.3",
-    "puppeteer-core": "^25.16.0",
-    "unpdf": "^1.9.1",
-    "xsai": "^1.0.0-beta.3",
-    "zod": "^4.6.7"
-  },
-  "version": "0.1.0",
-  "description": "Self-hosted Firecrawl-compatible web search (SearXNG) + fetch (Defuddle) CLI, HTTP API and MCP server",
-  "bin": {
-    "sex": "src/cli.ts"
   }
 }

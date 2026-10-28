@@ -1,0 +1,140 @@
+import { McpServer } from "@modelcontextprotocol/server";
+import { guard, json, registerFetchAndSearch, ToolMessageError } from "@sex/core/mcp/tools.ts";
+import { z } from "zod";
+import type { Engine } from "../engine/engine.ts";
+import type { JobRecord } from "../engine/jobs/index.ts";
+import { CrawlRequest, type Document, ExtractRequest, MapRequest } from "../schemas.ts";
+import { VERSION } from "../version.ts";
+
+const EXTRACT_WAIT_MS = 5 * 60 * 1000;
+// MCP results land in an LLM context, so they are sized well below the HTTP API's budgets.
+const MCP_PAGE_BUDGET_CHARS = 200_000;
+const MCP_MAP_DEFAULT_LIMIT = 200;
+
+const McpCrawlRequest = CrawlRequest.extend({
+  limit: CrawlRequest.shape.limit.describe("Max pages. Defaults to 20 for this tool."),
+});
+
+const McpMapRequest = MapRequest.extend({
+  limit: MapRequest.shape.limit.describe(`Max links. Defaults to ${MCP_MAP_DEFAULT_LIMIT} for this tool.`),
+});
+
+const TEXT_FIELDS = ["markdown", "html", "rawHtml"] as const;
+
+/** Shortens a single oversized document's text fields until its serialized form fits `maxChars`. */
+function fitDocument(doc: Document, maxChars: number): { doc: Document; truncated: boolean } {
+  const out: Record<string, unknown> = { ...doc };
+  let truncated = false;
+  for (let size = json(out).length; size > maxChars; size = json(out).length) {
+    const fields = TEXT_FIELDS.filter((k) => typeof out[k] === "string" && (out[k] as string).length > 0);
+    if (fields.length === 0) break;
+    const share = Math.ceil((size - maxChars + 1_000) / fields.length);
+    for (const k of fields) {
+      const value = out[k] as string;
+      out[k] = value.slice(0, Math.max(0, value.length - share));
+    }
+    truncated = true;
+  }
+  return { doc: out as Document, truncated };
+}
+
+const INSTRUCTIONS =
+  "Web search (SearXNG) and page fetching (Defuddle). Use web_search to find pages, web_fetch to read one page as markdown, web_map to list a site's URLs, web_crawl/web_crawl_status to collect many pages, web_extract for LLM-structured data.";
+
+/**
+ * The MCP tools (`web_*`). They are served over streamable HTTP at `/mcp` by `src/http/server.ts`; there is no stdio transport.
+ * Keep this module free of imports from `../http` so the two do not form a cycle.
+ */
+export function buildServer(engine: Engine): McpServer {
+  const server = new McpServer({ name: "sex", version: VERSION }, { instructions: INSTRUCTIONS });
+
+  registerFetchAndSearch(server, engine, { llmFormats: true });
+
+  server.registerTool(
+    "web_map",
+    {
+      description:
+        "List URLs of a website (sitemaps, on-page links and search index) without fetching their content. Use `search` to rank URLs by relevance.",
+      annotations: { title: "Map website", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
+      inputSchema: McpMapRequest,
+    },
+    (args, ctx) =>
+      guard(async () => {
+        const links = await engine.map({ ...args, limit: args.limit ?? MCP_MAP_DEFAULT_LIMIT }, ctx.mcpReq.signal);
+        return json({ links });
+      }),
+  );
+
+  server.registerTool(
+    "web_crawl",
+    {
+      description:
+        "Start an asynchronous crawl from a URL, following links within the site. Returns a job id; poll it with web_crawl_status. Keep `limit` small.",
+      annotations: { title: "Start crawl", readOnlyHint: false, openWorldHint: true, destructiveHint: false },
+      inputSchema: McpCrawlRequest,
+    },
+    (args) =>
+      guard(async () => {
+        // The tool's default limit sits below prompt-derived and explicit options.
+        const job = await engine.crawl(args, { limit: 20 });
+        return json({ id: job.id, status: job.status, message: "Crawl started. Use web_crawl_status with this id." });
+      }),
+  );
+
+  server.registerTool(
+    "web_crawl_status",
+    {
+      description:
+        "Get the status and scraped pages of a crawl started with web_crawl. Large results are paginated; pass `skip` from the previous response.",
+      annotations: { title: "Crawl status", readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+      inputSchema: z.object({ id: z.string(), skip: z.number().int().nonnegative().optional() }),
+    },
+    (args) =>
+      guard(async () => {
+        const job = await engine.getJob(args.id, "crawl");
+        const page = await engine.jobs.store.documents(job.id, args.skip ?? 0, MCP_PAGE_BUDGET_CHARS);
+        const fitted = page.data.map((doc) => fitDocument(doc, MCP_PAGE_BUDGET_CHARS));
+        const truncated = fitted.some((f) => f.truncated);
+        const errors = await engine.jobs.store.errors(job.id);
+        return json({
+          status: job.status,
+          total: job.total,
+          completed: job.completed,
+          nextSkip: page.nextSkip,
+          errors: errors.length,
+          data: fitted.map((f) => f.doc),
+          ...(truncated ? { truncated: true } : {}),
+        });
+      }),
+  );
+
+  server.registerTool(
+    "web_extract",
+    {
+      description:
+        "Extract structured data from one or more URLs with an LLM, following a prompt and/or JSON schema. A trailing /* on a URL covers the whole site. Waits for the result.",
+      annotations: { title: "Extract structured data", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
+      inputSchema: ExtractRequest,
+    },
+    (args, ctx) =>
+      guard(async () => {
+        const abortSignal = ctx.mcpReq.signal;
+        const { job: started } = await engine.extract(args);
+        const deadline = Date.now() + EXTRACT_WAIT_MS;
+        let job: JobRecord = started;
+        while (job.status === "scraping" && Date.now() < deadline && !abortSignal.aborted) {
+          await Bun.sleep(500);
+          job = await engine.getJob(started.id, "extract");
+        }
+        if (job.status === "scraping") await engine.cancelJob(job).catch(() => {});
+        if (job.status !== "completed") throw new ToolMessageError(`Extract ${job.status}: ${job.error ?? "timed out"}`);
+        return json({
+          data: job.result,
+          ...(job.warning ? { warning: job.warning } : {}),
+          ...(job.sources ? { sources: job.sources } : {}),
+        });
+      }),
+  );
+
+  return server;
+}

@@ -1,4 +1,4 @@
 node_modules
 dist
 .git
-test
+packages/*/test

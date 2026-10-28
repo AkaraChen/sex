@@ -1,15 +1,36 @@
-FROM oven/bun:1.4.3 AS build
+# sex (default target) or sex-lite (`docker build --target lite .`).
+FROM oven/bun:1.4.3 AS source
 WORKDIR /app
-COPY package.json bun.lock ./
+COPY package.json bun.lock bunfig.toml tsconfig.json ./
+COPY packages/core/package.json packages/core/
+COPY packages/sex/package.json packages/sex/
+COPY packages/sex-lite/package.json packages/sex-lite/
 RUN bun install --frozen-lockfile
-COPY tsconfig.json ./
-COPY scripts ./scripts
-COPY src ./src
-# One executable with SearXNG (linux-x64 only), Lightpanda (version and SHA-256 pinned in scripts/lightpanda.ts; downloaded
-# here) and here-docs with its native engines embedded (see scripts/build.ts).
+COPY packages ./packages
+
+# One executable with SearXNG embedded (linux-x64 only); no browser, LLM or document converter.
+FROM source AS build-lite
+RUN bun run build:lite
+
+FROM debian:trixie-slim AS lite
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=build-lite /app/dist/sex-lite /usr/local/bin/sex-lite
+# The embedded SearXNG unpacks to $HOME/.cache/searxng{,-js} on first use; the home of nobody (/nonexistent) is not writable.
+ENV HOME=/tmp
+USER nobody
+ENV HOST=0.0.0.0
+EXPOSE 3002
+ENTRYPOINT ["sex-lite"]
+CMD ["serve"]
+
+# One executable with SearXNG (linux-x64 only), Lightpanda (version and SHA-256 pinned in packages/sex/scripts/lightpanda.ts;
+# downloaded here) and here-docs with its native engines embedded (see packages/sex/scripts/build.ts).
+FROM source AS build
 RUN bun run build
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim AS sex
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
