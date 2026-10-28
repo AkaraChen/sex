@@ -10,6 +10,7 @@ const extracted = (markdown: string): PageExtractResult => ({
   attributes: [],
   html: "",
   markdown,
+  notes: [],
   defuddle: { title: "", description: "", author: "", published: "", site: "", image: "", language: "", wordCount: 0 },
 });
 
@@ -70,7 +71,7 @@ describe("browser failure falls back to plain HTTP", () => {
       const { document } = await scrapeUrl(ctxWith(browser), url());
       expect(browser.calls).toBe(1);
       expect(document.markdown).toContain("Paragraph 1 about doc a");
-      expect(document.metadata.statusCode).toBe(200);
+      expect(document.metadata?.statusCode).toBe(200);
       expect(document.warning).toContain("fell back to HTTP fetch");
       expect(document.warning).toContain(`${code}: fake ${code}`);
     });
@@ -151,7 +152,7 @@ describe("browser failure falls back to plain HTTP", () => {
     const before = emptyHits;
     const { document } = await scrapeUrl(ctxWith(browser), `http://127.0.0.1:${empty.port}/gone`);
     expect(emptyHits).toBe(before);
-    expect(document.metadata.statusCode).toBe(404);
+    expect(document.metadata?.statusCode).toBe(404);
     expect(document.warning).toBeUndefined();
   });
 

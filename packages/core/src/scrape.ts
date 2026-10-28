@@ -339,6 +339,7 @@ async function scrapeInner(
     pdfMeta: undefined,
   };
 
+  if (extracted?.notes.length) warnings.push(...extracted.notes);
   let markdown = plainMarkdown ?? extracted?.markdown ?? "";
   const metadata: Record<string, unknown> = { ...(extracted?.metadata ?? {}) };
   // Repeated <meta> tags can yield arrays (page-script `add`); the schema types these keys as strings.
