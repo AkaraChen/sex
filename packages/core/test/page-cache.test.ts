@@ -141,17 +141,49 @@ describe("page cache (core)", () => {
     expect((await scrape("/page")).metadata?.cacheState).toBe("hit");
   });
 
-  test("maxAge is capped at the retention, and maxAge 0 skips the cache both ways", async () => {
+  test("maxAge is capped at the retention", async () => {
     const cache = new MapCache(0, 5_000);
     const { scrape } = setup(cache);
     fresh("/page");
     await scrape("/page", { maxAge: 99_999_999 });
     expect(cache.gets.at(-1)?.age.maxAge).toBe(5_000);
-    cache.entries.clear();
-    cache.gets = [];
-    await scrape("/page", { maxAge: 0 });
-    expect(cache.entries.size).toBe(0);
-    expect(cache.gets).toHaveLength(0);
+  });
+
+  test("maxAge 0 does not read but stores, so it refreshes the entry", async () => {
+    const cache = new MapCache();
+    const { e } = setup(cache);
+    const body = { v: "first" };
+    const local = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          `<html><head><title>T</title></head><body><main><h1>T</h1>${`<p>${body.v} version of the text. </p>`.repeat(8)}</main></body></html>`,
+          {
+            headers: { "content-type": "text/html" },
+          },
+        ),
+    });
+    try {
+      const url = `http://127.0.0.1:${local.port}/x`;
+      const get = (options: Record<string, unknown>) => e.scrape({ url, ...options });
+      const a = await get({ maxAge: 0 });
+      expect(a.metadata?.cacheState).toBe("miss");
+      expect(cache.gets).toHaveLength(0);
+      expect(cache.entries.size).toBe(1);
+      body.v = "second";
+      const b = await get({ maxAge: 60_000 });
+      expect(b.metadata?.cacheState).toBe("hit");
+      expect(b.markdown).toContain("first version");
+      // maxAge 0 again replaces it with the current page.
+      expect((await get({ maxAge: 0 })).markdown).toContain("second version");
+      expect((await get({ maxAge: 60_000 })).markdown).toContain("second version");
+      // ...unless it is told not to store.
+      body.v = "third";
+      await get({ maxAge: 0, storeInCache: false });
+      expect((await get({ maxAge: 60_000 })).markdown).toContain("second version");
+    } finally {
+      local.stop(true);
+    }
   });
 
   test("storeInCache: false reads the cache but does not store", async () => {

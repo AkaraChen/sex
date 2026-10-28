@@ -308,7 +308,7 @@ async function scrapeInner(
   if (!plan && isCacheOnly(options)) {
     throw noCachedData("lockdown and minAge only read from the cache, and this request (actions, headers, rawBase64) is never cached.");
   }
-  const cached = plan ? await plan.cache.get(plan.key, plan.age) : undefined;
+  const cached = plan?.read ? await plan.cache.get(plan.key, plan.age) : undefined;
   if (!cached && isCacheOnly(options))
     throw noCachedData("lockdown and minAge only read from the cache, and it has no such entry for this page.");
   // A cached page is answered like a fetched one, from its bytes; there is nothing for the browser to render.
@@ -648,13 +648,17 @@ interface CachePlan {
   cache: ScrapeCache;
   key: CacheKey;
   age: { minAge?: number; maxAge: number };
+  /** Look the page up; false for `maxAge: 0`, which fetches fresh and replaces the entry. */
+  read: boolean;
   /** Store what the scrape fetched. */
   write: boolean;
 }
 
 /**
  * Whether and how this scrape uses the cache; undefined when it must not: no cache, uploads, `rawBase64` (the original bytes of
- * a rendered page do not exist), actions (they change the page), custom headers (they may be a login), `maxAge: 0`.
+ * a rendered page do not exist), actions (they change the page), custom headers (they may be a login), and a request with no
+ * `maxAge` of its own on a server whose default is 0.
+ * `maxAge: 0` (like Firecrawl) does not read, but stores, so it refreshes the entry; `storeInCache: false` stops that.
  * `lockdown` / `minAge` read only and take any entry up to `retention` old when `maxAge` is not given.
  *
  * The key holds what changes the stored bytes: the fetched URL, whether the browser rendered it (and `waitFor`, `blockAds`),
@@ -674,7 +678,7 @@ function cachePlan(
     return undefined;
   const cacheOnly = isCacheOnly(options);
   const maxAge = Math.min(Math.max(options.maxAge ?? (cacheOnly ? cache.retention : cache.defaultMaxAge), 0), cache.retention);
-  if (maxAge === 0 && !cacheOnly) return undefined;
+  if (!cacheOnly && options.maxAge === undefined && cache.defaultMaxAge === 0) return undefined;
   const target = new URL(url);
   target.hash = "";
   const variant = [
@@ -691,6 +695,7 @@ function cachePlan(
     cache,
     key: { url: target.href, variant },
     age: { minAge: options.minAge, maxAge },
+    read: cacheOnly || maxAge > 0,
     write: !cacheOnly && options.storeInCache !== false,
   };
 }
