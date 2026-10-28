@@ -180,7 +180,9 @@ describe("structured output validation (#8)", () => {
       n === 1 ? new Response("json_schema not supported", { status: 400 }) : chatCompletionStream('```json\n{"title":1}\n```'),
     );
     await expect(llmFor(s.url).extractJson("page", { schema })).rejects.toMatchObject({ code: "LLM_INVALID_OUTPUT" });
-    expect(s.bodies.map((b) => b.response_format?.type)).toEqual(["json_schema", undefined]);
+    // The rejected json_schema request, the fallback, then one correction round, still without response_format.
+    expect(s.bodies.length).toBe(3);
+    expect(s.bodies.map((b) => b.response_format?.type ?? "none")).toEqual(["json_schema", "none", "none"]);
   });
 
   test("draft-07 and 2019-09 schemas are accepted", async () => {

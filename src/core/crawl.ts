@@ -57,14 +57,7 @@ function validateDerived(out: Record<string, unknown>): Record<string, unknown> 
 /** Uses the LLM to turn a natural-language prompt into crawl options. */
 export async function crawlParamsFromPrompt(engine: Engine, url: string, prompt: string): Promise<Record<string, unknown>> {
   engine.llm.require("Crawl prompts");
-  const out = (await engine.llm.json(
-    "Crawl prompts",
-    `You configure a web crawler. Given a start URL and an instruction, return a JSON object with only the relevant keys among:
-includePaths (string[] of regexes matched against URL pathnames), excludePaths (string[] of regexes), maxDiscoveryDepth (integer),
-crawlEntireDomain (boolean, follow links outside the start path), allowSubdomains (boolean), allowExternalLinks (boolean),
-sitemap ("include" | "skip" | "only"), limit (integer, max pages).`,
-    `Start URL: ${url}\nInstruction: ${prompt}`,
-  )) as Record<string, unknown>;
+  const out = await engine.llm.crawlOptions(url, prompt);
   return validateDerived(out ?? {});
 }
 
