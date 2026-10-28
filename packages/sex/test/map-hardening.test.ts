@@ -64,9 +64,9 @@ afterAll(async () => {
 
 describe("map hardening", () => {
   test("map with search survives malformed percent escapes", async () => {
-    const ok = await engine.map({ url: bombBase, search: "ok" });
+    const { links: ok } = await engine.map({ url: bombBase, search: "ok" });
     expect(ok.map((l) => l.url)).toContain(`${bombBase}/ok-page`);
-    const bad = await engine.map({ url: bombBase, search: "zz" });
+    const { links: bad } = await engine.map({ url: bombBase, search: "zz" });
     expect(bad.map((l) => l.url)).toContain(`${bombBase}/a%zz`);
   });
 

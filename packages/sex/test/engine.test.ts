@@ -142,7 +142,7 @@ describe("search", () => {
 
 describe("map", () => {
   test("combines page links and sitemap, scoped to the site", async () => {
-    const links = await engine.map({ url: site.url });
+    const { links } = await engine.map({ url: site.url });
     const urls = links.map((l) => l.url);
     expect(urls).toContain(`${site.url}/`);
     expect(urls).toContain(`${site.url}/docs/a`);
@@ -151,7 +151,71 @@ describe("map", () => {
   });
 
   test("search ranks matching URLs first", async () => {
-    const links = await engine.map({ url: site.url, search: "private" });
+    const { links } = await engine.map({ url: site.url, search: "private" });
     expect(links[0]?.url).toBe(`${site.url}/private/x`);
+  });
+
+  test("filterByPath keeps the start path by default and can be turned off", async () => {
+    const scoped = await engine.map({ url: `${site.url}/docs/a` });
+    expect(scoped.links.map((l) => l.url).every((u) => new URL(u).pathname.startsWith("/docs/a"))).toBe(true);
+    expect(scoped.links.map((l) => new URL(l.url).pathname)).not.toContain("/docs/b");
+    const all = await engine.map({ url: `${site.url}/docs/a`, filterByPath: false });
+    expect(all.links.map((l) => new URL(l.url).pathname)).toContain("/docs/b");
+  });
+
+  test("includePaths and excludePaths match the path", async () => {
+    const inc = await engine.map({ url: site.url, includePaths: ["^/docs/"] });
+    expect(inc.links.length).toBeGreaterThan(0);
+    expect(inc.links.every((l) => new URL(l.url).pathname.startsWith("/docs/"))).toBe(true);
+    const exc = await engine.map({ url: site.url, excludePaths: ["^/docs/"] });
+    expect(exc.links.map((l) => new URL(l.url).pathname)).not.toContain("/docs/a");
+  });
+
+  test("unsafe path regexes are rejected", async () => {
+    await expect(engine.map({ url: site.url, includePaths: ["(a+)+$"] })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  test("returns an id, and a warning when almost nothing is found", async () => {
+    const full = await engine.map({ url: site.url });
+    expect(full.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(full.warning).toBeUndefined();
+    const empty = await engine.map({ url: site.url, includePaths: ["^/nothing-here$"] });
+    expect(empty.links).toEqual([]);
+    expect(empty.warning).toBeString();
+  });
+
+  test("useIndex and ignoreCache are accepted and ignored", async () => {
+    const { links } = await engine.map({ url: site.url, useIndex: false, ignoreCache: true });
+    expect(links.length).toBeGreaterThan(1);
+  });
+
+  test("the entry page is downloaded once, not again to resolve redirects", async () => {
+    const methods: string[] = [];
+    const counting = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        if (new URL(req.url).pathname === "/") methods.push(req.method);
+        return fetch(`${site.url}${new URL(req.url).pathname}`, { method: req.method });
+      },
+    });
+    try {
+      await engine.map({ url: `http://127.0.0.1:${counting.port}/`, sitemap: "skip" });
+      expect(methods.filter((m) => m === "GET")).toHaveLength(1);
+    } finally {
+      counting.stop(true);
+    }
+  });
+
+  test("the entry redirect decides the host", async () => {
+    const hop = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.redirect(`${site.url}/docs/`, 302) });
+    try {
+      const { links } = await engine.map({ url: `http://localhost:${hop.port}/` });
+      const urls = links.map((l) => l.url);
+      expect(urls).toContain(`${site.url}/docs/b`);
+      expect(urls.every((u) => u.startsWith(site.url))).toBe(true);
+    } finally {
+      hop.stop(true);
+    }
   });
 });

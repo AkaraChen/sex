@@ -1,7 +1,7 @@
 import { BaseEngine } from "@sex/core/engine.ts";
 import { AppError, notFound } from "@sex/core/errors.ts";
 import type { Config } from "../config.ts";
-import type { BatchScrapeRequest, CrawlRequest, ExtractRequest, MapLink, MapRequest } from "../schemas.ts";
+import type { BatchScrapeRequest, CrawlRequest, ExtractRequest, MapRequest, MapResult } from "../schemas.ts";
 import { startBatchScrape } from "./batch.ts";
 import { BrowserPool } from "./browser.ts";
 import { crawlParamsFromPrompt, startCrawl } from "./crawl.ts";
@@ -53,7 +53,7 @@ export class Engine extends BaseEngine<Config> {
     }
   }
 
-  map(req: MapRequest, signal?: AbortSignal): Promise<MapLink[]> {
+  map(req: MapRequest, signal?: AbortSignal): Promise<MapResult> {
     return mapSite(this, req, signal);
   }
 

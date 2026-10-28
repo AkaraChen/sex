@@ -83,7 +83,11 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
   const targets = new Set<string>();
   for (const u of urls) {
     if (u.endsWith("/*")) {
-      const links = await mapSite(engine, { url: u.slice(0, -1), limit: engine.config.extractWildcardPages, search: req.prompt }, signal);
+      const { links } = await mapSite(
+        engine,
+        { url: u.slice(0, -1), limit: engine.config.extractWildcardPages, search: req.prompt },
+        signal,
+      );
       for (const l of links) targets.add(l.url);
     } else targets.add(u);
   }

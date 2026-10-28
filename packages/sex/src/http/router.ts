@@ -106,7 +106,7 @@ export const router = {
     .route({ method: "POST", path: "/v2/map", tags: ["Map"], summary: "List the URLs of a website" })
     .input(MapRequest)
     .output(MapResponse)
-    .handler(async ({ input, context, signal }) => ({ success: true as const, links: await context.engine.map(input, signal) })),
+    .handler(async ({ input, context, signal }) => ({ success: true as const, ...(await context.engine.map(input, signal)) })),
 
   crawl: {
     start: base

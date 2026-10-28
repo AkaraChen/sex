@@ -4,9 +4,10 @@ import { log } from "@sex/core/log.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "@sex/core/net.ts";
 import { scrapeUrl } from "@sex/core/scrape.ts";
 import { clean, searxng } from "@sex/core/search.ts";
-import type { MapLink, MapRequest } from "../schemas.ts";
+import type { MapLink, MapRequest, MapResult } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
 import { fetchRobots, type Robots } from "./robots.ts";
+import { basePathOf, compilePatterns, matchesPatterns } from "./url-filter.ts";
 
 const MAX_SITEMAPS = 50;
 const MAX_SITEMAP_BYTES = 25 * 1024 * 1024;
@@ -107,16 +108,46 @@ export function normalizeUrl(raw: string, ignoreQuery: boolean): string | undefi
   }
 }
 
-export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSignal): Promise<MapLink[]> {
-  const start = parseHttpUrl(req.url.trim());
+export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSignal): Promise<MapResult> {
+  let start = parseHttpUrl(req.url.trim());
   await assertPublicUrl(start, engine.config.allowPrivateNetwork);
+  const includes = compilePatterns(req.includePaths, "includePaths");
+  const excludes = compilePatterns(req.excludePaths, "excludePaths");
   const limit = req.limit ?? 5000;
   const mode = req.sitemap ?? "include";
   const includeSubdomains = req.includeSubdomains ?? true;
   const ignoreQuery = req.ignoreQueryParameters ?? true;
-  const baseHost = stripWww(start.hostname);
   // Keeps the code of the old plain timeout: map never had a SCRAPE_TIMEOUT of its own.
   const deadline = Deadline.start(req.timeout ?? 60_000, { signal, expiredCode: "TIMEOUT" });
+
+  // Like Firecrawl, the site is the one the entry URL redirects to; safeFetch checks every hop.
+  let warning: string | undefined;
+  const resolveOpts = {
+    deadline: deadline.slice(10_000),
+    allowPrivateNetwork: engine.config.allowPrivateNetwork,
+    userAgent: engine.config.userAgent,
+    headersOnly: true,
+  };
+  try {
+    // HEAD where the server allows it; either way only the headers are read, the page itself is scraped below.
+    const head = await safeFetch(start.href, { ...resolveOpts, method: "HEAD" }).catch((err) => {
+      deadline.signal.throwIfAborted();
+      log.debug("map: HEAD on the start URL failed", { error: err instanceof Error ? err.message : String(err) });
+      return undefined;
+    });
+    const res = head && head.status < 400 ? head : await safeFetch(start.href, resolveOpts);
+    start = parseHttpUrl(res.url);
+  } catch (err) {
+    log.debug("map: resolving the start URL failed", { error: err instanceof Error ? err.message : String(err) });
+    deadline.signal.throwIfAborted();
+  }
+  const baseHost = stripWww(start.hostname);
+  const basePath = basePathOf(start.pathname);
+  const inPath = (url: string) => {
+    const { pathname } = new URL(url);
+    if ((req.filterByPath ?? true) && basePath !== "/" && !`${pathname}/`.startsWith(basePath)) return false;
+    return matchesPatterns(pathname, includes, excludes);
+  };
 
   const inScope = (url: string) => {
     try {
@@ -164,7 +195,7 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   const seen = new Map<string, MapLink>();
   for (const raw of ordered) {
     const url = normalizeUrl(raw, ignoreQuery);
-    if (!url || !inScope(url) || seen.has(url)) continue;
+    if (!url || !inScope(url) || !inPath(url) || seen.has(url)) continue;
     const meta = titles.get(raw) ?? titles.get(url);
     seen.set(url, { url, ...(meta?.title ? { title: meta.title } : {}), ...(meta?.description ? { description: meta.description } : {}) });
   }
@@ -180,5 +211,8 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
     const matching = scored.filter((x) => x.s > 0);
     links = (matching.length ? matching : scored).sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.l);
   }
-  return links.slice(0, limit);
+  links = links.slice(0, limit);
+  if (links.length <= 1)
+    warning = "Only one or no URLs were found. The site may block crawlers, need JavaScript, or the path filters may be too narrow.";
+  return { id: crypto.randomUUID(), links, ...(warning ? { warning } : {}) };
 }

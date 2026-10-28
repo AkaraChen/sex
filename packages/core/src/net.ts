@@ -15,8 +15,10 @@ export interface FetchOptions {
   allowPrivateNetwork: boolean;
   skipTlsVerification?: boolean;
   userAgent: string;
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "HEAD";
   body?: string;
+  /** Return after the final response's headers: the body is cancelled unread and `body` is empty. */
+  headersOnly?: boolean;
   /** Body size cap; defaults to DEFAULT_MAX_BODY_BYTES. Callers pass engine.config.maxBodyBytes. */
   maxBodyBytes?: number;
 }
@@ -187,7 +189,8 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
         url = next;
         continue;
       }
-      const bytes = await readLimited(res, signal, opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES);
+      if (opts.headersOnly) await res.body?.cancel();
+      const bytes = opts.headersOnly ? new Uint8Array() : await readLimited(res, signal, opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES);
       return {
         url: url.href,
         status: res.status,
