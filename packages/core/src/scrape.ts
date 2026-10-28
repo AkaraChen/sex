@@ -452,16 +452,6 @@ async function scrapeInner(
         waitFor: options.waitFor,
         actions: options.actions,
         extract: extractOpts,
-        requestGuard: config.allowPrivateNetwork
-          ? undefined
-          : async (u) => {
-              try {
-                await assertPublicUrl(new URL(u), false, !!config.proxyUrl);
-                return true;
-              } catch {
-                return false;
-              }
-            },
       });
     } catch (err) {
       if (deadline.signal.aborted) throw deadline.translate(err);

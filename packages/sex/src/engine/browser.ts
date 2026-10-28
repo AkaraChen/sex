@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BrowserScrapeOptions, BrowserScrapeResult, ScrapeBrowser } from "@sex/core/capabilities.ts";
 import type { Deadline } from "@sex/core/deadline.ts";
+import { type EgressPolicy, egressFor } from "@sex/core/egress.ts";
 import { AppError, BROWSER_HINT } from "@sex/core/errors.ts";
 import { log } from "@sex/core/log.ts";
 import { MARKUP_TYPE, networkError } from "@sex/core/net.ts";
@@ -15,7 +16,9 @@ import puppeteer, { type Page } from "puppeteer-core";
 import type { Config } from "../config.ts";
 import type { Action } from "../schemas.ts";
 import { type AdBlockList, loadAdBlockList } from "./adblock.ts";
+import { type BrowserKind, browserKind, type EgressPlan, planEgress } from "./browser-egress.ts";
 import { applyRequestPolicies } from "./browser-policy.ts";
+import { EGRESS_HEADER, type EgressLease, EgressProxy, type EgressSessionOptions } from "./egress-proxy.ts";
 
 const MOBILE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
@@ -123,43 +126,10 @@ export function lightpandaArgv(
     String(Math.max(16, config.concurrency * 2)),
     "--cdp-max-message-size",
     String(64 * 1024 * 1024),
-    // Second line of defence: Lightpanda refuses private addresses after DNS resolution. The request interception in
-    // scrapeInner stays the primary guard, because an external --cdp-url browser has no such flag.
-    ...(config.allowPrivateNetwork ? [] : ["--block-private-networks"]),
-    // Lightpanda's own flag, so every page request goes through the proxy. Credentials in the URL end up on its command line.
-    ...(config.proxyUrl ? ["--http-proxy", config.proxyUrl] : []),
+    // Lightpanda refuses private addresses after DNS resolution (see browser-egress.ts). That layer refuses the loopback
+    // `EgressProxy` too, so behind `SEX_PROXY_URL`, where the page goes through the proxy, the proxy does the checking.
+    ...(config.allowPrivateNetwork || config.proxyUrl ? [] : ["--block-private-networks"]),
   ];
-}
-
-/** `argv` for a log line, without the credentials of the `--http-proxy` URL. */
-export function redactArgv(argv: string[]): string[] {
-  return argv.map((arg, i) => (argv[i - 1] === "--http-proxy" ? redactUrl(arg) : arg));
-}
-
-function redactUrl(raw: string): string {
-  try {
-    const url = new URL(raw);
-    if (url.username || url.password) {
-      url.username = "***";
-      url.password = "";
-    }
-    return url.href;
-  } catch {
-    return "<invalid>";
-  }
-}
-
-/**
- * How an external CDP browser reaches the proxy: Chrome takes the proxy per browser context (`proxyServer`, no credentials in
- * it) and gets the credentials by answering the proxy's auth challenge. A spawned Lightpanda has its proxy on the command line.
- */
-export function contextProxy(
-  config: Pick<Config, "cdpUrl" | "proxyUrl">,
-): { server: string; credentials?: { username: string; password: string } } | undefined {
-  if (!config.cdpUrl || !config.proxyUrl) return undefined;
-  const url = new URL(config.proxyUrl);
-  const credentials = url.username ? { username: decodeURIComponent(url.username), password: decodeURIComponent(url.password) } : undefined;
-  return { server: `${url.protocol}//${url.host}`, ...(credentials ? { credentials } : {}) };
 }
 
 const startFailed = (reason: string) => new AppError("BROWSER_UNAVAILABLE", `Lightpanda did not start: ${reason}`);
@@ -174,12 +144,20 @@ export class BrowserPool implements ScrapeBrowser {
   private cooldownUntil = 0;
   private lastStartError = "";
 
-  /** `adBlockList` is where the ad list comes from; tests and the benchmark swap it. */
+  private readonly route: BrowserKind;
+  private readonly adBlockList: () => Promise<AdBlockList>;
+  private readonly policy: EgressPolicy;
+  private egressProxy?: EgressProxy;
+
+  /** The options are for tests and the benchmark: the ad list, the egress rule and the browser kind (otherwise derived from the config). */
   constructor(
     private readonly config: Config,
-    private readonly adBlockList: () => Promise<AdBlockList> = loadAdBlockList,
+    options: { adBlockList?: () => Promise<AdBlockList>; policy?: EgressPolicy; kind?: BrowserKind } = {},
   ) {
     this.limit = pLimit(config.concurrency);
+    this.adBlockList = options.adBlockList ?? loadAdBlockList;
+    this.policy = options.policy ?? egressFor(config.allowPrivateNetwork);
+    this.route = options.kind ?? browserKind(config);
   }
 
   /** PID of the Lightpanda child process, while there is one. */
@@ -256,7 +234,7 @@ export class BrowserPool implements ScrapeBrowser {
     const port = await freePort();
     const wrapper = pdeathsigWrapper();
     const argv = lightpandaArgv(bin, port, this.config, wrapper);
-    log.debug("spawning lightpanda", { argv: redactArgv(argv) });
+    log.debug("spawning lightpanda", { argv });
     let proc: Subprocess;
     try {
       proc = Bun.spawn(argv, {
@@ -314,12 +292,25 @@ export class BrowserPool implements ScrapeBrowser {
     await Promise.all([this.getEndpoint(), this.adBlockList()]);
   }
 
+  private egress(): EgressProxy {
+    this.egressProxy ??= new EgressProxy(this.policy);
+    return this.egressProxy;
+  }
+
   /**
    * Runs `fn` on a fresh page in its own browser context, once a slot is free. The context is closed when `fn` ends or the
    * deadline does, which makes in-flight page operations reject, so the slot is released at once; `fn` is also abandoned at
    * the deadline if what it is awaiting ignores the closed context. The error is the deadline's, never a symptom of the close.
+   *
+   * With a plan that routes through the `EgressProxy` the page gets a lease of its own (credentials, ad list, upstream), released
+   * with the context: Lightpanda sends the credentials from the proxy URL, Chrome answers the proxy's challenge.
    */
-  async withPage<T>(fn: (page: Page) => Promise<T>, deadline: Deadline): Promise<T> {
+  async withPage<T>(
+    fn: (page: Page, lease: EgressLease | undefined) => Promise<T>,
+    deadline: Deadline,
+    plan: EgressPlan,
+    session: EgressSessionOptions = {},
+  ): Promise<T> {
     return this.limit(async () => {
       deadline.throwIfAborted("before the browser scrape started");
       const endpoint = await deadline.bound(this.getEndpoint(), "while starting the browser");
@@ -331,9 +322,17 @@ export class BrowserPool implements ScrapeBrowser {
         connecting.then((b) => b.disconnect()).catch(() => {});
         throw err;
       }
+      let lease: EgressLease | undefined;
       try {
-        const proxy = contextProxy(this.config);
-        const context = await browser.createBrowserContext(proxy ? { proxyServer: proxy.server } : undefined);
+        lease = plan.proxy ? await deadline.bound(this.egress().open(session), "while starting the egress proxy") : undefined;
+        const proxy = lease
+          ? plan.kind === "lightpanda"
+            ? { server: lease.url }
+            : { server: lease.server, credentials: lease.credentials, bypass: ["<-loopback>"] } // Chrome would not send loopback through a proxy
+          : plan.direct;
+        const context = await browser.createBrowserContext(
+          proxy ? { proxyServer: proxy.server, ...("bypass" in proxy ? { proxyBypassList: proxy.bypass } : {}) } : undefined,
+        );
         let closed = false;
         const close = () => {
           if (closed) return;
@@ -344,13 +343,14 @@ export class BrowserPool implements ScrapeBrowser {
         try {
           deadline.throwIfAborted("before the browser scrape started");
           const page = await context.newPage();
-          if (proxy?.credentials) await deadline.bound(page.authenticate(proxy.credentials));
-          return await deadline.bound(fn(page));
+          if (proxy && "credentials" in proxy && proxy.credentials) await deadline.bound(page.authenticate(proxy.credentials));
+          return await deadline.bound(fn(page, lease));
         } finally {
           deadline.signal.removeEventListener("abort", close);
           close();
         }
       } finally {
+        lease?.close();
         await browser.disconnect().catch(() => {});
       }
     });
@@ -365,67 +365,123 @@ export class BrowserPool implements ScrapeBrowser {
 
   private async scrapeInner(opts: BrowserScrapeOptions): Promise<BrowserScrapeResult> {
     const { deadline } = opts;
-    return this.withPage(async (page) => {
-      page.setDefaultTimeout(stepTimeout(deadline));
-      page.setDefaultNavigationTimeout(stepTimeout(deadline));
-      await page.setUserAgent(opts.mobile ? MOBILE_UA : opts.userAgent).catch(() => {});
-      const viewport = opts.mobile ? { width: 390, height: 844 } : { width: 1280, height: 800 };
-      await page.setViewport({ ...viewport, isMobile: !!opts.mobile }).catch(() => {});
+    const plan = planEgress(
+      this.route,
+      { checkPrivateNetwork: !this.policy.allowPrivateNetwork, proxyUrl: this.config.proxyUrl },
+      !!opts.blockAds,
+    );
+    const adList = plan.adsInProxy || plan.adsInCdp ? await this.adBlockList() : undefined;
+    const session: EgressSessionOptions = {
+      ...(plan.upstream ? { upstream: plan.upstream } : {}),
+      ...(plan.adsInProxy && adList ? { adBlock: { list: adList, pageUrl: opts.url } } : {}),
+    };
+    return this.withPage(
+      async (page, lease) => {
+        page.setDefaultTimeout(stepTimeout(deadline));
+        page.setDefaultNavigationTimeout(stepTimeout(deadline));
+        await page.setUserAgent(opts.mobile ? MOBILE_UA : opts.userAgent).catch(() => {});
+        const viewport = opts.mobile ? { width: 390, height: 844 } : { width: 1280, height: 800 };
+        await page.setViewport({ ...viewport, isMobile: !!opts.mobile }).catch(() => {});
 
-      // Headers, cookies and request interception; see browser-policy.ts.
-      const { blockedNavigations: blockedDocs, adsBlocked } = await applyRequestPolicies(page, {
-        url: opts.url,
-        headers: opts.headers,
-        requestGuard: opts.requestGuard,
-        adBlockList: opts.blockAds ? await this.adBlockList() : undefined,
-        blockMedia: this.config.blockMedia,
-      });
+        // Headers, cookies and request interception; see browser-policy.ts.
+        const { blockedNavigations: blockedDocs, adsBlocked } = await applyRequestPolicies(page, {
+          url: opts.url,
+          headers: opts.headers,
+          requestGuard: plan.requestGuard ? (origin) => this.policy.allows(new URL(origin), !!this.config.proxyUrl) : undefined,
+          adBlockList: plan.adsInCdp ? adList : undefined,
+          blockMedia: this.config.blockMedia,
+          // Whatever a proxy sits in front of the page, a Proxy-Authorization header can only be addressed to that proxy.
+          viaProxy: !!(plan.proxy || plan.direct),
+        });
 
-      if (opts.skipTlsVerification) {
-        // Best effort: browsers without the Security domain (Lightpanda) keep their own certificate handling.
-        await page
-          .createCDPSession()
-          .then((cdp) => cdp.send("Security.setIgnoreCertificateErrors", { ignore: true }))
-          .catch(() => {});
-      }
-
-      let aborted = false;
-      const response = await page.goto(opts.url, { waitUntil: "load", timeout: stepTimeout(deadline) }).catch((err: Error) => {
-        deadline.throwIfAborted(`while loading ${opts.url}`);
-        if (blockedDocs.length) return null;
-        // PDFs and Content-Disposition: attachment responses abort the navigation; the caller re-fetches them over HTTP.
-        if (err.message.includes("net::ERR_ABORTED")) {
-          aborted = true;
-          return null;
+        if (opts.skipTlsVerification) {
+          // Best effort: browsers without the Security domain (Lightpanda) keep their own certificate handling.
+          await page
+            .createCDPSession()
+            .then((cdp) => cdp.send("Security.setIgnoreCertificateErrors", { ignore: true }))
+            .catch(() => {});
         }
-        if (err.name === "TimeoutError") throw deadline.timedOut(`while loading ${opts.url}`);
-        throw networkError(err, opts.url, { skipTlsVerification: opts.skipTlsVerification });
-      });
-      if (blockedDocs.length) {
-        throw new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${blockedDocs[0]}`);
-      }
-      if (aborted) return { url: opts.url, status: 200, contentType: "", nonHtml: true, rawHtml: "" };
-      const contentType = response?.headers()["content-type"] ?? "text/html";
-      const base = { url: page.url() || opts.url, status: response?.status() ?? 200, contentType, adsBlocked: adsBlocked() };
-      if (!MARKUP_TYPE.test(contentType)) return { ...base, nonHtml: true, rawHtml: "" };
 
-      if (opts.waitFor) await deadline.sleep(opts.waitFor, "while waiting (waitFor)");
-      const actions = opts.actions?.length ? await runActions(page, opts.actions, deadline) : undefined;
+        let aborted = false;
+        const response = await page.goto(opts.url, { waitUntil: "load", timeout: stepTimeout(deadline) }).catch((err: Error) => {
+          deadline.throwIfAborted(`while loading ${opts.url}`);
+          if (blockedDocs.length) return null;
+          const refused = lease && egressFailure(lease, err.message.match(/ at (\S+)$/)?.[1]);
+          if (refused) throw refused;
+          // PDFs and Content-Disposition: attachment responses abort the navigation; the caller re-fetches them over HTTP.
+          if (err.message.includes("net::ERR_ABORTED")) {
+            aborted = true;
+            return null;
+          }
+          if (err.name === "TimeoutError") throw deadline.timedOut(`while loading ${opts.url}`);
+          throw networkError(err, opts.url, { skipTlsVerification: opts.skipTlsVerification });
+        });
+        if (blockedDocs.length) {
+          throw new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${blockedDocs[0]}`);
+        }
+        // A plain-http document the proxy turned away arrives as the proxy's own 4xx / 5xx answer.
+        const answeredBy = response?.headers()[EGRESS_HEADER];
+        if (lease && response && answeredBy) {
+          throw (
+            egressFailure(lease, response.url()) ??
+            new AppError(
+              "SCRAPE_SITE_ERROR",
+              `Could not load ${response.url()}: the egress proxy answered ${response.status()} (${answeredBy}).`,
+            )
+          );
+        }
+        if (aborted) return { url: opts.url, status: 200, contentType: "", nonHtml: true, rawHtml: "" };
+        const contentType = response?.headers()["content-type"] ?? "text/html";
+        const base = {
+          url: page.url() || opts.url,
+          status: response?.status() ?? 200,
+          contentType,
+          adsBlocked: lease ? lease.adsBlocked() + adsBlocked() : adsBlocked(),
+        };
+        if (!MARKUP_TYPE.test(contentType)) return { ...base, nonHtml: true, rawHtml: "" };
 
-      const rawHtml = await page.content();
-      const extracted = await runPageScript(page, { ...opts.extract, url: page.url() || opts.url });
-      return { ...base, url: page.url() || opts.url, rawHtml, extracted, actions };
-    }, deadline);
+        if (opts.waitFor) await deadline.sleep(opts.waitFor, "while waiting (waitFor)");
+        const actions = opts.actions?.length ? await runActions(page, opts.actions, deadline) : undefined;
+
+        const rawHtml = await page.content();
+        const extracted = await runPageScript(page, { ...opts.extract, url: page.url() || opts.url });
+        return { ...base, url: page.url() || opts.url, rawHtml, extracted, actions };
+      },
+      deadline,
+      plan,
+      session,
+    );
   }
 
   async close(): Promise<void> {
     const proc = this.proc;
     this.proc = undefined;
     this.endpoint = undefined;
+    const egress = this.egressProxy;
+    this.egressProxy = undefined;
+    await egress?.close();
     if (proc) {
       proc.kill();
       await proc.exited.catch(() => {});
     }
+  }
+}
+
+/** The error for a page the `EgressProxy` turned away, from the URL the browser failed on; undefined when the proxy did not refuse it. */
+function egressFailure(lease: EgressLease, failedUrl: string | undefined): AppError | undefined {
+  let host: string;
+  try {
+    host = new URL(failedUrl ?? "").hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return undefined;
+  }
+  switch (lease.failureOf(host)) {
+    case "refused":
+      return new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${failedUrl}`);
+    case "dns":
+      return new AppError("SCRAPE_DNS_RESOLUTION_ERROR", `Could not resolve the host name of ${failedUrl}. Check that the domain exists.`);
+    default:
+      return undefined;
   }
 }
 

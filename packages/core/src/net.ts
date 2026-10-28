@@ -1,12 +1,9 @@
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
-import ipaddr from "ipaddr.js";
 import { DEFAULT_MAX_BODY_BYTES } from "./config.ts";
 import type { Deadline } from "./deadline.ts";
+import { egressFor, MAX_PINNED_ADDRESSES } from "./egress.ts";
 import { AppError, badRequest, type ErrorCode } from "./errors.ts";
 
 const MAX_REDIRECTS = 10;
-const MAX_PINNED_ADDRESSES = 4;
 
 export interface FetchOptions {
   headers?: Record<string, string>;
@@ -50,56 +47,9 @@ export function parseHttpUrl(raw: string): URL {
   return url;
 }
 
-const v4Blocked = (a: ipaddr.IPv4) => a.range() !== "unicast";
-const fromParts = (hi: number, lo: number) => new ipaddr.IPv4([hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]);
-
-/** True for anything that is not a globally routable unicast address (IPv6 forms embedding IPv4 are unwrapped). */
-export function isPrivateIp(ip: string): boolean {
-  if (!isIP(ip)) return false;
-  const addr = ipaddr.parse(ip);
-  if (addr.kind() === "ipv4") return v4Blocked(addr as ipaddr.IPv4);
-  const v6 = addr as ipaddr.IPv6;
-  if (v6.isIPv4MappedAddress()) return v4Blocked(v6.toIPv4Address());
-  const p = v6.parts;
-  if (p.slice(0, 6).every((x) => x === 0)) return true; // ::, ::1 and deprecated IPv4-compatible ::a.b.c.d
-  const range = v6.range();
-  if (range === "rfc6052") return v4Blocked(fromParts(p[6] ?? 0, p[7] ?? 0)); // NAT64 64:ff9b::/96
-  if (range === "6to4") return v4Blocked(fromParts(p[1] ?? 0, p[2] ?? 0)); // 2002:AABB:CCDD::/48
-  return range !== "unicast"; // teredo, ULA, link-local, multicast, reserved, ...
-}
-
-/**
- * Resolves the URL's host and rejects it if any address is loopback/private/link-local (unless allowed). Returns the
- * validated addresses of a DNS name so the caller can connect to exactly those; empty for IP literals, or when private
- * networks are allowed or the name does not resolve. With `requireResolvable` (a proxy will resolve the name on its own)
- * a name that does not resolve here is refused: a name only the proxy's resolver knows could be an internal one.
- */
-export async function resolvePublicAddresses(url: URL, allowPrivateNetwork: boolean, requireResolvable = false): Promise<string[]> {
-  if (allowPrivateNetwork) return [];
-  const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host.endsWith(".localhost")) {
-    throw new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${url.href}`);
-  }
-  const literal = isIP(host) !== 0;
-  const addresses = literal ? [host] : (await lookup(host, { all: true }).catch(() => [])).map((a) => a.address);
-  if (addresses.some(isPrivateIp)) {
-    throw new AppError(
-      "PRIVATE_NETWORK_BLOCKED",
-      `Refusing to fetch private address: ${url.href} (start with --allow-private-network to permit)`,
-    );
-  }
-  if (requireResolvable && !addresses.length) {
-    throw new AppError(
-      "SCRAPE_DNS_RESOLUTION_ERROR",
-      `Could not resolve the host name of ${url.href} to check it before sending it through the proxy. Check that the domain exists.`,
-    );
-  }
-  return literal ? [] : addresses;
-}
-
-/** Rejects URLs that point at loopback/private/link-local hosts unless allowed. */
+/** Rejects URLs that point at loopback/private/link-local hosts unless allowed (see `EgressPolicy.resolve`). */
 export async function assertPublicUrl(url: URL, allowPrivateNetwork: boolean, requireResolvable = false): Promise<void> {
-  await resolvePublicAddresses(url, allowPrivateNetwork, requireResolvable);
+  await egressFor(allowPrivateNetwork).resolve(url, requireResolvable);
 }
 
 /**
@@ -160,7 +110,7 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
   if (opts.proxy) for (const name of ["proxy-authorization", "proxy-connection"]) delete headers[name];
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      const addresses = await resolvePublicAddresses(url, opts.allowPrivateNetwork, !!opts.proxy);
+      const addresses = await egressFor(opts.allowPrivateNetwork).resolve(url, !!opts.proxy);
       // Connect to the validated addresses themselves (first one that connects wins), not to a fresh DNS answer.
       // Without a lookup result (IP literal, private networks allowed) the URL is fetched as is, and so is every URL
       // behind a proxy, which does its own lookup.

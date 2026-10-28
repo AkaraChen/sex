@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { isPrivateIp } from "@sex/core/egress.ts";
 import { AppError } from "@sex/core/errors.ts";
-import { isPrivateIp } from "@sex/core/net.ts";
 import { normalizeFormats } from "@sex/core/scrape.ts";
 import { parseRobots } from "../src/engine/robots.ts";
 

@@ -1,36 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { resolveConfig } from "../src/config.ts";
-import { contextProxy, lightpandaArgv, redactArgv } from "../src/engine/browser.ts";
 import { Engine } from "../src/engine/engine.ts";
 import { startCountingProxy } from "./helpers.ts";
-
-describe("browser proxy settings", () => {
-  const base = { concurrency: 4, allowPrivateNetwork: false };
-
-  test("Lightpanda gets --http-proxy; without a proxy there is no flag", () => {
-    expect(lightpandaArgv("lp", 1, base)).not.toContain("--http-proxy");
-    const argv = lightpandaArgv("lp", 1, { ...base, proxyUrl: "http://u:p@proxy:3128" });
-    expect(argv.slice(argv.indexOf("--http-proxy"), argv.indexOf("--http-proxy") + 2)).toEqual(["--http-proxy", "http://u:p@proxy:3128"]);
-    expect(argv).toContain("--block-private-networks");
-  });
-
-  test("the proxy's credentials are masked in the logged command line", () => {
-    const logged = redactArgv(lightpandaArgv("lp", 1, { ...base, proxyUrl: "http://user:secret@proxy:3128" })).join(" ");
-    expect(logged).not.toContain("secret");
-    expect(logged).not.toContain("user:");
-    expect(logged).toContain("proxy:3128");
-  });
-
-  test("an external CDP browser gets the proxy per context, credentials apart from the server", () => {
-    expect(contextProxy({ proxyUrl: "http://proxy:3128" })).toBeUndefined(); // spawned Lightpanda: command line instead
-    expect(contextProxy({ cdpUrl: "ws://chrome:9222" })).toBeUndefined();
-    expect(contextProxy({ cdpUrl: "ws://chrome:9222", proxyUrl: "http://proxy:3128" })).toEqual({ server: "http://proxy:3128" });
-    expect(contextProxy({ cdpUrl: "ws://chrome:9222", proxyUrl: "https://us%40er:p%3Aw@proxy.example:8443/" })).toEqual({
-      server: "https://proxy.example:8443",
-      credentials: { username: "us@er", password: "p:w" },
-    });
-  });
-});
 
 // Opt-in, needs a browser (see browser.test.ts): the browser's traffic goes through the proxy and private targets stay refused.
 const CDP = process.env.SEX_TEST_CDP_URL;
@@ -45,16 +16,43 @@ const AUTH = "user:p@ss";
 
 describe.each(variants)("browser through a proxy (%s)", (_name, browser) => {
   let site: ReturnType<typeof Bun.serve>;
+  let internal: ReturnType<typeof Bun.serve>;
   let proxy: Awaited<ReturnType<typeof startCountingProxy>>;
   let engine: Engine;
   const siteHits: string[] = [];
+  const internalHits: string[] = [];
 
   beforeAll(async () => {
+    internal = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        internalHits.push(req.url);
+        return new Response("secret", { headers: { "content-type": "text/javascript" } });
+      },
+    });
     site = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
       fetch(req) {
         siteHits.push(new URL(req.url).pathname);
+        if (new URL(req.url).pathname === "/sub") {
+          // A page on a public address that reaches for internal ones: loopback, localhost, cloud metadata, private ranges.
+          const targets = [
+            `127.0.0.1:${internal.port}`,
+            `localhost:${internal.port}`,
+            "169.254.169.254",
+            "10.0.0.1",
+            `[::1]:${internal.port}`,
+          ];
+          const refs = targets.flatMap((t) => [`<script src="http://${t}/a.js"></script>`, `<img src="http://${t}/i.png">`]);
+          return new Response(
+            `<!doctype html><title>Sub</title><body><main><article><p>page with subresources</p></article></main>${refs.join("")}</body>`,
+            {
+              headers: { "content-type": "text/html; charset=utf-8" },
+            },
+          );
+        }
         return new Response(
           "<!doctype html><html><head><title>Proxied</title></head><body><main><article><p>seen through the proxy</p></article></main></body></html>",
           {
@@ -75,11 +73,13 @@ describe.each(variants)("browser through a proxy (%s)", (_name, browser) => {
   afterAll(async () => {
     await engine?.browser.close();
     site?.stop(true);
+    internal?.stop(true);
     proxy?.close();
   });
   beforeEach(() => {
     proxy.requests.length = 0;
     siteHits.length = 0;
+    internalHits.length = 0;
   });
 
   test("loads the page through the proxy", async () => {
@@ -95,5 +95,13 @@ describe.each(variants)("browser through a proxy (%s)", (_name, browser) => {
     });
     expect(proxy.requests.filter((r) => r.url.includes("/secret"))).toEqual([]);
     expect(siteHits).not.toContain("/secret");
+  });
+
+  test("internal addresses a public page reaches for are refused before the proxy and the internal service sees nothing", async () => {
+    const doc = await engine.scrape({ url: `${PUBLIC}/sub`, formats: ["markdown"] });
+    expect(doc.markdown).toContain("page with subresources");
+    expect(internalHits).toEqual([]);
+    expect(proxy.requests.map((r) => r.url).filter((u) => /127\.0\.0\.1|localhost|169\.254|10\.0\.0\.1|\[::1\]/.test(u))).toEqual([]);
+    expect(proxy.connects.filter((c) => /127\.0\.0\.1|localhost|169\.254|10\.0\.0\.1|::1/.test(c))).toEqual([]);
   });
 });
