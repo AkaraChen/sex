@@ -400,6 +400,7 @@ export const ExtractStatusResponse = z.object({
   status: z.enum(["processing", "completed", "failed", "cancelled"]),
   data: z.unknown().optional(),
   error: z.string().optional(),
+  warning: z.string().optional(),
   sources: z.record(z.string(), z.unknown()).optional(),
   expiresAt: z.string(),
   creditsUsed: z.number().optional(),

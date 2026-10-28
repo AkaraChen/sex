@@ -7,6 +7,7 @@ import type { Engine } from "./engine.ts";
 import { arrayKeys, mergeAll, splitSchema, withProperty } from "./extract-merge.ts";
 import type { JobRecord } from "./jobs/index.ts";
 import { compileJsonSchema, describeSchemaErrors } from "./json-schema.ts";
+import { GUARD_MAX_CHARS } from "./llm.ts";
 import { mapSite } from "./map.ts";
 import { assertPublicUrl, parseHttpUrl } from "./net.ts";
 import { RELEVANCE_FIELD_DESCRIPTION } from "./prompts.ts";
@@ -59,11 +60,11 @@ export async function handleExtract(engine: Engine, job: JobRecord) {
   }, CANCEL_POLL_MS);
   try {
     const req = job.options as unknown as ExtractRequest;
-    const { result, sources, total, completed } = await runExtract(engine, job.id, req, req.urls ?? [], controller.signal);
+    const { result, sources, warning, total, completed } = await runExtract(engine, job.id, req, req.urls ?? [], controller.signal);
     if (controller.signal.aborted) return;
     await store.incr(job.id, "total", total);
     await store.incr(job.id, "completed", completed);
-    await store.finish(job.id, "completed", { result, sources });
+    await store.finish(job.id, "completed", { result, sources, warning });
   } catch (err) {
     // Cancelled jobs were already finished by cancelJob; do not overwrite that.
     if (controller.signal.aborted) return;
@@ -90,12 +91,16 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
 
   const limit = pLimit(engine.config.concurrency);
   const options = { ...req.scrapeOptions, formats: ["markdown" as const] };
+  const warnings: string[] = [];
   const pages = await Promise.all(
     [...targets].map((url) =>
       limit(async () => {
         try {
           const { document } = await scrapeUrl(engine, url, options, { signal });
-          return { url, markdown: document.markdown ?? "" };
+          if (document.warning) warnings.push(`${url}: ${document.warning}`);
+          // The guard scans the first GUARD_MAX_CHARS of a page (scrapeUrl warns about the rest); only that part goes on.
+          const markdown = document.markdown ?? "";
+          return { url, markdown: options.checkPromptInjection ? markdown.slice(0, GUARD_MAX_CHARS) : markdown };
         } catch (err) {
           if (signal.aborted) return undefined;
           await engine.jobs.store.pushError(jobId, {
@@ -124,6 +129,7 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
   return {
     result,
     sources: req.showSources ? { "*": used } : undefined,
+    warning: warnings.length ? warnings.join("; ") : undefined,
     total: targets.size,
     completed: ok.length,
   };

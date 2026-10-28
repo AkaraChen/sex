@@ -151,11 +151,11 @@ describe("crawl limit", () => {
 
   test("a full crawl stops discovering links", async () => {
     const store = engine.jobs.store;
-    const original = store.markSeen.bind(store);
-    let markSeenCalls = 0;
-    store.markSeen = (id, keys) => {
-      markSeenCalls++;
-      return original(id, keys);
+    const original = store.schedule.bind(store);
+    let discoveries = 0;
+    store.schedule = (...args) => {
+      discoveries++;
+      return original(...args);
     };
     try {
       const base = `http://127.0.0.1:${site.port}`;
@@ -163,9 +163,9 @@ describe("crawl limit", () => {
       expect(job.status).toBe("completed");
       expect(job.scheduled).toBe(2);
       // Start page, then the hub's links; the first crawled page is past the limit and must not discover more.
-      expect(markSeenCalls).toBeLessThanOrEqual(2);
+      expect(discoveries).toBeLessThanOrEqual(2);
     } finally {
-      store.markSeen = original;
+      store.schedule = original;
     }
   }, 15_000);
 });

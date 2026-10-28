@@ -1,11 +1,11 @@
 import type { z } from "zod";
-import { badRequest, toAppError } from "../errors.ts";
+import { toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import { CrawlRequest } from "../schemas.ts";
 import { Deadline } from "./deadline.ts";
 import type { Engine } from "./engine.ts";
 import { type TaskEffects, taskEffects } from "./jobs/effects.ts";
-import { type JobRecord, type JobStore, sendWebhook, validateWebhook } from "./jobs/index.ts";
+import { type JobRecord, type JobStore, type OutboxTask, sendWebhook, validateWebhook } from "./jobs/index.ts";
 import { normalizeUrl, sitemapUrls } from "./map.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
 import { parseRobots, type Robots, robotsTextFor } from "./robots.ts";
@@ -157,10 +157,11 @@ async function enqueueLinks(
   plan: CrawlPlan,
   links: string[],
   depth: number,
+  owner: string | undefined,
   isStart = false,
   fromExternal = false,
 ) {
-  const { store, queue } = engine.jobs;
+  const { store } = engine.jobs;
   const { req } = plan;
   if (req.maxDiscoveryDepth !== undefined && depth > req.maxDiscoveryDepth) return;
   const ignoreQuery = req.ignoreQueryParameters ?? false;
@@ -180,43 +181,44 @@ async function enqueueLinks(
   }
   if (!candidates.size) return;
 
-  const keys = [...candidates.keys()];
-  const fresh = await store.markSeen(job.id, keys);
-  const accepted: string[] = [];
-  for (const [i, key] of keys.entries()) {
-    if (!fresh[i]) continue;
-    const url = candidates.get(key) as string;
-    if (plan.robots && !plan.robots.isAllowed(url)) await store.pushRobotsBlocked(job.id, url);
-    else accepted.push(url);
-  }
-  if (!accepted.length) return;
+  const found = [...candidates].map(([key, url]) => ({ key, url, blocked: plan.robots ? !plan.robots.isAllowed(url) : false }));
+  const scheduled = await store.schedule(job.id, owner, found, {
+    limit: plan.limit,
+    depth,
+    intervalMs: (req.delay ?? 0) * 1000,
+    now: Date.now(),
+  });
+  await queuePages(engine, job, scheduled);
+}
 
-  // Reserve slots under the limit atomically, handing back any overshoot.
-  const scheduled = await store.incr(job.id, "scheduled", accepted.length);
-  const overshoot = Math.max(0, scheduled - plan.limit);
-  const allowed = accepted.slice(0, Math.max(0, accepted.length - overshoot));
-  if (overshoot) await store.incr(job.id, "scheduled", -Math.min(overshoot, accepted.length));
-  if (!allowed.length) return;
-
-  await store.incr(job.id, "total", allowed.length);
-  await store.incr(job.id, "pending", allowed.length);
-  let delays: number[] = allowed.map(() => 0);
-  if (req.delay) {
-    const interval = req.delay * 1000;
-    const now = Date.now();
-    const start = await store.reserveSlots(job.id, allowed.length, interval, now);
-    delays = allowed.map((_, i) => Math.max(0, start + i * interval - now));
-  }
-  const tasks = allowed.map((url, i) => ({
-    task: { type: "page" as const, jobId: job.id, taskId: crypto.randomUUID(), url, depth },
-    delayMs: delays[i],
-  }));
+/**
+ * Queues page tasks that `store.schedule` recorded, then clears them from the outbox. A crash in between leaves them
+ * there, and the owner's redelivery queues them again under the same taskIds, so the queue may hold a task twice
+ * but a page is neither lost nor counted twice (its document, failure and settle are claimed per taskId).
+ */
+async function queuePages(engine: Engine, job: JobRecord, scheduled: OutboxTask[]) {
+  if (!scheduled.length) return;
+  const { store, queue } = engine.jobs;
+  const now = Date.now();
+  const ids = scheduled.map((t) => t.taskId);
   try {
-    await queue.add(tasks);
+    await queue.add(
+      scheduled.map((t) => ({
+        task: { type: "page" as const, jobId: job.id, taskId: t.taskId, url: t.url, depth: t.depth },
+        delayMs: Math.max(0, t.runAt - now),
+      })),
+    );
   } catch (err) {
-    await store.incr(job.id, "pending", -allowed.length);
+    // Nothing will run or settle these tasks (this one is not redelivered), so give their counts back.
+    await store.released(job.id, ids, false);
     throw err;
   }
+  await store.released(job.id, ids, true);
+}
+
+/** Queues the pages a crashed delivery of this task scheduled but did not get into the queue. */
+async function resumeQueueing(engine: Engine, job: JobRecord, taskId: string | undefined) {
+  if (taskId !== undefined) await queuePages(engine, job, await engine.jobs.store.outbox(job.id, taskId));
 }
 
 export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: string) {
@@ -226,6 +228,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: s
     if (job?.status !== "scraping") return;
     const req = job.options as unknown as CrawlRequest;
     const start = new URL(job.url as string);
+    await resumeQueueing(engine, job, taskId);
     await taskEffects(engine, job, taskId).started();
 
     if (!req.ignoreRobotsTxt) {
@@ -242,7 +245,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: s
     const plan = await planFor(store, job);
     // The start URL is crawled in every mode; the root site and sitemapped pages have discovery depth 0.
     const mode = req.sitemap ?? "include";
-    await enqueueLinks(engine, job, plan, [start.href], 0, true);
+    await enqueueLinks(engine, job, plan, [start.href], 0, taskId, true);
     if (mode !== "skip") {
       const blocked = new Set<string>();
       const accept = (raw: string) => {
@@ -262,7 +265,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: s
         robots: plan.robots,
       }).catch(() => []);
       for (const url of blocked) await store.pushRobotsBlocked(job.id, url);
-      await enqueueLinks(engine, job, plan, urls, 0);
+      await enqueueLinks(engine, job, plan, urls, 0, taskId);
     }
   } catch (err) {
     const e = toAppError(err);
@@ -312,6 +315,7 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
   const { store } = engine.jobs;
   const fx = taskEffects(engine, job, taskId);
   try {
+    await resumeQueueing(engine, job, taskId);
     const plan = await planFor(store, job);
     const { document, links } = await scrapeUrl(engine, url, plan.req.scrapeOptions, { collectLinks: true });
     if ((await store.get(job.id))?.status !== "scraping") return;
@@ -324,7 +328,16 @@ export async function handleCrawlPage(engine: Engine, job: JobRecord, url: strin
     // `scheduled` only grows toward `limit` and then stays there, so a full crawl has nothing left to discover.
     const full = job.scheduled >= plan.limit;
     if ((plan.req.sitemap ?? "include") !== "only" && !full)
-      await enqueueLinks(engine, job, plan, links ?? [], depth + 1, false, !isSameSite(plan, new URL(document.metadata?.url ?? url)));
+      await enqueueLinks(
+        engine,
+        job,
+        plan,
+        links ?? [],
+        depth + 1,
+        taskId,
+        false,
+        !isSameSite(plan, new URL(document.metadata?.url ?? url)),
+      );
   } catch (err) {
     await fx.failure(url, toAppError(err).message);
   }

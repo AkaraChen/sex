@@ -264,6 +264,7 @@ export const router = {
           status: job.status === "scraping" ? ("processing" as const) : job.status,
           ...(job.status === "completed" ? { data: job.result } : {}),
           ...(job.error ? { error: job.error } : {}),
+          ...(job.warning ? { warning: job.warning } : {}),
           ...(job.sources ? { sources: job.sources } : {}),
           expiresAt: new Date(job.expiresAt).toISOString(),
         };

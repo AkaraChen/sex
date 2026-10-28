@@ -15,7 +15,13 @@ function startSite() {
     port: 0,
     hostname: "127.0.0.1",
     fetch(req) {
-      if (new URL(req.url).pathname === "/page") {
+      if (new URL(req.url).pathname === "/hub/") {
+        return new Response(
+          `<!doctype html><html lang="en"><head><title>Hub</title></head><body><main><article><h1>Hub</h1>${paragraphs}<p><a href="/hub/page">Page</a></p></article></main></body></html>`,
+          { headers: { "content-type": "text/html; charset=utf-8" } },
+        );
+      }
+      if (["/page", "/hub/page"].includes(new URL(req.url).pathname)) {
         return new Response(
           `<!doctype html><html lang="en"><head><title>Page</title></head><body><main><article><h1>Page</h1>${paragraphs}</article></main></body></html>`,
           {
@@ -262,5 +268,75 @@ describe("redelivery", () => {
     await Bun.sleep(100);
     expect(count("crawl.page") - pages).toBe(1);
     expect(count("crawl.started") - started).toBe(1);
+  });
+
+  /**
+   * The task dies after `schedule` recorded its pages but before they reached the queue (or `released` ran), and
+   * before it settled: whatever it queued is lost, as in a crash.
+   */
+  async function crashBeforeQueueing(task: Task) {
+    const { store, queue } = engine.jobs;
+    const realAdd = queue.add.bind(queue);
+    const realReleased = store.released.bind(store);
+    queue.add = async () => {};
+    store.released = async () => {};
+    try {
+      await crashBeforeSettle(task);
+    } finally {
+      queue.add = realAdd;
+      store.released = realReleased;
+    }
+  }
+
+  test("a crawl task that crashes between marking links seen and queueing them loses no page", async () => {
+    const { store } = engine.jobs;
+    const { result: job, tasks } = await held(() =>
+      engine.crawl({ url: `${site.url}/hub/`, limit: 5, sitemap: "skip" } as Parameters<Engine["crawl"]>[0]),
+    );
+    const start = tasks[0] as Extract<Task, { type: "crawl-start" }>;
+
+    // The start task crashes after scheduling the hub: it is seen and counted, but no task exists for it.
+    await crashBeforeQueueing(start);
+    const [lost] = await store.outbox(job.id, start.taskId as string);
+    expect(lost?.url).toBe(`${site.url}/hub/`);
+    expect((await store.get(job.id))?.pending).toBe(2);
+
+    // Redelivered, it queues the hub under the taskId it was scheduled with, and schedules nothing twice.
+    const { tasks: hubTasks } = await held(() => runTask(engine, start));
+    expect(hubTasks).toEqual([{ type: "page", jobId: job.id, taskId: lost?.taskId, url: `${site.url}/hub/`, depth: 0 }]);
+    expect(await store.outbox(job.id, start.taskId as string)).toEqual([]);
+    expect(await store.get(job.id)).toMatchObject({ pending: 1, scheduled: 1, total: 1 });
+
+    // The hub's task crashes after scheduling /page; its redelivery queues it.
+    const hub = hubTasks[0] as Task;
+    await crashBeforeQueueing(hub);
+    const { tasks: pageTasks } = await held(() => runTask(engine, hub));
+    expect(pageTasks).toHaveLength(1);
+    expect(pageTasks[0]).toMatchObject({ type: "page", url: `${site.url}/hub/page`, depth: 1 });
+    expect(await store.get(job.id)).toMatchObject({ pending: 1, scheduled: 2, total: 2, completed: 1 });
+
+    await runTask(engine, pageTasks[0] as Task);
+    const done = await finished(engine, job.id);
+    expect(done).toMatchObject({ status: "completed", pending: 0, completed: 2, scheduled: 2 });
+    expect((await store.documents(job.id, 0, 1e6)).data).toHaveLength(2);
+  });
+
+  test("a refused queue.add gives the scheduled pages' counts back", async () => {
+    const { store, queue } = engine.jobs;
+    const { result: job, tasks } = await held(() =>
+      engine.crawl({ url: `${site.url}/hub/`, limit: 5, sitemap: "skip" } as Parameters<Engine["crawl"]>[0]),
+    );
+    const realAdd = queue.add.bind(queue);
+    queue.add = async () => {
+      throw new Error("queue down");
+    };
+    try {
+      await runTask(engine, tasks[0] as Task);
+    } finally {
+      queue.add = realAdd;
+    }
+    const after = await finished(engine, job.id);
+    expect(after).toMatchObject({ status: "failed", pending: 0 });
+    expect(await store.outbox(job.id, (tasks[0] as { taskId: string }).taskId)).toEqual([]);
   });
 });
