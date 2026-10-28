@@ -6,6 +6,7 @@ import type { BatchScrapeRequest, CrawlRequest, ExtractRequest, MapRequest, MapR
 import { startBatchScrape } from "./batch.ts";
 import { BrowserPool } from "./browser.ts";
 import { SqliteScrapeCache } from "./cache.ts";
+import { SqliteChangeTracker } from "./change-tracker.ts";
 import { crawlParamsFromPrompt, startCrawl } from "./crawl.ts";
 import { DocsConverter } from "./docs.ts";
 import { startExtract } from "./extract.ts";
@@ -23,6 +24,8 @@ export class Engine extends BaseEngine<Config> {
   override readonly docs: DocsConverter;
   /** Fetched pages for `maxAge`, in `<dataDir>/cache.sqlite`; none without a data dir (one-shot CLI, tests). */
   declare readonly cache?: SqliteScrapeCache;
+  /** The previous scrape of each (URL, tag) for `changeTracking`, in `<dataDir>/change-tracking.sqlite`; none without a data dir. */
+  declare readonly changeTracker?: SqliteChangeTracker;
 
   constructor(config: Config) {
     super(config);
@@ -32,6 +35,7 @@ export class Engine extends BaseEngine<Config> {
         ttlMs: config.cacheTtlMs,
         maxBytes: config.cacheMaxBytes,
       });
+      this.changeTracker = new SqliteChangeTracker(join(config.dataDir, "change-tracking.sqlite"));
     }
     this.browser = new BrowserPool(config);
     this.llm = new Llm(config);
@@ -108,6 +112,7 @@ export class Engine extends BaseEngine<Config> {
       cache: this.cache
         ? `sqlite (${this.config.dataDir}/cache.sqlite, default maxAge ${this.config.cacheMaxAgeMs} ms)`
         : "off (no data dir)",
+      changeTracking: this.changeTracker ? `sqlite (${this.config.dataDir}/change-tracking.sqlite)` : "off (no data dir)",
     };
   }
 
@@ -116,6 +121,7 @@ export class Engine extends BaseEngine<Config> {
     await this.browser.close();
     await this.docs.close();
     this.cache?.close();
+    this.changeTracker?.close();
     await super.close();
   }
 }

@@ -4,15 +4,17 @@ import {
   type BrowserScrapeResult,
   type CachedPage,
   type CacheKey,
+  type ChangeTracker,
   GUARD_MAX_CHARS,
   type ScrapeBrowser,
   type ScrapeCache,
   type ScrapeDocs,
   type ScrapeLlm,
 } from "./capabilities.ts";
+import { type ChangeTrackingRequest, trackChanges } from "./change-tracking.ts";
 import type { CoreConfig } from "./config.ts";
 import { Deadline } from "./deadline.ts";
-import { AppError, badRequest, browserRequired, llmRequired, toAppError, unsupported } from "./errors.ts";
+import { AppError, badRequest, browserRequired, CHANGE_TRACKING_HINT, llmRequired, toAppError, unsupported } from "./errors.ts";
 import type { ExtractPool } from "./extract-pool.ts";
 import { log } from "./log.ts";
 import { markdownToHtml } from "./markdown-html.ts";
@@ -33,6 +35,8 @@ export interface ScrapeContext {
   readonly docs?: ScrapeDocs;
   /** Fetched pages kept for `maxAge`; without one nothing is read or stored, and `lockdown` / `minAge` are 404s. */
   readonly cache?: ScrapeCache;
+  /** The previous scrape of a page, for the `changeTracking` format; without one the format is a 501. */
+  readonly changeTracker?: ChangeTracker;
   /** How to get a missing browser or LLM, for the 501 errors; defaults to sex's flags. */
   readonly missingHints?: MissingHints;
 }
@@ -40,6 +44,7 @@ export interface ScrapeContext {
 export interface MissingHints {
   browser?: string;
   llm?: string;
+  changeTracking?: string;
 }
 
 export interface NormalizedFormats {
@@ -57,13 +62,13 @@ export interface NormalizedFormats {
   /** `query` format mode: "directQuote" answers with verbatim page lines. */
   questionMode?: "freeform" | "directQuote";
   highlights?: string;
+  changeTracking?: ChangeTrackingRequest;
 }
 
 const UNSUPPORTED_FORMATS = new Set([
   "screenshot",
   "screenshot@fullPage",
   "deterministicJson",
-  "changeTracking",
   "branding",
   "product",
   "menu",
@@ -109,6 +114,15 @@ export function normalizeFormats(formats: FormatOption[] | undefined): Normalize
       case "highlights":
         out.highlights = (f as { query: string }).query;
         break;
+      case "changeTracking": {
+        const c =
+          typeof f === "string"
+            ? {}
+            : (f as { modes?: ChangeTrackingRequest["modes"]; tag?: string | null; prompt?: string; schema?: Record<string, unknown> });
+        // An empty tag is no tag, so the column the tracker keys on needs no second spelling of "none".
+        out.changeTracking = { modes: [...new Set(c.modes)], tag: c.tag || null, prompt: c.prompt, schema: c.schema };
+        break;
+      }
       case "query": {
         const q = f as { prompt: string; mode?: "freeform" | "directQuote" };
         out.question = q.prompt;
@@ -117,6 +131,8 @@ export function normalizeFormats(formats: FormatOption[] | undefined): Normalize
       }
     }
   }
+  if (out.changeTracking && !out.markdown)
+    throw badRequest("The changeTracking format requires the markdown format to be specified as well");
   if (out.rawBase64 && list.length > 1) throw badRequest("The rawBase64 format cannot be combined with other formats");
   return out;
 }
@@ -141,6 +157,14 @@ export function assertScrapeCapabilities(ctx: ScrapeContext, options: ScrapeOpti
   const llmFeature = needsLlm(formats) ?? (options?.checkPromptInjection ? "checkPromptInjection" : undefined);
   if (llmFeature && !ctx.llm?.enabled) throw llmRequired(llmFeature, ctx.missingHints?.llm);
   if (formats.json?.schema) ctx.llm?.checkSchema(formats.json.schema);
+  const tracking = formats.changeTracking;
+  if (tracking) {
+    if (!ctx.changeTracker) throw unsupported('The "changeTracking" format', ctx.missingHints?.changeTracking ?? CHANGE_TRACKING_HINT);
+    if (tracking.modes.includes("json")) {
+      if (!ctx.llm?.enabled) throw llmRequired('The "changeTracking" json mode', ctx.missingHints?.llm);
+      if (tracking.schema) ctx.llm.checkSchema(tracking.schema);
+    }
+  }
   return formats;
 }
 
@@ -245,7 +269,7 @@ const LLM_MIN_TIMEOUT_MS = 60_000;
 
 /** The time one scrape has: the request's `timeout`, else SEX_TIMEOUT (at least 60 s when it calls the LLM: an LLM format or the guard). */
 export function scrapeTimeout(config: { timeout: number }, options: ScrapeOptions, formats: NormalizedFormats): number {
-  const usesLlm = needsLlm(formats) || options.checkPromptInjection;
+  const usesLlm = needsLlm(formats) || formats.changeTracking?.modes.includes("json") || options.checkPromptInjection;
   return options.timeout ?? (usesLlm ? Math.max(config.timeout, LLM_MIN_TIMEOUT_MS) : config.timeout);
 }
 
@@ -266,6 +290,7 @@ export async function scrapeUpload(
 ): Promise<ScrapeOutcome> {
   const formats = assertScrapeCapabilities(ctx, options);
   if (formats.rawBase64) throw badRequest("The rawBase64 format is not supported for uploads");
+  if (formats.changeTracking) throw badRequest("The changeTracking format tracks a URL and is not supported for uploads");
   if (options.actions?.length) throw badRequest("actions need a browser render and cannot be used with an uploaded file");
   // Checked before the file is read into memory.
   if (file.size > ctx.config.maxBodyBytes) {
@@ -618,6 +643,23 @@ async function scrapeInner(
     if (values[1] !== undefined) doc.summary = values[1] as string;
     if (values[2] !== undefined) doc.answer = values[2] as typeof doc.answer;
     if (values[3] !== undefined) doc.highlights = values[3] as typeof doc.highlights;
+  }
+
+  if (formats.changeTracking) {
+    // assertScrapeCapabilities has refused the format without a tracker; the markdown format is required, so `markdown` is what the caller sees.
+    const changes = await trackChanges({
+      tracker: ctx.changeTracker as ChangeTracker,
+      llm,
+      request: formats.changeTracking,
+      url: sourceUrl,
+      markdown,
+      scanned: body,
+      guard: !!options.checkPromptInjection,
+      status,
+      deadline: llmDeadline,
+      warnings,
+    });
+    if (changes) doc.changeTracking = changes;
   }
   if (warnings.length) doc.warning = warnings.join("; ");
 

@@ -113,12 +113,16 @@ export const badRequest = (message: string, details?: unknown) => new AppError("
 
 export const notFound = (message: string) => new AppError("NOT_FOUND", message);
 
-export const unsupported = (what: string) => new AppError("NOT_SUPPORTED", `${what} is not supported by this server.`);
+export const unsupported = (what: string, hint?: string) =>
+  new AppError("NOT_SUPPORTED", `${what} is not supported by this server.${hint ? ` ${hint}` : ""}`);
 
 export const BROWSER_HINT =
   "Start with --lightpanda (spawns a local Lightpanda) or --cdp-url <ws://...> (any CDP browser), or set SEX_LIGHTPANDA=1 / SEX_CDP_URL.";
 export const LLM_HINT =
   "Pass --llm-model (plus --llm-base-url / --llm-api-key for non-OpenAI endpoints), or set SEX_LLM_MODEL / SEX_LLM_BASE_URL / SEX_LLM_API_KEY.";
+
+export const CHANGE_TRACKING_HINT =
+  "It keeps the previous scrape of a page in SEX_DATA_DIR: set it (--data-dir, or run `sex serve`, which defaults to one).";
 
 /** A request needs a capability (browser, LLM, ...) that this deployment does not provide. `hint` says how to get it. */
 export const browserRequired = (what: string, hint = BROWSER_HINT) =>

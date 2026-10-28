@@ -206,6 +206,16 @@ export class Llm implements ScrapeLlm {
     return unwrap(value);
   }
 
+  /** What changed between two versions of a page (change tracking `json` mode without a schema), as a JSON value. Each version gets half the input budget. */
+  async describeChanges(previous: string, current: string, opts: { prompt?: string; url?: string }, deadline: Deadline): Promise<unknown> {
+    return this.completeJson(
+      "Change tracking",
+      P.CHANGES_SYSTEM,
+      P.changesUser(previous.slice(0, this.maxInputChars / 2), current.slice(0, this.maxInputChars / 2), opts.prompt, opts.url),
+      { deadline },
+    );
+  }
+
   async summarize(content: string, deadline: Deadline, url?: string): Promise<string> {
     return this.complete("The summary format", P.SUMMARY_SYSTEM, P.summaryUser(this.fit(content).text, url), undefined, deadline);
   }

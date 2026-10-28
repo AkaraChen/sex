@@ -1,11 +1,11 @@
 import type { Deadline } from "./deadline.ts";
 import type { PageExtractOptions, PageExtractResult } from "./page.ts";
 import type { PdfPage } from "./pdf.ts";
-import type { Action } from "./schemas.ts";
+import type { Action, ChangeTrackingResult } from "./schemas.ts";
 
 /**
  * What a scrape can do beyond plain HTTP + Defuddle. sex provides all three (Lightpanda / CDP, an OpenAI-compatible LLM,
- * here-docs) and a page cache; sex-lite none. `scrapeUrl` fails with browserRequired() / llmRequired() for options that need a
+ * here-docs), a page cache and change tracking; sex-lite none. `scrapeUrl` fails with browserRequired() / llmRequired() for options that need a
  * missing one, and without a cache `lockdown` / `minAge` are 404s.
  */
 
@@ -80,6 +80,8 @@ export interface ScrapeLlm {
   summarize(content: string, deadline: Deadline, url?: string): Promise<string>;
   answer(content: string, question: string, deadline: Deadline, url?: string): Promise<string>;
   selectLines(content: string, query: string, purpose: "highlights" | "answer", deadline: Deadline, url?: string): Promise<string>;
+  /** What changed between two versions of a page, as a JSON value (change tracking `json` mode without a schema). */
+  describeChanges(previous: string, current: string, opts: { prompt?: string; url?: string }, deadline: Deadline): Promise<unknown>;
 }
 
 // ---------------------------------------------------------------- documents
@@ -151,4 +153,27 @@ export interface ScrapeCache {
   get(key: CacheKey, age: { minAge?: number; maxAge: number }): Promise<(CachedPage & { storedAt: number }) | undefined>;
   /** Never throws: a cache that cannot store is a miss next time. */
   put(key: CacheKey, page: CachedPage): Promise<void>;
+}
+
+// ---------------------------------------------------------------- change tracking
+
+/** The last markdown scraped for a `(url, tag)`. */
+export interface TrackedPage {
+  markdown: string;
+  /** When it was scraped (ms since the epoch). */
+  scrapedAt: number;
+}
+
+/**
+ * What the `changeTracking` format compares against: the markdown of the previous scrape of a URL, kept per tag. sex provides
+ * one (SQLite under SEX_DATA_DIR); sex-lite none, where the format is a 501. Unlike `ScrapeCache` an entry is the only copy of
+ * something that cannot be fetched again, so it never expires and is never evicted: a new scrape replaces it.
+ */
+export interface ChangeTracker {
+  /** The stored scrape of `url` under `tag` (null = untagged), if any. Throws when the store cannot be read. */
+  get(url: string, tag: string | null): Promise<TrackedPage | undefined>;
+  /** Replaces the stored scrape. Throws when it cannot be stored. */
+  put(url: string, tag: string | null, markdown: string, scrapedAt: number): Promise<void>;
+  /** The unified diff of two versions (`git-diff` mode); undefined when there is no line to report or it took too long. */
+  diff(previous: string, current: string, deadline: Deadline): NonNullable<ChangeTrackingResult["diff"]> | undefined;
 }

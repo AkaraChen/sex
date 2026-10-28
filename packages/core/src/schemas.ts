@@ -48,6 +48,28 @@ export const AttributesFormat = z.object({
   selectors: z.array(z.object({ selector: z.string(), attribute: z.string() })),
 });
 
+export const CHANGE_TRACKING_MODES = ["git-diff", "json"] as const;
+
+export const ChangeTrackingFormat = z.object({
+  type: z.literal("changeTracking"),
+  modes: z
+    .array(z.enum(CHANGE_TRACKING_MODES))
+    .optional()
+    .describe(
+      'Extra output for a changed page: "git-diff" (a unified diff and its JSON form) and/or "json" (needs an LLM). Without modes only the status is returned.',
+    ),
+  tag: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Compares with the previous scrape that used the same tag (an empty tag is no tag), so one URL can be tracked separately."),
+  prompt: z.string().optional().describe('The "json" mode: what to report about the changes.'),
+  schema: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe('The "json" mode: JSON Schema of the data extracted from both versions and compared field by field.'),
+});
+
 export const QuestionFormat = z.object({ type: z.literal("question"), question: z.string() });
 export const HighlightsFormat = z.object({ type: z.literal("highlights"), query: z.string() });
 const QueryFormat = z.object({ type: z.literal("query"), prompt: z.string(), mode: z.enum(["freeform", "directQuote"]).optional() });
@@ -63,6 +85,7 @@ export const FormatOption = z.union([
   QuestionFormat,
   HighlightsFormat,
   QueryFormat,
+  ChangeTrackingFormat,
   GenericFormat,
 ]);
 export type FormatOption = z.infer<typeof FormatOption>;
@@ -134,7 +157,7 @@ export const ScrapeOptions = z
       .max(20)
       .optional()
       .describe(
-        'Output formats. Defaults to ["markdown"]. At most 20. "screenshot", "deterministicJson", "changeTracking", "branding", "product", "menu", "audio" and "video" return 501 NOT_SUPPORTED. "rawBase64" (the file\'s bytes as base64) cannot be combined with other formats.',
+        'Output formats. Defaults to ["markdown"]. At most 20. "screenshot", "deterministicJson", "branding", "product", "menu", "audio" and "video" return 501 NOT_SUPPORTED. "changeTracking" needs the markdown format too, and a server with SEX_DATA_DIR (sex; sex-lite returns 501). "rawBase64" (the file\'s bytes as base64) cannot be combined with other formats.',
       ),
     onlyMainContent: z.boolean().optional().describe("Return only the main content (Defuddle). Defaults to true."),
     includeTags: z
@@ -241,6 +264,25 @@ export const ScrapeActionsResult = z.object({
   pdfs: z.array(z.string()),
 });
 
+export const ChangeTrackingResult = z.object({
+  previousScrapeAt: z.string().nullable().describe("When this URL was last scraped under the same tag; null for the first scrape."),
+  changeStatus: z
+    .enum(["new", "same", "changed", "removed"])
+    .describe("new: no previous scrape. same: the text is the same. changed: it differs. removed: the page answered 404."),
+  visibility: z.enum(["visible", "hidden"]).describe("Always visible: sex has no crawl-scoped pages to hide."),
+  diff: z
+    .object({
+      text: z.string().describe("Unified diff, previous.md -> current.md"),
+      json: z.unknown().describe("The same diff as { files: [{ from, to, chunks: [{ content, changes }] }] } (Firecrawl's shape)"),
+    })
+    .optional(),
+  json: z
+    .unknown()
+    .optional()
+    .describe('The "json" mode: field -> { previous, current } with a schema, else the LLM\'s description of the changes.'),
+});
+export type ChangeTrackingResult = z.infer<typeof ChangeTrackingResult>;
+
 export const Document = z
   .object({
     markdown: z.string().optional(),
@@ -257,6 +299,7 @@ export const Document = z
     json: z.unknown().optional(),
     answer: z.string().optional(),
     highlights: z.string().optional(),
+    changeTracking: ChangeTrackingResult.optional(),
     attributes: z.array(z.object({ selector: z.string(), attribute: z.string(), values: z.array(z.string()) })).optional(),
     actions: ScrapeActionsResult.optional(),
     warning: z.string().optional(),
