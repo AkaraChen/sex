@@ -158,7 +158,11 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - crawl 遵守 robots.txt（RFC 9309）：robots.txt 返回 5xx 时视为全部禁止，返回 4xx 时视为全部允许。
 - 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
 - LLM 相关的格式（json / summary / question / highlights）和 extract：
-  - 带 JSON Schema 时，模型输出会按原始 schema 校验（Ajv，按 `$schema` 选择 draft-07 / 2019-09 / 2020-12，未写时按 2020-12；`format` 不校验），不符合时返回 `502 LLM_INVALID_OUTPUT`。schema 本身不合法时，在开始抓取之前就返回 `400 BAD_REQUEST`。
+  - 带 JSON Schema 时，模型输出会按原始 schema 校验（Ajv，按 `$schema` 选择 draft-07 / 2019-09 / 2020-12，未写时按 2020-12；`format` 不校验）。输出不是合法 JSON 或不符合 schema 时，会把错误发回给模型修正一次，仍不符合才返回 `502 LLM_INVALID_OUTPUT`。schema 本身不合法时，在开始抓取之前就返回 `400 BAD_REQUEST`。根节点是数组的 schema 会包成 `{ items }` 发给模型（structured output 要求根节点是对象），返回时再拆开。
+  - 页面内容放在 `<page>` 等标签里交给模型，system prompt 声明标签内是不可信内容，页面里的同名标签会被转义。页面超过 `SEX_LLM_MAX_INPUT_CHARS` 时截断，并在 `warning` 里说明。
+  - `highlights` 和 `query` 格式的 `mode: "directQuote"` 让模型只返回行号，再从页面原文取出对应的行，结果一定是原文。`question` 和默认的 `query` 是自由回答。
+  - `checkPromptInjection: true` 时，先用 LLM 检查页面有没有 prompt 注入（按 32000 字符分块、块间重叠 2000），发现后返回 `403 SCRAPE_PROMPT_INJECTION_DETECTED`。检查调用本身失败时放行，并在 `warning` 里说明有内容没检查到。extract 的 `scrapeOptions` 里也可以开。
+  - extract 的流程沿用 Firecrawl：只有 prompt 时先让模型生成 schema；schema 里有数组时，先判断是"单一答案"还是"多实体"。多实体的数组字段逐页抽取（每页带 `is_content_relevant`，不相关的页丢掉），其余字段把所有页面一起抽取；多份结果在代码里合并（数组拼接、去重，同一实体的空字段互相补全；标量取第一个非空值），不再让 LLM 合并。
   - 模型输出被截断（达到 token 上限）或被内容过滤拦截时返回 `502 LLM_ERROR`，模型拒答时返回 `502 LLM_REFUSED`，不会把不完整的结果当作正常结果返回。
   - LLM 接口返回 429（或带 `retry-after` 的 503）时，按 `retry-after` 等待后最多重试 2 次，等待时间算在 `SEX_LLM_TIMEOUT` 内；仍然失败时返回 `429 LLM_RATE_LIMITED`。错误详情里带上游的 request id。
 - 任务取消后，正在执行的页面会跑完，但结果会被丢弃；还在队列里的任务会被跳过。

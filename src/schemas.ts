@@ -132,6 +132,10 @@ export const ScrapeOptions = z.object({
   actions: z.array(Action).max(50).optional().describe("Browser actions run before the page is captured (browser only, at most 50)"),
   location: LocationConfig.optional(),
   removeBase64Images: z.boolean().optional(),
+  checkPromptInjection: z
+    .boolean()
+    .optional()
+    .describe("Have the LLM check the page for prompt injection first; a detection fails with 403 SCRAPE_PROMPT_INJECTION_DETECTED"),
   blockAds: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
   proxy: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
   maxAge: z.number().optional().describe("Accepted for Firecrawl compatibility; ignored (there is no cache)."),

@@ -17,6 +17,8 @@ export interface NormalizedFormats {
   json?: { prompt?: string; schema?: Record<string, unknown> };
   attributes?: Array<{ selector: string; attribute: string }>;
   question?: string;
+  /** `query` format mode: "directQuote" answers with verbatim page lines. */
+  questionMode?: "freeform" | "directQuote";
   highlights?: string;
 }
 
@@ -66,9 +68,12 @@ export function normalizeFormats(formats: FormatOption[] | undefined): Normalize
       case "highlights":
         out.highlights = (f as { query: string }).query;
         break;
-      case "query":
-        out.question = (f as { prompt: string }).prompt;
+      case "query": {
+        const q = f as { prompt: string; mode?: "freeform" | "directQuote" };
+        out.question = q.prompt;
+        out.questionMode = q.mode;
         break;
+      }
     }
   }
   return out;
@@ -90,7 +95,7 @@ export function assertScrapeCapabilities(engine: Engine, options: ScrapeOptions 
   if (!engine.browser.enabled) {
     if (options?.actions?.length) throw browserRequired("Actions");
   }
-  const llmFeature = needsLlm(formats);
+  const llmFeature = needsLlm(formats) ?? (options?.checkPromptInjection ? "checkPromptInjection" : undefined);
   if (llmFeature && !engine.llm.enabled) throw llmRequired(llmFeature);
   if (formats.json?.schema) compileJsonSchema(formats.json.schema);
   return formats;
@@ -282,14 +287,33 @@ async function scrapeInner(
   if (formats.attributes) doc.attributes = extracted?.attributes ?? [];
   if (browserResult?.actions) doc.actions = browserResult.actions;
 
+  const sig = internal.signal;
+  if (options.checkPromptInjection) {
+    // Runs before every LLM-backed format, so content it blocks never reaches one.
+    const { text, truncated } = engine.llm.fit(markdown);
+    const { scannedFully } = await engine.llm.checkInjection(text, sig);
+    if (truncated || !scannedFully) {
+      warnings.push(
+        truncated
+          ? `The prompt injection check scanned only the first ${engine.llm.maxInputChars} characters of the page.`
+          : "The prompt injection check could not scan all of the page content, so some of it was not checked.",
+      );
+    }
+  }
+
   if (needsLlm(formats)) {
-    const content = `${title ? `# ${title}\n\n` : ""}${markdown}`;
-    const sig = internal.signal;
+    const { text: content, truncated } = engine.llm.fit(`${title ? `# ${title}\n\n` : ""}${markdown}`);
+    if (truncated) warnings.push(`The page was too long for the LLM; only its first ${engine.llm.maxInputChars} characters were used.`);
+    const { llm } = engine;
     const [json, summary, answer, highlights] = await Promise.all([
-      formats.json ? engine.llm.extractJson(content, formats.json, sig) : undefined,
-      formats.summary ? engine.llm.summarize(content, sig) : undefined,
-      formats.question ? engine.llm.answer(content, formats.question, sig) : undefined,
-      formats.highlights ? engine.llm.highlights(content, formats.highlights, sig) : undefined,
+      formats.json ? llm.extractJson(content, { ...formats.json, url: finalUrl }, sig) : undefined,
+      formats.summary ? llm.summarize(content, sig, finalUrl) : undefined,
+      formats.question
+        ? formats.questionMode === "directQuote"
+          ? llm.selectLines(content, formats.question, "answer", sig, finalUrl)
+          : llm.answer(content, formats.question, sig, finalUrl)
+        : undefined,
+      formats.highlights ? llm.selectLines(content, formats.highlights, "highlights", sig, finalUrl) : undefined,
     ]);
     if (formats.json) doc.json = json;
     if (summary !== undefined) doc.summary = summary;

@@ -1,12 +1,14 @@
 import pLimit from "p-limit";
-import { badRequest, toAppError } from "../errors.ts";
+import { AppError, badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import type { ExtractRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
+import { arrayKeys, mergeAll, splitSchema, withProperty } from "./extract-merge.ts";
 import type { JobRecord } from "./jobs/index.ts";
-import { compileJsonSchema } from "./json-schema.ts";
+import { compileJsonSchema, describeSchemaErrors } from "./json-schema.ts";
 import { mapSite } from "./map.ts";
 import { assertPublicUrl, parseHttpUrl } from "./net.ts";
+import { RELEVANCE_FIELD_DESCRIPTION } from "./prompts.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "./scrape.ts";
 import { search } from "./search.ts";
 
@@ -106,41 +108,212 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
       }),
     ),
   );
-  const ok = pages.filter((p): p is { url: string; markdown: string } => !!p && p.markdown.trim().length > 0);
+  const ok = pages.filter((p): p is Page => !!p && p.markdown.trim().length > 0);
   if (!ok.length) throw new Error(`Could not scrape any of the ${targets.size} source pages`);
 
-  // Pack pages into LLM-sized chunks; merge partial results when there is more than one.
-  const budget = engine.llm.maxInputChars;
-  const chunks: string[] = [];
-  let current = "";
-  for (const p of ok) {
-    const block = `## Source: ${p.url}\n\n${p.markdown.slice(0, budget)}\n\n`;
-    if (current && current.length + block.length > budget) {
-      chunks.push(current);
-      current = "";
-    }
-    current += block;
-  }
-  if (current) chunks.push(current);
-
-  const llmOpts = { prompt: req.prompt, schema: req.schema, systemPrompt: req.systemPrompt };
-  const partials = await Promise.all(chunks.map((c) => limit(() => engine.llm.extractJson(c, llmOpts, signal))));
-  const result =
-    partials.length === 1
-      ? partials[0]
-      : await engine.llm.extractJson(
-          `Partial extraction results from different source pages, as JSON:\n${JSON.stringify(partials)}`,
-          {
-            ...llmOpts,
-            prompt: `Merge these partial results into one complete answer, deduplicating entries.${req.prompt ? ` Original instructions: ${req.prompt}` : ""}`,
-          },
-          signal,
-        );
+  const { result, used } = await extractFromPages(engine, req, ok, limit, signal, (url, err) =>
+    engine.jobs.store.pushError(jobId, {
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      url,
+      error: toAppError(err).message,
+    }),
+  );
 
   return {
     result,
-    sources: req.showSources ? { "*": ok.map((p) => p.url) } : undefined,
+    sources: req.showSources ? { "*": used } : undefined,
     total: targets.size,
     completed: ok.length,
   };
+}
+
+interface Page {
+  url: string;
+  markdown: string;
+}
+
+type Limit = ReturnType<typeof pLimit>;
+type Schema = Record<string, unknown>;
+
+/** Firecrawl's per-page relevance flag, added to multi-entity extraction and stripped from results. */
+const RELEVANT = "is_content_relevant";
+
+/**
+ * Firecrawl's extract flow:
+ * 1. A prompt without a schema gets a generated schema, so every page answers in the same shape.
+ * 2. A schema with arrays is classified Single-Answer or Multi-Entity. Multi-entity keys are
+ *    extracted page by page (each answer says whether its page was relevant) and merged in code.
+ * 3. The remaining keys are one answer from all pages together, packed into as few LLM calls as
+ *    the input budget allows and merged in code when it takes more than one.
+ */
+async function extractFromPages(
+  engine: Engine,
+  req: ExtractRequest,
+  pages: Page[],
+  limit: Limit,
+  signal: AbortSignal,
+  onError: (url: string, err: unknown) => Promise<void>,
+): Promise<{ result: unknown; used: string[] }> {
+  const { llm } = engine;
+  const opts = { prompt: req.prompt, systemPrompt: req.systemPrompt, urls: pages.map((p) => p.url) };
+
+  let schema = req.schema;
+  if (!schema && req.prompt) {
+    try {
+      schema = await llm.generateSchema(req.prompt, signal);
+      log.debug("generated extract schema", { schema });
+    } catch (err) {
+      if (signal.aborted) throw err;
+      log.warn("could not generate a schema for the extract; extracting without one", { error: toAppError(err).message });
+    }
+  }
+
+  let multi: Schema | undefined;
+  let single: Schema | undefined = schema;
+  if (schema && isArrayRoot(schema)) {
+    multi = schema;
+    single = undefined;
+  } else if (schema && arrayKeys(schema).length) {
+    try {
+      const plan = await llm.planExtract(schema, req.prompt, opts.urls, signal);
+      log.debug("extract plan", { ...plan });
+      if (plan.isMultiEntity) ({ multi, single } = splitSchema(schema, plan.multiEntityKeys));
+    } catch (err) {
+      if (signal.aborted) throw err;
+      log.warn("could not classify the extract; treating it as a single answer", { error: toAppError(err).message });
+    }
+  }
+
+  const used = new Set<string>();
+  const parts: unknown[] = [];
+  const run = async (url: string, task: () => Promise<unknown>, errors: unknown[]) => {
+    try {
+      return await task();
+    } catch (err) {
+      if (signal.aborted) throw err;
+      errors.push(err);
+      await onError(url, err);
+      return undefined;
+    }
+  };
+
+  if (multi) {
+    // One call per page (or per piece of a page over the budget), so no entity is cut off.
+    const rootArray = isArrayRoot(multi);
+    const sent = rootArray ? multi : withProperty(multi, RELEVANT, RELEVANCE_FIELD_DESCRIPTION);
+    const pieces = pages.flatMap((p) => chunkText(p.markdown, llm.maxInputChars).map((text) => ({ url: p.url, text })));
+    const errors: unknown[] = [];
+    const results = await Promise.all(
+      pieces.map((piece) =>
+        limit(() =>
+          run(
+            piece.url,
+            async () => {
+              const v = await llm.extractJson(piece.text, { ...opts, schema: sent, url: piece.url }, signal);
+              if (!rootArray) {
+                if (!v || typeof v !== "object" || (v as Record<string, unknown>)[RELEVANT] === false) return undefined;
+                delete (v as Record<string, unknown>)[RELEVANT];
+              }
+              used.add(piece.url);
+              return v;
+            },
+            errors,
+          ),
+        ),
+      ),
+    );
+    const found = results.filter((r) => r !== undefined);
+    if (!found.length && errors.length) throw errors[0];
+    parts.push(mergeAll([emptyArrays(multi), ...found]));
+  }
+
+  if (single || !schema) {
+    const chunks = packPages(pages, llm.maxInputChars);
+    const errors: unknown[] = [];
+    const results = await Promise.all(
+      chunks.map((c) =>
+        limit(() =>
+          run(
+            c.urls[0] ?? "",
+            async () => {
+              const v = await llm.extractJson(
+                c.text,
+                { ...opts, schema: single, url: c.urls.length === 1 ? c.urls[0] : undefined },
+                signal,
+              );
+              for (const u of c.urls) used.add(u);
+              return v;
+            },
+            errors,
+          ),
+        ),
+      ),
+    );
+    const found = results.filter((r) => r !== undefined);
+    if (!found.length && errors.length) throw errors[0];
+    parts.push(mergeAll(found));
+  }
+
+  const result = mergeAll(parts);
+  if (schema) {
+    const validate = compileJsonSchema(schema);
+    if (!validate(result)) {
+      const errors = describeSchemaErrors(validate.errors);
+      throw new AppError(502, "LLM_INVALID_OUTPUT", `Merged extract result does not match the JSON Schema: ${errors.join("; ")}`, {
+        errors,
+      });
+    }
+  }
+  return { result, used: pages.map((p) => p.url).filter((u) => used.has(u)) };
+}
+
+function isArrayRoot(schema: Schema): boolean {
+  const t = schema.type;
+  return t === "array" || (Array.isArray(t) && t.includes("array") && !t.includes("object"));
+}
+
+/** `[]` for each array property (or `[]` for a root array), so entity keys exist even when no page had any. */
+function emptyArrays(schema: Schema): unknown {
+  if (isArrayRoot(schema)) return [];
+  const props = (schema.properties ?? {}) as Record<string, Schema>;
+  return Object.fromEntries(
+    Object.entries(props)
+      .filter(([, s]) => s?.type === "array")
+      .map(([k]) => [k, []]),
+  );
+}
+
+/** Splits text into pieces of at most `size` characters, cutting at a line break where one is near. */
+function chunkText(text: string, size: number): string[] {
+  const out: string[] = [];
+  let rest = text;
+  while (rest.length > size) {
+    const cut = rest.lastIndexOf("\n", size);
+    const at = cut > size / 2 ? cut + 1 : size;
+    out.push(rest.slice(0, at));
+    rest = rest.slice(at);
+  }
+  if (rest.trim() || !out.length) out.push(rest);
+  return out;
+}
+
+/** Packs pages, each under a `## Source:` heading, into as few chunks of at most `budget` characters as possible. */
+function packPages(pages: Page[], budget: number): Array<{ text: string; urls: string[] }> {
+  const chunks: Array<{ text: string; urls: string[] }> = [];
+  let current = { text: "", urls: [] as string[] };
+  for (const p of pages) {
+    const header = `## Source: ${p.url}\n\n`;
+    for (const piece of chunkText(p.markdown, budget - header.length)) {
+      const block = `${header}${piece}\n\n`;
+      if (current.text && current.text.length + block.length > budget) {
+        chunks.push(current);
+        current = { text: "", urls: [] };
+      }
+      current.text += block;
+      if (!current.urls.includes(p.url)) current.urls.push(p.url);
+    }
+  }
+  if (current.text) chunks.push(current);
+  return chunks;
 }
