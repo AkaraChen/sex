@@ -36,6 +36,17 @@ jobs:
           ./sex fetch http://127.0.0.1:8765/report.docx --docs | tee out.md
           grep -q "| EMEA | 42 |" out.md
           ./sex fetch http://127.0.0.1:8765/scan.pdf --docs | grep -q "Scanned invoice 4711"
+      - name: The binary runs its embedded Lightpanda and SearXNG (nothing on PATH)
+        run: |
+          cd "$RUNNER_TEMP/alone"
+          export XDG_CACHE_HOME="$RUNNER_TEMP/cache" PATH=/usr/bin:/bin
+          ./sex fetch http://127.0.0.1:8765/ --lightpanda --allow-private-network --log-level info 2>err.log | grep -q "report.docx"
+          grep -q "lightpanda started" err.log
+          ./sex serve --port 3002 --data-dir "$RUNNER_TEMP/data" &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:3002/health > health.json && break; sleep 1; done
+          cat health.json
+          grep -q '"searxng":"managed (http' health.json
+          kill %1
 
   browser:
     runs-on: ubuntu-latest
@@ -45,13 +56,8 @@ jobs:
         with:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
-      # The same binary the Docker image ships: the image is pinned by digest in the Dockerfile.
-      - name: Extract Lightpanda from its image
-        run: |
-          image=$(sed -n 's/^ARG LIGHTPANDA_IMAGE=//p' Dockerfile)
-          id=$(docker create "$image")
-          docker cp "$id:/bin/lightpanda" "$RUNNER_TEMP/lightpanda"
-          docker rm "$id"
+      # The same release dist/sex embeds: version and SHA-256 are pinned in scripts/lightpanda.ts.
+      - run: bun scripts/lightpanda.ts "$RUNNER_TEMP/lightpanda"
       - run: bun test test/browser.test.ts
         env:
           SEX_TEST_LIGHTPANDA_PATH: ${{ runner.temp }}/lightpanda

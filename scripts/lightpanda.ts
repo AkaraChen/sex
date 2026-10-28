@@ -51,3 +51,14 @@ export async function lightpandaFor(platform: { os: string; cpu: string; libc?: 
   renameSync(tmp, path);
   return { path, version: LIGHTPANDA_VERSION, sha256: asset.sha256 };
 }
+
+// `bun scripts/lightpanda.ts <path>` writes the pinned binary for this host to <path> (CI runs the browser tests with it).
+if (import.meta.main) {
+  const out = process.argv[2];
+  if (!out) throw new Error("usage: bun scripts/lightpanda.ts <output path>");
+  const libc = process.platform === "linux" ? "glibc" : undefined;
+  const lightpanda = await lightpandaFor({ os: process.platform, cpu: process.arch, libc });
+  if (!lightpanda) throw new Error(`no Lightpanda build for ${process.platform}-${process.arch}`);
+  writeFileSync(out, Bun.zstdDecompressSync(await Bun.file(lightpanda.path).bytes()), { mode: 0o755 });
+  console.log(`lightpanda ${lightpanda.version} -> ${out}`);
+}
