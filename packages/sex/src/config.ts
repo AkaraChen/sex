@@ -48,6 +48,12 @@ export interface Config extends CoreConfig {
   webhookSecret?: string;
   /** How long finished jobs are kept, in ms. */
   jobTtlMs: number;
+  /** The `maxAge` of a scrape request that gives none, in ms; 0 means pages are always fetched fresh (and not stored). */
+  cacheMaxAgeMs: number;
+  /** How long a cached page is kept, in ms: also the most a request's `maxAge` can reach. */
+  cacheTtlMs: number;
+  /** Size limit of the page cache in bytes (compressed); the least recently used pages go first. Needs `dataDir`. */
+  cacheMaxBytes: number;
   /** Pages mapped for an extract URL ending in `/*`. */
   extractWildcardPages: number;
   /** Names of the MCP tools: `web` (`web_fetch`, ...) or `firecrawl` (firecrawl-mcp's names where it has the tool). */
@@ -76,6 +82,9 @@ export interface ConfigOverrides extends CoreConfigOverrides {
   mcpToolNames?: string;
 }
 
+/** Firecrawl's default `maxAge`: two days. */
+const DEFAULT_CACHE_TTL_MS = 2 * 24 * 60 * 60 * 1000;
+
 const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1";
 
 /** `s3://bucket[/prefix]` (a bucket is required) or `file:///absolute/path` (no host). */
@@ -95,6 +104,9 @@ const FIELDS = {
   ...CORE_FIELDS,
   llmTimeout: intField(1000),
   jobTtlMs: intField(60_000),
+  cacheMaxAgeMs: intField(0),
+  cacheTtlMs: intField(60_000),
+  cacheMaxBytes: intField(1024 * 1024),
   extractWildcardPages: intField(1),
   llmMaxInputChars: intField(1000),
   llmBaseUrl: urlField,
@@ -110,6 +122,9 @@ const FIELD_RULES: FieldRules<keyof typeof FIELDS> = {
   ...CORE_FIELD_RULES,
   llmTimeout: ["SEX_LLM_TIMEOUT", "an integer >= 1000 (milliseconds)"],
   jobTtlMs: ["SEX_JOB_TTL_MS", "an integer >= 60000 (milliseconds)"],
+  cacheMaxAgeMs: ["SEX_CACHE_MAX_AGE_MS", "an integer >= 0 (milliseconds)"],
+  cacheTtlMs: ["SEX_CACHE_TTL_MS", "an integer >= 60000 (milliseconds)"],
+  cacheMaxBytes: ["SEX_CACHE_MAX_BYTES", "an integer >= 1048576"],
   extractWildcardPages: ["SEX_EXTRACT_WILDCARD_PAGES", "an integer >= 1"],
   llmMaxInputChars: ["SEX_LLM_MAX_INPUT_CHARS", "an integer >= 1000"],
   llmBaseUrl: ["SEX_LLM_BASE_URL", "an http(s) URL"],
@@ -143,6 +158,9 @@ export function resolveConfig(
     ...coreRawValues(o, env),
     llmTimeout: o.llmTimeout ?? str(env.SEX_LLM_TIMEOUT),
     jobTtlMs: str(env.SEX_JOB_TTL_MS),
+    cacheMaxAgeMs: str(env.SEX_CACHE_MAX_AGE_MS),
+    cacheTtlMs: str(env.SEX_CACHE_TTL_MS),
+    cacheMaxBytes: str(env.SEX_CACHE_MAX_BYTES),
     extractWildcardPages: str(env.SEX_EXTRACT_WILDCARD_PAGES),
     llmMaxInputChars: o.llmMaxInputChars ?? str(env.SEX_LLM_MAX_INPUT_CHARS),
     llmBaseUrl: str(o.llmBaseUrl) ?? str(env.SEX_LLM_BASE_URL) ?? str(env.OPENAI_BASE_URL),
@@ -184,6 +202,9 @@ export function resolveConfig(
     llmMaxInputChars: v.llmMaxInputChars ?? 200_000,
     webhookSecret: str(o.webhookSecret) ?? str(env.SEX_WEBHOOK_SECRET),
     jobTtlMs: v.jobTtlMs ?? 24 * 60 * 60 * 1000,
+    cacheMaxAgeMs: v.cacheMaxAgeMs ?? 0,
+    cacheTtlMs: v.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS,
+    cacheMaxBytes: v.cacheMaxBytes ?? 256 * 1024 * 1024,
     extractWildcardPages: v.extractWildcardPages ?? 25,
     mcpToolNames: v.mcpToolNames ?? "web",
   };

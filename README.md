@@ -178,11 +178,25 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 | `SEX_DATA_DIR` | `--data-dir` | `serve`：`$XDG_DATA_HOME/sex` 或 `~/.local/share/sex`；Docker：`/data` | 任务数据库和任务队列（SQLite）所在目录，抓到的文档默认也在这里（`documents/`）；`search` / `fetch` 不使用 |
 | `SEX_DOCUMENTS_URL` | `serve --documents-url` | `SEX_DATA_DIR/documents` | 任务抓到的文档存在哪里：`s3://bucket/prefix`（prefix 可省略；endpoint、凭据、region 读 Bun 的 `S3_ENDPOINT`、`S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY`、`S3_REGION`，或对应的 `AWS_*`）或 `file:///绝对路径`，其它值报 `CONFIG_INVALID`。一个 prefix（或目录）只能给一个 sex 实例用。见[任务队列](#任务队列) |
 | `SEX_JOB_TTL_MS` | — | `86400000`（24 小时，最小 60000） | 任务结束后的保留时间（从结束时开始算，运行中的任务不会过期） |
+| `SEX_CACHE_MAX_AGE_MS` | — | `0`（不用缓存） | 请求没给 `maxAge` 时用的 `maxAge`（毫秒）。`0` 表示请求不给 `maxAge` 时完全不用缓存（不读也不写）；要默认用缓存就设成比如 `172800000`（Firecrawl 的默认值，两天）。见[页面缓存](#页面缓存) |
+| `SEX_CACHE_TTL_MS` | — | `172800000`（两天，最小 60000） | 缓存页面的保留时间，过了就删；请求的 `maxAge` 最大也只到这个值 |
+| `SEX_CACHE_MAX_BYTES` | — | `268435456`（256 MiB，最小 1048576） | 缓存占用上限（压缩后的字节数），超出时先删最久没被用到的页面 |
 | `SEX_WEBHOOK_SECRET` | —（不提供命令行参数，免得出现在进程列表里） | 空（不签名） | 设了之后，每个 webhook 的请求体用它做 HMAC-SHA256，结果放进请求头 `X-Firecrawl-Signature: sha256=<hex>`。见[Webhook](#webhook) |
 | `SEX_LOG_LEVEL` | `--log-level` | `info` | `debug` / `info` / `warn` / `error` / `silent` |
 | `SEX_STRICT_REQUESTS` | — | `false` | HTTP API 收到 schema 里没有的请求字段（含 `scrapeOptions` 等嵌套对象里的）时返回 `400`，而不是丢掉；不影响 MCP |
 | `SEX_CORS_ORIGINS` | `--cors-origin` | 空（CORS 关闭） | 允许跨域调用 HTTP API 和 MCP 端点的浏览器 origin，逗号分隔，不带路径 |
 | `SEX_ALLOWED_HOSTS` | `--allowed-host` | 绑定回环地址时只接受 `localhost` / `127.0.0.1` / `[::1]` | 允许的 `Host` 头主机名，逗号分隔，不带端口 |
+
+### 页面缓存
+
+`maxAge`、`storeInCache`、`minAge`、`lockdown` 按 Firecrawl 的含义工作（只有 sex，sex-lite 没有缓存）。缓存存在 `SEX_DATA_DIR/cache.sqlite`（bun:sqlite，和任务数据库分开，大块内容和它的 WAL 不进 `jobs.sqlite`）；没有数据目录时（一次性 CLI 命令）没有缓存。
+
+- **缓存什么**：抓到的内容，不是最后的 Document：HTTP 响应体（HTML、PDF、文件字节），浏览器渲染的页面则是渲染后的 HTML，zstd 压缩后一个 (URL, 变体) 一行。`formats`、选择器、`parsers`（含 `maxPages`）、LLM 格式都是对取出来的内容再做一遍，所以一条缓存可以回答所有格式的请求，命中时仍会解析（省掉的是下载和渲染）。只缓存 2xx 响应。
+- **缓存键**：抓取用的 URL（重写后、去掉 `#` 片段）加变体：有没有走浏览器渲染、`blockAds: false`、`waitFor`、`mobile`、`skipTlsVerification`、`location.languages`。
+- **不读也不写**：带 `actions` 或 `headers` 的请求，`rawBase64`，上传；以及请求没给 `maxAge`、而 `SEX_CACHE_MAX_AGE_MS` 是 0 的请求。
+- **读写**：`maxAge`（毫秒）内的缓存命中；没命中就现抓，并写入缓存，除非 `storeInCache: false`。请求里明确给 `maxAge: 0`（和 Firecrawl 一致）是不读缓存、照常现抓，但仍然写入，用来刷新一条缓存。`metadata.cacheState` 是 `hit` / `miss`，命中时还有 `metadata.cachedAt`（写入时间，ISO 8601）。`lockdown` 和 `minAge` 只读缓存，永远不抓页面：`minAge` 要求缓存至少这么旧，没给 `maxAge` 时上限是 `SEX_CACHE_TTL_MS`，没有符合的缓存（或请求本来就不缓存）返回 `404 SCRAPE_NO_CACHED_DATA`。
+- **过期与容量**：超过 `SEX_CACHE_TTL_MS` 的在启动时和之后每 10 分钟（写入时检查）删除；总大小超过 `SEX_CACHE_MAX_BYTES` 时删最久没被用到的；压缩后超过上限 1/8 的单个页面不缓存。缓存文件打不开或不是数据库时重建。
+- **命中和现抓的差别**：浏览器渲染的页面存的是渲染后的 HTML，命中时在 Node 里用 linkedom 重新解析，而现抓是在浏览器里跑页面脚本，个别页面的结果会有细微差别；命中时 `mobile` 没有浏览器的 warning 也不再出现。crawl、batch 和 search 的 `scrapeOptions` 里给 `maxAge` 同样生效。
 
 ## 任务队列
 
@@ -265,7 +279,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - 不支持 `screenshot`、`deterministicJson`、`changeTracking`、`branding`、`product`、`menu`、`audio`、`video` 这几种格式，以及 `screenshot` / `pdf` 这两种 action，会返回 `501 NOT_SUPPORTED`。
 - 没做的参数不会静默丢掉：
   - `redactPII`、`zeroDataRetention`（scrape、search）、`onlyCleanContent` 为真时返回 `501 NOT_SUPPORTED`。
-  - `lockdown`、`minAge` 只读缓存，而 sex 没有缓存：返回 Firecrawl 的 `404 SCRAPE_NO_CACHED_DATA`，不去抓活页面。`maxAge`、`storeInCache` 接受但没有效果（页面总是现抓的，不写缓存）。
+  - `maxAge`、`storeInCache`、`minAge`、`lockdown` 见[页面缓存](#页面缓存)。**默认 `maxAge` 是 0（总是现抓），不是 Firecrawl 的两天**，要默认用缓存设 `SEX_CACHE_MAX_AGE_MS`。sex-lite 和没有数据目录的 sex 没有缓存：`maxAge`、`storeInCache` 接受但没有效果，`lockdown`、`minAge` 返回 Firecrawl 的 `404 SCRAPE_NO_CACHED_DATA`，不去抓活页面。
   - `proxy` 是 `basic` / `stealth` / `enhanced` / `auto` 之一；`stealth` / `enhanced` 没有代理池，`location.country` 不做地域定位，没有浏览器时 `mobile` 只改 User-Agent，这几项在 `warning` 里写 `-- your scrape may be partial`。搜索的 `country` / `location` 和不是 `qdr:` 的 `tbs` 同样不生效，`warning` 里也有说明。`json` 格式的 `model` 被忽略（模型是 `SEX_LLM_MODEL`），也有 warning。
   - `rawBase64` 格式返回原始字节的 base64（`document.rawBase64`），不能和其它格式、`checkPromptInjection`、`actions` 组合（`400`）；有浏览器时也直接 HTTP 抓取，不渲染。
   - `fastMode: true` 跳过浏览器，只做 HTTP 抓取（脚本不会运行），不能和 `actions` 一起用（`400`）。
@@ -316,7 +330,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 | 400 | `BAD_REQUEST`、`CONFIG_INVALID` | 请求参数不合法（含 `waitFor` + `wait` 超过 60000、`wait` 缺 / 同时给 `milliseconds` 和 `selector`） | 否 |
 | 400 | `ACTION_FAILED` | 浏览器 action 执行失败（选择器不存在、脚本报错）；到期则是 `SCRAPE_TIMEOUT` | 否 |
 | 403 | `PRIVATE_NETWORK_BLOCKED`、`SCRAPE_PROMPT_INJECTION_DETECTED` | 内网地址被拦截；注入检查命中 | 否 |
-| 404 | `SCRAPE_NO_CACHED_DATA` | `lockdown` / `minAge` 只读缓存，而 sex 没有缓存 | 否 |
+| 404 | `SCRAPE_NO_CACHED_DATA` | `lockdown` / `minAge` 只读缓存，而没有缓存，或缓存里没有符合的页面 | 否 |
 | 408 | `SCRAPE_TIMEOUT` | scrape 的 deadline 到期 | 是 |
 | 408 | `TIMEOUT` | 调用方取消；或单个 LLM 调用、SearXNG 请求超过自己的限制 | 否 |
 | 413 / 415 / 508 | `RESPONSE_TOO_LARGE`、`UNSUPPORTED_FILE`、`TOO_MANY_REDIRECTS` | 响应太大、文件类型不支持、重定向过多 | 否 |

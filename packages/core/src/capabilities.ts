@@ -5,7 +5,8 @@ import type { Action } from "./schemas.ts";
 
 /**
  * What a scrape can do beyond plain HTTP + Defuddle. sex provides all three (Lightpanda / CDP, an OpenAI-compatible LLM,
- * here-docs); sex-lite none. `scrapeUrl` fails with browserRequired() / llmRequired() for options that need a missing one.
+ * here-docs) and a page cache; sex-lite none. `scrapeUrl` fails with browserRequired() / llmRequired() for options that need a
+ * missing one, and without a cache `lockdown` / `minAge` are 404s.
  */
 
 /** Most page characters the injection guard scans; a page past it is cut, so nothing unscanned reaches the LLM (Firecrawl: 2M). */
@@ -114,4 +115,40 @@ export interface DocsConvertOptions {
 export interface ScrapeDocs {
   readonly enabled: boolean;
   convert(body: Uint8Array, opts: DocsConvertOptions): Promise<DocsResult>;
+}
+
+// ---------------------------------------------------------------- page cache
+
+/** What is looked up: the fetched URL and everything else that changes the stored bytes (`scrape.ts` `cacheVariant`). */
+export interface CacheKey {
+  url: string;
+  variant: string;
+}
+
+/**
+ * What a scrape fetched, before extraction: the HTTP response body, or for a browser scrape the rendered HTML (UTF-8).
+ * Formats, selectors and LLM options are applied on top, so one entry serves every request for the page.
+ */
+export interface CachedPage {
+  /** The URL after redirects. */
+  url: string;
+  status: number;
+  contentType: string;
+  body: Uint8Array;
+}
+
+/**
+ * A store of fetched pages, `maxAge` / `storeInCache` / `minAge` / `lockdown`. sex provides one (SQLite under SEX_DATA_DIR);
+ * sex-lite none, where `lockdown` / `minAge` are 404s. `scrapeUrl` decides what may be cached; the store only keeps bytes
+ * and drops what is old or over its size limit.
+ */
+export interface ScrapeCache {
+  /** The `maxAge` of a request that has none (SEX_CACHE_MAX_AGE_MS); 0 skips the cache. */
+  readonly defaultMaxAge: number;
+  /** Entries older than this are gone; it is the `maxAge` of a cache-only request (`lockdown` / `minAge`) that gives none. */
+  readonly retention: number;
+  /** The entry stored between `minAge` and `maxAge` ms ago, if any. */
+  get(key: CacheKey, age: { minAge?: number; maxAge: number }): Promise<(CachedPage & { storedAt: number }) | undefined>;
+  /** Never throws: a cache that cannot store is a miss next time. */
+  put(key: CacheKey, page: CachedPage): Promise<void>;
 }

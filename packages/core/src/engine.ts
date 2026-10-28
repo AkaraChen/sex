@@ -1,5 +1,5 @@
 import pLimit from "p-limit";
-import type { ScrapeBrowser, ScrapeDocs, ScrapeLlm } from "./capabilities.ts";
+import type { ScrapeBrowser, ScrapeCache, ScrapeDocs, ScrapeLlm } from "./capabilities.ts";
 import type { CoreConfig } from "./config.ts";
 import { ExtractPool } from "./extract-pool.ts";
 import type { Document, ScrapeRequest, SearchData, SearchRequest } from "./schemas.ts";
@@ -22,6 +22,7 @@ export class BaseEngine<C extends CoreConfig = CoreConfig> implements SearchCont
   readonly browser?: ScrapeBrowser;
   readonly llm?: ScrapeLlm;
   readonly docs?: ScrapeDocs;
+  readonly cache?: ScrapeCache;
   readonly missingHints?: MissingHints;
 
   constructor(
