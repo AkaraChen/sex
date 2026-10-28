@@ -4,7 +4,12 @@ import { z } from "zod";
 import { AppError } from "./errors.ts";
 
 export interface Config {
-  searxngUrl: string;
+  /** External SearXNG base URL; when unset, sex runs SearXNG as a child process. */
+  searxngUrl?: string;
+  /** SearXNG executable for the managed instance (default: the bundled binary). */
+  searxngPath?: string;
+  /** settings.yml for the managed instance (default: a minimal one with the JSON API on). */
+  searxngSettings?: string;
   /** CDP endpoint of an already running browser (ws:// or http://). */
   cdpUrl?: string;
   /** Spawn a local Lightpanda process and use it as the browser. */
@@ -43,6 +48,8 @@ export interface Config {
 /** Values given on the command line; anything missing falls back to SEX_* env vars, then defaults. */
 export interface ConfigOverrides {
   searxngUrl?: string;
+  searxngPath?: string;
+  searxngSettings?: string;
   cdpUrl?: string;
   lightpanda?: boolean;
   lightpandaPath?: string;
@@ -69,7 +76,6 @@ type Env = Record<string, string | undefined>;
 export const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
 
 const DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
-const DEFAULT_SEARXNG_URL = "http://127.0.0.1:8080";
 const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1";
 
 /**
@@ -189,10 +195,11 @@ export function resolveConfig(
   }
   const v = parsed.data;
 
-  const searxngUrl = v.searxngUrl ?? DEFAULT_SEARXNG_URL;
   const llmModel = str(o.llmModel) ?? str(env.SEX_LLM_MODEL);
   return {
-    searxngUrl: searxngUrl.replace(/\/+$/, ""),
+    searxngUrl: v.searxngUrl?.replace(/\/+$/, ""),
+    searxngPath: str(o.searxngPath) ?? str(env.SEX_SEARXNG_PATH),
+    searxngSettings: str(o.searxngSettings) ?? str(env.SEX_SEARXNG_SETTINGS),
     cdpUrl: str(o.cdpUrl) ?? str(env.SEX_CDP_URL),
     lightpanda: v.lightpanda ?? false,
     lightpandaPath: str(o.lightpandaPath) ?? str(env.SEX_LIGHTPANDA_PATH) ?? str(env.LIGHTPANDA_EXECUTABLE_PATH),

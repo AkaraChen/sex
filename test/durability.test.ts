@@ -22,7 +22,7 @@ async function serve(port: number) {
     {
       stdout: "ignore",
       stderr: "inherit",
-      env: { ...process.env, SEX_DATA_DIR: "", SEX_DOCS: "", SEX_LIGHTPANDA: "" },
+      env: { ...process.env, SEX_DATA_DIR: "", SEX_DOCS: "", SEX_LIGHTPANDA: "", SEX_SEARXNG_URL: "http://127.0.0.1:1" },
     },
   );
   const base = `http://127.0.0.1:${port}`;

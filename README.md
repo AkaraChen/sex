@@ -2,10 +2,10 @@
 
 自托管的 Web Search + Web Fetch，目标是做 [Firecrawl](https://firecrawl.dev) v2 API 的 drop-in replacement。
 
-- **搜索**：[SearXNG](https://github.com/searxng/searxng)
+- **搜索**：[SearXNG](https://github.com/searxng/searxng)。默认由 sex 作为子进程启动（预编译二进制来自 [@searxng-js/searxng](https://github.com/AkaraChen/searxng)，`dist/sex` 里内置），也可以用 `SEX_SEARXNG_URL` 指向已部署的实例
 - **抓取/清洗**：[Defuddle](https://github.com/kepano/defuddle)（无浏览器时用 linkedom 跑它的 Node 版；有浏览器时把同一份浏览器 bundle 注入页面执行）。HTML 和 PDF 的解析在 worker 线程池里进行（`SEX_EXTRACT_WORKERS`）
 - **文档转换（可选）**：[here-docs](https://github.com/AkaraChen/here-docs)，PDF 保留标题、表格等结构，扫描页本地 OCR；还支持 Word / PowerPoint / Excel / OpenDocument / EPUB / RTF 和图片。不开时 PDF 用 unpdf 抽纯文本
-- **浏览器（可选）**：[Lightpanda](https://github.com/lightpanda-io/browser)（作为 sex 的子进程运行，Docker 镜像自带），或任意 CDP 浏览器（Chrome 等）
+- **浏览器（可选）**：[Lightpanda](https://github.com/lightpanda-io/browser)（作为 sex 的子进程运行，`dist/sex` 里内置了固定版本），或任意 CDP 浏览器（Chrome 等）
 - **LLM（可选）**：任意 OpenAI 兼容的 `/chat/completions` 接口
 - **任务**：crawl / batch scrape / extract 在 `serve` 进程里执行，队列用 [bunqueue](https://bunqueue.dev)（嵌入式），任务状态和队列都存在 SQLite 里（`SEX_DATA_DIR`），进程重启后接着跑。不需要 Redis，也没有单独的 worker 进程
 
@@ -14,20 +14,17 @@
 ## 快速开始
 
 ```bash
-bun install
-docker compose up -d searxng        # 或者自己跑一个 SearXNG，记得开启 json format
-
-export SEX_SEARXNG_URL=http://127.0.0.1:8080
-bun src/cli.ts search "defuddle"
+bun install                          # 同时装上本平台的 SearXNG 二进制
+bun src/cli.ts search "defuddle"     # sex 自己启动 SearXNG 子进程，用完即停
 bun src/cli.ts fetch https://stephango.com/saw
 bun src/cli.ts serve                 # HTTP API: http://127.0.0.1:3002/docs，MCP: http://127.0.0.1:3002/mcp
 
-bun run build                        # 单文件可执行：dist/sex（内置 here-docs，见「文档转换」）
+bun run build                        # 单文件可执行：dist/sex（内置 SearXNG、Lightpanda 和 here-docs）
 ```
 
 需要 LLM 功能时，先 `cp .env.example .env`，取消注释并填写 `SEX_LLM_MODEL`、`SEX_LLM_API_KEY` 等。
 
-一键起全套（SearXNG + `sex`；HTTP API、MCP 和任务都在同一个 sex 进程里，Lightpanda 是它的子进程，任务存在 `sex-data` volume 里）：
+一键起全套（只有一个 `sex` 服务：HTTP API、MCP 和任务都在同一个 sex 进程里，SearXNG 和 Lightpanda 是它的子进程，任务存在 `sex-data` volume 里）：
 
 ```bash
 docker compose up -d
@@ -35,17 +32,28 @@ docker compose up -d
 # MCP:      http://localhost:3002/mcp
 ```
 
-compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` 变量（如 `SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`）不会自动传入容器，需要加到 `compose.yaml` 的 `x-sex` 的 `environment` 里。
+compose 通过 `.env` 读取 `SEX_LLM_*`、`SEX_DOCS` 和 `SEX_SEARXNG_URL`。其它 `SEX_*` 变量（如 `SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`）不会自动传入容器，需要加到 `compose.yaml` 的 `x-sex` 的 `environment` 里。
 
 镜像里是单文件二进制 `sex`（内置 here-docs），`SEX_DOCS` 默认关闭，在 `.env` 里设 `SEX_DOCS=1` 开启；任务存在 `/data`（compose 挂了 `sex-data` volume）。
 
-镜像自带 Lightpanda（`/usr/local/bin/lightpanda`），compose 给 sex 设了 `SEX_LIGHTPANDA=1`，所以没有单独的 `lightpanda` 服务：sex 进程自己启动、管理一个子进程，空闲时约 13 MB 内存。二进制在镜像里不等于开启，是否使用仍由 `SEX_LIGHTPANDA` 决定；镜像因此大约增大 77 MB。Lightpanda 目前只有 nightly，`Dockerfile` 里的 `LIGHTPANDA_IMAGE` 按 digest 固定了版本，升级时手动改 digest（或 `docker build --build-arg LIGHTPANDA_IMAGE=...`）。详见[浏览器](#浏览器)。
+`dist/sex` 内置 Lightpanda，compose 给 sex 设了 `SEX_LIGHTPANDA=1`，所以没有单独的 `lightpanda` 服务：sex 进程自己启动、管理一个子进程，空闲时约 13 MB 内存。内置不等于开启，是否使用仍由 `SEX_LIGHTPANDA` 决定。详见[浏览器](#浏览器)。
+
+### SearXNG
+
+不设 `SEX_SEARXNG_URL` 时，sex 自己运行 SearXNG：`serve` 启动时就拉起（冷启动约 1.5 秒，失败则报错退出），`search` / `fetch` 这类一次性命令在第一次搜索时才启动，命令结束时停掉。子进程监听 `127.0.0.1` 的随机端口，每次启动用随机 secret；它退出后下一次搜索会重新启动，60 秒内连续 3 次启动失败则暂停 30 秒（期间搜索返回 `502 SEARCH_BACKEND_UNAVAILABLE`）。sex 被 SIGKILL 时 SearXNG 也会退出（它监听自己的 stdin 管道）。
+
+- 二进制：默认用 `@searxng-js/<平台>` 包里的（`bun install` 按平台装上，`bun run build` 把目标平台的嵌进 `dist/sex`，约 32 MB），第一次运行时解包到 `$XDG_CACHE_HOME/searxng-js/`，它自己再解压到 `$XDG_CACHE_HOME/searxng/`（约 130 MB）。`SEX_SEARXNG_PATH` 可以换成别的二进制。
+- 平台：只有 linux-x64（glibc ≥ 2.35）、macOS arm64、Windows x64 有预编译二进制。其它平台（包括 linux-arm64 的 Docker 镜像和 musl）请设 `SEX_SEARXNG_URL`。
+- 配置：默认是一份最小的 `settings.yml`（继承 SearXNG 默认值，开启 JSON，关闭 limiter 和 image proxy）。要调整引擎等设置，用 `SEX_SEARXNG_SETTINGS` 指定自己的文件，并保留 `search.formats` 里的 `json`；端口、监听地址和 secret 总是由 sex 设置。
+- 资源：常驻内存约 220 MB（onefile 启动器加 SearXNG 进程）。
+- 外部实例：设 `SEX_SEARXNG_URL`（或 `--searxng-url`）后不再启动子进程，需要在它的 `settings.yml` 里开启 json format。
+- 许可：SearXNG 二进制是 AGPL-3.0-or-later。分发 `dist/sex` 或 Docker 镜像时，需要同时提供对应源码（固定版本的 SearXNG 加 [AkaraChen/searxng](https://github.com/AkaraChen/searxng) 的构建脚本），见 `node_modules/@searxng-js/<平台>/THIRD-PARTY-NOTICES.md`。
 
 ## 可选能力
 
 | 能力 | 开启方式 | 依赖它的功能 |
 |---|---|---|
-| 浏览器 | `--lightpanda`（启动本地 Lightpanda 子进程，二进制从 PATH / `--lightpanda-path` 找；Docker 镜像自带，compose 已开启）或 `--cdp-url ws://...` | `actions`、JS 渲染页面；`waitFor` 无浏览器时忽略并给 warning |
+| 浏览器 | `--lightpanda`（启动本地 Lightpanda 子进程，`dist/sex` 内置；从源码运行时从 PATH / `--lightpanda-path` 找；compose 已开启）或 `--cdp-url ws://...` | `actions`、JS 渲染页面；`waitFor` 无浏览器时忽略并给 warning |
 | 文档转换 | `--docs`（`SEX_DOCS=1`） | PDF 结构化 + 扫描页 OCR、Office / EPUB / RTF 文档、图片 OCR（`image` parser）；不开时 PDF 用 unpdf 抽纯文本，其它文件返回 415 |
 | LLM | `--llm-model`（+ `--llm-base-url`、`--llm-api-key`） | `json` / `summary` / `question` / `highlights` 格式、`/v2/extract`、crawl 的 `prompt`、`/v2/crawl/params-preview` |
 
@@ -70,10 +78,12 @@ compose 通过 `.env` 读取 `SEX_LLM_*` 和 `SEARXNG_SECRET`。其它 `SEX_*` �
 - **`--cdp-url ws://...`**（`SEX_CDP_URL`）：连接已经在运行的 CDP 浏览器，比如 Chrome，或者单独部署的 Lightpanda。sex 不启动任何进程；和 `--lightpanda` 同时设置时以 `--cdp-url` 为准。
 - 都不设：不用浏览器。
 
-Docker 镜像已经带了二进制。在本机用 `--lightpanda`，需要自己把二进制放到 PATH 上，或用 `--lightpanda-path`（`SEX_LIGHTPANDA_PATH`）指定；可以从镜像里取出来，也可以从 [GitHub Releases](https://github.com/lightpanda-io/browser/releases) 下载：
+`dist/sex`（以及 Docker 镜像）内置了 Lightpanda，`--lightpanda` 开箱即用：第一次用到时解压到 `$XDG_CACHE_HOME/sex/lightpanda-<版本>-<hash>/`（约 76 MB），之后复用。版本和每个平台的 SHA-256 固定在 `scripts/lightpanda.ts`（目前是 1.0.2），`bun run build` 第一次会从 GitHub Releases 下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`，压缩后让 `dist/sex` 增大约 23 MB。预编译版本只有 Linux x64 / arm64（glibc ≥ 2.35）和 macOS x64 / arm64，Windows 和 musl 没有。
+
+从源码运行（`bun src/cli.ts`）时没有内置的二进制，需要自己放到 PATH 上，或用 `--lightpanda-path`（`SEX_LIGHTPANDA_PATH`）指定；`--lightpanda-path` 也会覆盖内置的版本：
 
 ```bash
-id=$(docker create lightpanda/browser:nightly) && docker cp "$id:/bin/lightpanda" ./lightpanda && docker rm "$id"
+gh release download 1.0.2 -R lightpanda-io/browser -p lightpanda-x86_64-linux -O lightpanda && chmod +x lightpanda
 bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightpanda
 ```
 
@@ -93,9 +103,11 @@ bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightp
 |---|---|---|---|
 | `PORT` | `serve --port`（`-p`） | `3002` | 只有 `serve` 读取；HTTP API 和 `/mcp` 共用这个端口 |
 | `HOST` | `serve --host` | `127.0.0.1` | 只有 `serve` 读取 |
-| `SEX_SEARXNG_URL` | `--searxng-url` | `http://127.0.0.1:8080` | SearXNG 地址 |
+| `SEX_SEARXNG_URL` | `--searxng-url` | 无（sex 自己运行 SearXNG） | 已部署的 SearXNG 地址；设置后不再启动子进程，见 [SearXNG](#searxng) |
+| `SEX_SEARXNG_PATH` | `--searxng-path` | 内置的二进制 | sex 运行的 SearXNG 可执行文件 |
+| `SEX_SEARXNG_SETTINGS` | `--searxng-settings` | 内置的最小配置 | sex 运行的 SearXNG 用的 `settings.yml` |
 | `SEX_LIGHTPANDA` | `--lightpanda` | `false` | 启动本地 Lightpanda 子进程；compose 里已设为 `1` |
-| `SEX_LIGHTPANDA_PATH`（回退 `LIGHTPANDA_EXECUTABLE_PATH`） | `--lightpanda-path` | 从 PATH 查找 | Lightpanda 可执行文件；Docker 镜像里是 `/usr/local/bin/lightpanda`，已在 PATH 上 |
+| `SEX_LIGHTPANDA_PATH`（回退 `LIGHTPANDA_EXECUTABLE_PATH`） | `--lightpanda-path` | 内置的二进制，没有时从 PATH 查找 | Lightpanda 可执行文件 |
 | `SEX_CDP_URL` | `--cdp-url` | 无 | 已有 CDP 浏览器的地址，如 `ws://127.0.0.1:9222`；和 `SEX_LIGHTPANDA` 同时设置时以它为准 |
 | `SEX_DOCS` | `--docs` | `false` | 用 here-docs 转换 PDF / Office 文档 / 图片（结构化 + 本地 OCR），见[文档转换](#文档转换) |
 | `SEX_LLM_MODEL` | `--llm-model` | 无（LLM 关闭） | 设置后开启 LLM 功能 |
@@ -221,6 +233,7 @@ bun test          # 单元 + 集成测试（本地 fixture 站点、mock SearXNG
 
 ```bash
 SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test test/browser.test.ts   # 需要一个正在运行的 CDP 浏览器（如 Lightpanda 或 Chrome）
+SEX_TEST_SEARXNG=1 bun test test/searxng.test.ts                      # 启动真的 SearXNG 二进制（可用 SEX_TEST_SEARXNG_PATH 指定），需要外网
 SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
 ```
 

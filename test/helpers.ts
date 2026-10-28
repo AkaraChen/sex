@@ -100,9 +100,14 @@ export function startMockSearxng(siteUrl: string) {
   return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
 }
 
+/** An engine for tests. Without a searxngUrl, searches fail fast instead of starting a real SearXNG. */
 export function testEngine(overrides: ConfigOverrides = {}) {
   return new Engine(
-    resolveConfig({ allowPrivateNetwork: true, concurrency: 4, timeout: 10_000, ...overrides }, { allowPrivateNetwork: true }, {}),
+    resolveConfig(
+      { allowPrivateNetwork: true, concurrency: 4, timeout: 10_000, searxngUrl: "http://127.0.0.1:1", ...overrides },
+      { allowPrivateNetwork: true },
+      {},
+    ),
   );
 }
 

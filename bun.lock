@@ -9,6 +9,7 @@
         "@orpc/openapi": "^1.16.1",
         "@orpc/server": "^1.16.1",
         "@orpc/zod": "^1.16.1",
+        "@searxng-js/searxng": "0.1.0",
         "ajv": "^8.20.0",
         "bunqueue": "2.9.20",
         "citty": "^0.2.2",
@@ -222,6 +223,14 @@
     "@orpc/zod": ["@orpc/zod@1.16.1", "", { "dependencies": { "@orpc/json-schema": "1.16.1", "@orpc/openapi": "1.16.1", "@orpc/shared": "1.16.1", "escape-string-regexp": "^5.0.0", "wildcard-match": "^5.1.4" }, "peerDependencies": { "@orpc/contract": "1.16.1", "@orpc/server": "1.16.1", "zod": ">=3.25.0" } }, "sha512-Gsit6JpQZRFhBHjL5r45KvBKJtFjAZU7KwO4S3fte5B/3VSVx042avOahPb9+cngmfMo03NDLztuLBjNq+Jw9w=="],
 
     "@puppeteer/browsers": ["@puppeteer/browsers@3.2.6", "", { "dependencies": { "modern-tar": "^0.8.6", "yargs": "^18.0.0" }, "peerDependencies": { "proxy-agent": ">=8.0.1", "yauzl": "^2.10.0 || ^3.4.0" }, "optionalPeers": ["proxy-agent", "yauzl"], "bin": { "browsers": "lib/main-cli.js" } }, "sha512-MJP29gVoHznmqmwhH1tlZqzfeQ3aylTpSSa6WKZXtkwYUH02i9imBmWGTyZrbnAou5paX78SE4jMAUqnEPf8ug=="],
+
+    "@searxng-js/darwin-arm64": ["@searxng-js/darwin-arm64@0.1.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-jwE0kUQX8dc+guFjMBREwImVkzwKfQJD/7qnhRTgjomduE8IJy4+XCxbI6bsDMTyDgT52N/30+z6nvxm0+SRfw=="],
+
+    "@searxng-js/linux-x64": ["@searxng-js/linux-x64@0.1.0", "", { "os": "linux", "cpu": "x64" }, "sha512-O+DVjVWT8zEAP1H6KDTKSz6mdYeFp1NpjNBukBNtFqFUbGr/hP25IFS2Q4f1A2ZJh0u6yY2WQHI4brMME3YHeg=="],
+
+    "@searxng-js/searxng": ["@searxng-js/searxng@0.1.0", "", { "optionalDependencies": { "@searxng-js/darwin-arm64": "0.1.0", "@searxng-js/linux-x64": "0.1.0", "@searxng-js/win32-x64": "0.1.0" } }, "sha512-yMK6z7ffAaKfx72CFlZwpng3Lk8TdDneOq/Qdj5NxWIau3Xx4Ono0WMUZrej2o+1cmSmWUxLUU1yWi6nzHs+KA=="],
+
+    "@searxng-js/win32-x64": ["@searxng-js/win32-x64@0.1.0", "", { "os": "win32", "cpu": "x64" }, "sha512-Nj1pd13/PgAqiM1WosZSgNNNmak4fwQkiTfnQG8FaFbEcWuPbC3JwdUUfdBNfFYI55FpVw+n4eVi7srjltDuvQ=="],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
