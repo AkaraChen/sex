@@ -130,7 +130,18 @@ describe("mcp (streamable http at /mcp)", () => {
 
   test("lists tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["web_crawl", "web_crawl_status", "web_extract", "web_fetch", "web_map", "web_search"]);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      "web_batch_scrape",
+      "web_batch_status",
+      "web_crawl",
+      "web_crawl_cancel",
+      "web_crawl_status",
+      "web_extract",
+      "web_extract_status",
+      "web_fetch",
+      "web_map",
+      "web_search",
+    ]);
   });
 
   test("web_fetch and web_search", async () => {
@@ -169,6 +180,6 @@ describe("mcp (streamable http at /mcp)", () => {
 
     // The MCP client from beforeAll is connected to this same base URL.
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(6);
+    expect(tools).toHaveLength(10);
   });
 });
