@@ -118,7 +118,17 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 
 **子进程的回收**：`SIGINT` / `SIGTERM` 时 sex 会先关掉子进程再退出，但 `SIGKILL` 无法被捕获。所以在 Linux 上，sex 用 `setpriv --pdeathsig TERM -- lightpanda serve ...` 启动子进程（`setpriv` 属于 util-linux ≥ 2.33，Debian / Ubuntu 和 Docker 镜像里都有）：sex 被 `kill -9` 后，内核会给子进程发 `SIGTERM`，不会留下孤儿。macOS 没有对应机制（pdeathsig 是 Linux 特有的），Linux 上没有 `setpriv` 时也一样，sex 只能直接 spawn，此时 `kill -9` sex 会留下孤儿 Lightpanda 进程，需要自己清理。`lightpanda started` 日志里的 `spawn=setpriv` / `spawn=direct` 标明了实际用的是哪种方式。
 
-**内网保护**：`--allow-private-network` 关闭时（`serve` 默认），子进程会带上 `--block-private-networks`，Lightpanda 在 DNS 解析后再拦一次内网地址，作为 request interception 之外的第二道防线。`--cdp-url` 接外部浏览器时没有这一层，只有 request interception；设置了 `SEX_PROXY_URL` 时的取舍见[出站代理](#出站代理)。
+**内网保护**：`--allow-private-network` 关闭时（`serve` 默认），子进程会带上 `--block-private-networks`，Lightpanda 在 DNS 解析后再拦一次内网地址，作为 request interception 之外的第二道防线。`--cdp-url` 接外部浏览器时没有这个参数，改用本地的 guard 代理（见下一段），只在满足条件时生效；设置了 `SEX_PROXY_URL` 时的取舍见[出站代理](#出站代理)。
+
+**外部 CDP 浏览器的 guard 代理**：request interception 之外，sex 在 `127.0.0.1` 的随机端口上起一个本地转发代理（[proxy-chain](https://github.com/apify/proxy-chain)），让外部浏览器的所有流量经过它。代理对每个请求先用和 `safeFetch` 相同的检查解析目标域名，内网、回环、link-local（含云元数据地址 `169.254.169.254`）一律拒绝，通过检查后**只连接检查过的那个 IP**，不再做第二次 DNS 查询，所以 DNS rebinding 绕不过去；它还覆盖 request interception 看不到的路径（interception 挂上之前的请求、service worker、WebSocket）。每个 browser context 用 `createBrowserContext({ proxyServer, proxyBypassList: ["<-loopback>"] })`，后者让 Chrome 默认绕过的 loopback 和 link-local 也走代理。代理要求认证：每个 sex 进程随机生成密码，每个 context 一个用户名，同机的其他进程拿不到。代理随第一次使用（或 `serve` 预热）启动，`engine.close()` 时关闭。
+
+**同时满足下面三条才启用**，否则不启用，日志里有一条 `cdp guard proxy not used` 写明原因：
+
+1. 用的是 `--cdp-url`（`--lightpanda` 有自己的 `--block-private-networks`）；
+2. CDP 地址的 host 是 loopback（`localhost`、`127.0.0.0/8`、`::1`）：浏览器必须和 sex 在同一台机器上，才连得到 `127.0.0.1` 上的代理端口；远程浏览器不启用；
+3. 没有 `--allow-private-network`，并且没有 `SEX_PROXY_URL`：有上游代理时由上游解析域名，固定 IP 没有意义，保持[出站代理](#出站代理)里逐跳检查的做法。
+
+代理拒绝的主文档导航报 `PRIVATE_NETWORK_BLOCKED`，被拒的子资源在页面里加载失败。代价：每个页面多约 14 ms（context 认证和第一次连接），每个请求多约 0.3 ms（Chrome 上用 `packages/sex/scripts/bench-cdp-guard.ts` 测，50 个子资源的页面共 +28 ms）。
 
 **出站代理**：见[出站代理](#出站代理)。`--lightpanda` 时代理写在子进程的 `--http-proxy` 参数里，`--cdp-url` 时每个 browser context 用 `createBrowserContext({ proxyServer })`，代理的用户名密码从 URL 里取出，由 `page.authenticate` 回答 407。
 
@@ -152,7 +162,7 @@ SSRF 防护在代理之前仍然生效：
 - 本机解析不出来的域名在走代理时直接拒绝（`SCRAPE_DNS_RESOLUTION_ERROR`），否则只有代理的 DNS 才认识的内部域名会绕过检查。代价是只能靠代理解析的域名抓不了。
 - 请求里的 `Proxy-Authorization` 头在走代理时被丢弃，不能借此改变代理的身份。
 
-**残留风险**：走代理时由代理解析域名，连接无法固定到 sex 检查过的 IP（`pinToAddress` 只在直连时有效）。DNS rebinding（sex 检查时返回公网 IP，代理查询时返回内网 IP）在 sex 这一侧防不住，需要代理自己拒绝内网目标，例如 squid 的 ACL，或带 SSRF 防护的代理；sex 的检查是对它的补充，不是替代。`--cdp-url` 的外部浏览器同理，而且它的 service worker、WebSocket 等不经过 request interception 的网络路径也只能靠网络层（代理或防火墙）限制。
+**残留风险**：走代理时由代理解析域名，连接无法固定到 sex 检查过的 IP（`pinToAddress` 只在直连时有效）。DNS rebinding（sex 检查时返回公网 IP，代理查询时返回内网 IP）在 sex 这一侧防不住，需要代理自己拒绝内网目标，例如 squid 的 ACL，或带 SSRF 防护的代理；sex 的检查是对它的补充，不是替代。`--cdp-url` 的外部浏览器同理（此时 guard 代理不启用，见[浏览器](#浏览器)），而且它的 service worker、WebSocket 等不经过 request interception 的网络路径也只能靠网络层（代理或防火墙）限制。
 
 ### 配置
 
@@ -340,7 +350,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - 出于 SSRF 防护，`serve` 默认拒绝抓取内网和回环地址，可以用 `--allow-private-network` 放开。`search` 和 `fetch` 这两个 CLI 命令默认允许。
   - 域名解析后，连接只使用已经通过检查的 IP，因此 DNS rebinding 无法在检查后把请求转到内网。每次重定向都会重新检查。
   - 配了 `SEX_PROXY_URL` 时由代理解析域名，无法固定 IP，见[出站代理](#出站代理)。
-  - 浏览器模式下，页面发出的子请求同样经过检查（request interception），指向内网的请求会被拦截。Lightpanda 子进程还会带上 `--block-private-networks` 作为第二道防线（见[浏览器](#浏览器)）。
+  - 浏览器模式下，页面发出的子请求同样经过检查（request interception），指向内网的请求会被拦截。Lightpanda 子进程还会带上 `--block-private-networks`，本机的外部 CDP 浏览器则走固定 IP 的 guard 代理，作为第二道防线（见[浏览器](#浏览器)）。
   - 绑定到非回环地址时（如 Docker 里的 `--host 0.0.0.0`），默认不做 Host 检查，需要自己设置 `SEX_ALLOWED_HOSTS`。
 - 跨域和 Host 检查：
   - CORS 默认关闭。只有设置 `SEX_CORS_ORIGINS` 后，列出的 origin 才能跨域调用。

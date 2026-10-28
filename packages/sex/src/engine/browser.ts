@@ -16,6 +16,7 @@ import type { Config } from "../config.ts";
 import type { Action } from "../schemas.ts";
 import { type AdBlockList, loadAdBlockList } from "./adblock.ts";
 import { applyRequestPolicies } from "./browser-policy.ts";
+import { CdpGuard, cdpGuardSkipReason, GUARD_BYPASS_LIST, type GuardResolver, type GuardSession } from "./cdp-guard.ts";
 
 const MOBILE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
@@ -173,11 +174,14 @@ export class BrowserPool implements ScrapeBrowser {
   private startFailures: number[] = [];
   private cooldownUntil = 0;
   private lastStartError = "";
+  /** The CDP guard proxy, started on first use; see cdp-guard.ts. */
+  private guard?: Promise<CdpGuard | undefined>;
 
-  /** `adBlockList` is where the ad list comes from; tests and the benchmark swap it. */
+  /** `adBlockList` is where the ad list comes from and `guardResolve` how the CDP guard proxy resolves names; tests and the benchmark swap them. */
   constructor(
     private readonly config: Config,
     private readonly adBlockList: () => Promise<AdBlockList> = loadAdBlockList,
+    private readonly guardResolve?: GuardResolver,
   ) {
     this.limit = pLimit(config.concurrency);
   }
@@ -308,10 +312,29 @@ export class BrowserPool implements ScrapeBrowser {
     return this.endpoint;
   }
 
+  /** The guard proxy for an external CDP browser, started once; `undefined` (with the reason logged once) when it does not apply. */
+  private getGuard(): Promise<CdpGuard | undefined> {
+    this.guard ??= (async () => {
+      const reason = cdpGuardSkipReason(this.config);
+      if (reason) {
+        if (this.config.cdpUrl) log.info("cdp guard proxy not used", { reason });
+        return undefined;
+      }
+      return CdpGuard.start(this.guardResolve);
+    })().catch((err) => {
+      this.guard = undefined;
+      throw new AppError(
+        "BROWSER_UNAVAILABLE",
+        `Could not start the SSRF guard proxy for the CDP browser: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    return this.guard;
+  }
+
   /** Eagerly start the browser so the first request does not pay for it. */
   async warmup(): Promise<void> {
     if (!this.enabled) return;
-    await Promise.all([this.getEndpoint(), this.adBlockList()]);
+    await Promise.all([this.getEndpoint(), this.getGuard(), this.adBlockList()]);
   }
 
   /**
@@ -319,10 +342,11 @@ export class BrowserPool implements ScrapeBrowser {
    * deadline does, which makes in-flight page operations reject, so the slot is released at once; `fn` is also abandoned at
    * the deadline if what it is awaiting ignores the closed context. The error is the deadline's, never a symptom of the close.
    */
-  async withPage<T>(fn: (page: Page) => Promise<T>, deadline: Deadline): Promise<T> {
+  async withPage<T>(fn: (page: Page, guardBlocked: string[]) => Promise<T>, deadline: Deadline): Promise<T> {
     return this.limit(async () => {
       deadline.throwIfAborted("before the browser scrape started");
       const endpoint = await deadline.bound(this.getEndpoint(), "while starting the browser");
+      const guard = await deadline.bound(this.getGuard(), "while starting the SSRF guard proxy");
       const connecting = puppeteer.connect({ browserWSEndpoint: endpoint, defaultViewport: null });
       let browser: Awaited<typeof connecting>;
       try {
@@ -331,9 +355,13 @@ export class BrowserPool implements ScrapeBrowser {
         connecting.then((b) => b.disconnect()).catch(() => {});
         throw err;
       }
+      // The guard and an upstream proxy exclude each other (cdpGuardSkipReason), so at most one of them is set.
+      const session: GuardSession | undefined = guard?.session();
       try {
-        const proxy = contextProxy(this.config);
-        const context = await browser.createBrowserContext(proxy ? { proxyServer: proxy.server } : undefined);
+        const proxy = session ?? contextProxy(this.config);
+        const context = await browser.createBrowserContext(
+          proxy ? { proxyServer: proxy.server, ...(session ? { proxyBypassList: GUARD_BYPASS_LIST } : {}) } : undefined,
+        );
         let closed = false;
         const close = () => {
           if (closed) return;
@@ -345,12 +373,13 @@ export class BrowserPool implements ScrapeBrowser {
           deadline.throwIfAborted("before the browser scrape started");
           const page = await context.newPage();
           if (proxy?.credentials) await deadline.bound(page.authenticate(proxy.credentials));
-          return await deadline.bound(fn(page));
+          return await deadline.bound(fn(page, session?.blocked ?? []));
         } finally {
           deadline.signal.removeEventListener("abort", close);
           close();
         }
       } finally {
+        session?.release();
         await browser.disconnect().catch(() => {});
       }
     });
@@ -365,7 +394,7 @@ export class BrowserPool implements ScrapeBrowser {
 
   private async scrapeInner(opts: BrowserScrapeOptions): Promise<BrowserScrapeResult> {
     const { deadline } = opts;
-    return this.withPage(async (page) => {
+    return this.withPage(async (page, guardBlocked) => {
       page.setDefaultTimeout(stepTimeout(deadline));
       page.setDefaultNavigationTimeout(stepTimeout(deadline));
       await page.setUserAgent(opts.mobile ? MOBILE_UA : opts.userAgent).catch(() => {});
@@ -392,7 +421,7 @@ export class BrowserPool implements ScrapeBrowser {
       let aborted = false;
       const response = await page.goto(opts.url, { waitUntil: "load", timeout: stepTimeout(deadline) }).catch((err: Error) => {
         deadline.throwIfAborted(`while loading ${opts.url}`);
-        if (blockedDocs.length) return null;
+        if (blockedDocs.length || guardRefused(guardBlocked, opts.url)) return null;
         // PDFs and Content-Disposition: attachment responses abort the navigation; the caller re-fetches them over HTTP.
         if (err.message.includes("net::ERR_ABORTED")) {
           aborted = true;
@@ -401,8 +430,9 @@ export class BrowserPool implements ScrapeBrowser {
         if (err.name === "TimeoutError") throw deadline.timedOut(`while loading ${opts.url}`);
         throw networkError(err, opts.url, { skipTlsVerification: opts.skipTlsVerification });
       });
-      if (blockedDocs.length) {
-        throw new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${blockedDocs[0]}`);
+      // The guard answers a refused plain-HTTP navigation with a 403 page of its own; a refused CONNECT fails the navigation.
+      if (blockedDocs.length || guardRefused(guardBlocked, opts.url) || response?.headers()["x-sex-guard"] === "blocked") {
+        throw new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${blockedDocs[0] ?? opts.url}`);
       }
       if (aborted) return { url: opts.url, status: 200, contentType: "", nonHtml: true, rawHtml: "" };
       const contentType = response?.headers()["content-type"] ?? "text/html";
@@ -419,6 +449,9 @@ export class BrowserPool implements ScrapeBrowser {
   }
 
   async close(): Promise<void> {
+    const guard = this.guard;
+    this.guard = undefined;
+    await guard?.then((g) => g?.close()).catch(() => {});
     const proc = this.proc;
     this.proc = undefined;
     this.endpoint = undefined;
@@ -427,6 +460,12 @@ export class BrowserPool implements ScrapeBrowser {
       await proc.exited.catch(() => {});
     }
   }
+}
+
+/** True when the CDP guard proxy refused the host of this navigation. */
+function guardRefused(blocked: string[], url: string): boolean {
+  const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return blocked.includes(host);
 }
 
 /** Puppeteer wants a timeout in ms, where 0 means never: what is left, at least 1 and within a timer's range. */
