@@ -3,6 +3,7 @@ import { badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import { CrawlRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
+import { type TaskEffects, taskEffects } from "./jobs/effects.ts";
 import { type JobRecord, type JobStore, sendWebhook, validateWebhook } from "./jobs/index.ts";
 import { normalizeUrl, sitemapUrls } from "./map.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
@@ -217,14 +218,14 @@ async function enqueueLinks(
   }
 }
 
-export async function handleCrawlStart(engine: Engine, jobId: string) {
+export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: string) {
   const { store } = engine.jobs;
   try {
     const job = await store.get(jobId);
     if (job?.status !== "scraping") return;
     const req = job.options as unknown as CrawlRequest;
     const start = new URL(job.url as string);
-    sendWebhook(engine.config, job, "started");
+    await taskEffects(engine, job, taskId).started();
 
     if (!req.ignoreRobotsTxt) {
       const robotsTxt = await safeFetch(`${start.origin}/robots.txt`, {
@@ -278,6 +279,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string) {
  */
 async function acceptRedirect(
   store: JobStore,
+  fx: TaskEffects,
   job: JobRecord,
   plan: CrawlPlan,
   url: string,
@@ -298,37 +300,31 @@ async function acceptRedirect(
     return false;
   }
   if (!inScope(plan, targetUrl) || !matchesFilters(plan, targetUrl)) {
-    await store.pushError(job.id, {
-      id: crypto.randomUUID(),
-      timestamp: new Date().toISOString(),
-      url,
-      error: `Redirected to ${target}, which is outside the crawl scope`,
-    });
+    await fx.failure(url, `Redirected to ${target}, which is outside the crawl scope`);
     return false;
   }
   // A target that was already seen is crawled (or being crawled) under its own task.
   return (await store.markSeen(job.id, [keyOf(target)]))[0] === true;
 }
 
-export async function handleCrawlPage(engine: Engine, job: JobRecord, url: string, depth: number) {
+export async function handleCrawlPage(engine: Engine, job: JobRecord, url: string, depth: number, taskId?: string) {
   const { store } = engine.jobs;
+  const fx = taskEffects(engine, job, taskId);
   try {
     const plan = await planFor(store, job);
     const { document, links } = await scrapeUrl(engine, url, plan.req.scrapeOptions, { collectLinks: true });
     if ((await store.get(job.id))?.status !== "scraping") return;
     const start = normalizeUrl(plan.start.href, false);
-    if (url !== start && !(await acceptRedirect(store, job, plan, url, document.metadata?.url as string | undefined))) return;
+    if (url !== start && !(await acceptRedirect(store, fx, job, plan, url, document.metadata?.url as string | undefined))) return;
     // The start page always feeds discovery but only counts as a result if it passes the filters.
     if (url !== start || matchesFilters(plan, new URL(url))) {
-      await store.pushDocument(job.id, document);
-      await store.incr(job.id, "completed", 1);
-      sendWebhook(engine.config, job, "page", [document]);
+      await fx.page(document, { countCompleted: true });
     }
     // `scheduled` only grows toward `limit` and then stays there, so a full crawl has nothing left to discover.
     const full = job.scheduled >= plan.limit;
     if ((plan.req.sitemap ?? "include") !== "only" && !full)
       await enqueueLinks(engine, job, plan, links ?? [], depth + 1, false, !isSameSite(plan, new URL(document.metadata?.url ?? url)));
   } catch (err) {
-    await store.pushError(job.id, { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: toAppError(err).message });
+    await fx.failure(url, toAppError(err).message);
   }
 }
