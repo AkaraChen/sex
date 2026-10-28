@@ -1,8 +1,10 @@
 // SEX_PROXY_URL for the managed SearXNG: the settings sex generates, and when it does not.
+
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_SETTINGS } from "@searxng-js/searxng";
 import { BaseEngine } from "../src/engine.ts";
 import { generatedSettings, proxiedSettings, redactProxy } from "../src/searxng-settings.ts";
 import { testCoreConfig } from "./helpers.ts";
@@ -14,19 +16,37 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const PROXY = "http://user:s3cr%40t:w@proxy.example:3128";
 
 describe("generated settings", () => {
+  type Parsed = { outgoing: { proxies: Record<string, string[]> } & Record<string, unknown> } & Record<string, unknown>;
+
   test("outgoing.proxies in SearXNG's format, on top of the default settings", () => {
-    const yaml = proxiedSettings(PROXY);
-    expect(yaml).toContain("use_default_settings: true");
-    expect(yaml).toContain("search:\n  formats: [html, json]");
-    expect(yaml).toContain(`outgoing:\n  proxies:\n    all://:\n      - "${PROXY}"\n`);
-    expect(Bun.YAML.parse(yaml)).toMatchObject({ outgoing: { proxies: { "all://": [PROXY] } } });
+    const parsed = Bun.YAML.parse(proxiedSettings(PROXY)) as Parsed;
+    expect(parsed).toMatchObject({
+      use_default_settings: true,
+      search: { formats: ["html", "json"] },
+      server: { limiter: false, image_proxy: false },
+      outgoing: { proxies: { "all://": [PROXY] } },
+    });
+    expect(Object.keys(Bun.YAML.parse(DEFAULT_SETTINGS) as object)).not.toContain("outgoing");
   });
 
-  test("quotes and backslashes in credentials stay one YAML string", () => {
-    const url = 'http://us"er:pa\\ss#x@proxy:1';
-    expect(
-      (Bun.YAML.parse(proxiedSettings(url)) as { outgoing: { proxies: Record<string, string[]> } }).outgoing.proxies["all://"],
-    ).toEqual([url]);
+  test("an outgoing section the base already has is merged into, not duplicated", () => {
+    const base = `${DEFAULT_SETTINGS}outgoing:\n  request_timeout: 3\n  pool_connections: 50\n  proxies:\n    "https://": ["http://other:1"]\n    "all://": ["http://old:2"]\n`;
+    const yaml = proxiedSettings(PROXY, base);
+    expect(yaml.match(/^outgoing:/gm)).toHaveLength(1);
+    expect(Bun.YAML.parse(yaml)).toMatchObject({
+      use_default_settings: true,
+      outgoing: { request_timeout: 3, pool_connections: 50, proxies: { "https://": ["http://other:1"], "all://": [PROXY] } },
+    });
+  });
+
+  test.each([
+    "http://user:p:w@proxy.example:3128",
+    "http://us@er:pa#ss@proxy.example:3128",
+    'http://us"er:pa\'ss"@proxy.example:3128',
+    "http://u:a\\b%22c%23d@proxy.example:3128/#frag",
+    "http://u:: #x@proxy.example:3128",
+  ])("credentials round-trip unchanged: %s", (url) => {
+    expect((Bun.YAML.parse(proxiedSettings(url)) as Parsed).outgoing.proxies["all://"]).toEqual([url]);
   });
 
   test("only a managed instance on sex's own settings gets the proxy", () => {

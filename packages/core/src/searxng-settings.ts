@@ -1,13 +1,24 @@
 import { DEFAULT_SETTINGS } from "@searxng-js/searxng";
 import type { CoreConfig as Config } from "./config.ts";
 
+type Mapping = Record<string, unknown>;
+
+const isMapping = (v: unknown): v is Mapping => typeof v === "object" && v !== null && !Array.isArray(v);
+
 /**
- * The settings.yml sex writes for a managed SearXNG that has to go through `SEX_PROXY_URL`: the package's default settings
- * plus `outgoing.proxies` (SearXNG's documented format: a pattern, here `all://`, mapped to a list of proxy URLs). The URL is a
- * JSON string, which is also a valid YAML double-quoted scalar, so credentials with `:` `@` `#` or quotes survive.
+ * The settings.yml sex writes for a managed SearXNG that has to go through `SEX_PROXY_URL`: `base` (the package's default
+ * settings) parsed, `outgoing.proxies["all://"] = [url]` merged in (SearXNG's documented format: a pattern mapped to a list of
+ * proxy URLs; whatever `base` already has under `outgoing` and `outgoing.proxies` stays), and written out again. Merging the
+ * parsed document, not appending text, means a key the defaults gain later is never duplicated, and the serializer does the
+ * quoting, so credentials with `:` `@` `#` or quotes survive.
  */
-export const proxiedSettings = (proxyUrl: string): string =>
-  `${DEFAULT_SETTINGS}outgoing:\n  proxies:\n    all://:\n      - ${JSON.stringify(proxyUrl)}\n`;
+export function proxiedSettings(proxyUrl: string, base: string = DEFAULT_SETTINGS): string {
+  const settings: unknown = Bun.YAML.parse(base);
+  const root: Mapping = isMapping(settings) ? settings : {};
+  const outgoing = isMapping(root.outgoing) ? root.outgoing : {};
+  const proxies = isMapping(outgoing.proxies) ? outgoing.proxies : {};
+  return Bun.YAML.stringify({ ...root, outgoing: { ...outgoing, proxies: { ...proxies, "all://": [proxyUrl] } } }, null, 2);
+}
 
 /**
  * The settings sex generates for the managed SearXNG, or undefined when the package's own default should be used.
