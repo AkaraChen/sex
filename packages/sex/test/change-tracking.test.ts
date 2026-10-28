@@ -70,18 +70,22 @@ describe("changeTracking", () => {
     }
   });
 
-  test("only whitespace and the order of the text do not make a change; no modes means no diff", async () => {
+  test("whitespace does not make a change, moved text and a same-length edit do; no modes means no diff", async () => {
     content = "<p>Alpha beta.</p><p>Gamma delta.</p>";
     const engine = testEngine({ dataDir: join(dir, "b") });
     try {
       const url = `${base}/p?b`;
       await track(engine, url);
-      content = "<p>Gamma   delta.</p><p>Alpha beta.</p>";
+      content = "<p>Alpha   beta.</p>\n\n<p>Gamma\n delta.</p>";
       expect((await track(engine, url)).changeTracking?.changeStatus).toBe("same");
-      content = "<p>Gamma delta.</p><p>Alpha beta!</p>";
-      const changed = await track(engine, url);
-      expect(changed.changeTracking?.changeStatus).toBe("changed");
-      expect(changed.changeTracking).not.toHaveProperty("diff");
+      // Same characters, other order.
+      content = "<p>Gamma delta.</p><p>Alpha beta.</p>";
+      const moved = await track(engine, url);
+      expect(moved.changeTracking?.changeStatus).toBe("changed");
+      expect(moved.changeTracking).not.toHaveProperty("diff");
+      // Same length and same character counts per word set, one letter different.
+      content = "<p>Gamma delta.</p><p>Alpha betb.</p>";
+      expect((await track(engine, url)).changeTracking?.changeStatus).toBe("changed");
     } finally {
       await engine.close();
     }

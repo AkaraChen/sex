@@ -31,23 +31,20 @@ export interface TrackInput {
   warnings: string[];
 }
 
-/** Characters (not their order) with their counts: the comparison Firecrawl makes, without the sort. */
-function fingerprint(markdown: string): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const ch of markdown.replace(/\s+/g, "").replace(/\[iframe\]\(.+?\)/g, "")) counts.set(ch, (counts.get(ch) ?? 0) + 1);
-  return counts;
-}
+/** The text with iframe embeds removed and every run of whitespace turned into one space (and trimmed). */
+const normalize = (markdown: string) =>
+  markdown
+    .replace(/\[iframe\]\(.+?\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
 /**
- * Firecrawl's rule (`deriveDiff`): two versions are the same when they have the same characters once whitespace and iframe
- * embeds are removed, whatever their order, so moving a paragraph or re-wrapping a line is not a change.
+ * Whether two versions are the same text once whitespace differences and iframe embeds (Firecrawl removes those too) are
+ * ignored. Unlike Firecrawl, which only compares the characters' counts, the text has to be equal as written: moving a
+ * paragraph or changing one letter is a change.
  */
 export function sameContent(previous: string, current: string): boolean {
-  const a = fingerprint(previous);
-  const b = fingerprint(current);
-  if (a.size !== b.size) return false;
-  for (const [ch, n] of a) if (b.get(ch) !== n) return false;
-  return true;
+  return normalize(previous) === normalize(current);
 }
 
 /** `{ field: { previous, current } }` for every top-level field whose value differs (Firecrawl's `compareExtractedData`). */
