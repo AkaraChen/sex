@@ -21,6 +21,7 @@ function startSite() {
           { headers: { "content-type": "text/html; charset=utf-8" } },
         );
       }
+      if (new URL(req.url).pathname === "/hub/old") return Response.redirect(new URL("/hub/page", req.url).href, 302);
       if (["/page", "/hub/page"].includes(new URL(req.url).pathname)) {
         return new Response(
           `<!doctype html><html lang="en"><head><title>Page</title></head><body><main><article><h1>Page</h1>${paragraphs}</article></main></body></html>`,
@@ -319,6 +320,50 @@ describe("redelivery", () => {
     const done = await finished(engine, job.id);
     expect(done).toMatchObject({ status: "completed", pending: 0, completed: 2, scheduled: 2 });
     expect((await store.documents(job.id, 0, 1e6)).data).toHaveLength(2);
+  });
+
+  test("a page task that crashes after claiming its redirect target still stores the page when redelivered", async () => {
+    const { store } = engine.jobs;
+    const { result: job, tasks } = await held(() =>
+      engine.crawl({ url: `${site.url}/hub/`, limit: 5, sitemap: "skip" } as Parameters<Engine["crawl"]>[0]),
+    );
+    await held(() => runTask(engine, tasks[0] as Task));
+    // A page task for a URL that redirects to /hub/page, in scope.
+    const [old] = await store.schedule(job.id, undefined, [{ key: `${site.url}/hub/old`, url: `${site.url}/hub/old`, blocked: false }], {
+      limit: 5,
+      depth: 1,
+      intervalMs: 0,
+      now: Date.now(),
+    });
+    const task: Task = { type: "page", jobId: job.id, taskId: old?.taskId, url: `${site.url}/hub/old`, depth: 1 };
+
+    // The first delivery marks the target seen, then dies before the document is written.
+    const realPush = store.pushDocument.bind(store);
+    let reached!: () => void;
+    const claimed = new Promise<void>((resolve) => (reached = resolve));
+    store.pushDocument = () => {
+      reached();
+      return new Promise(() => {});
+    };
+    void runTask(engine, task);
+    await claimed;
+    store.pushDocument = realPush;
+    expect((await store.documents(job.id, 0, 1e6)).data).toHaveLength(0);
+
+    // Redelivered, it finds the target seen by itself, not by someone else, and stores the page.
+    await held(() => runTask(engine, task));
+    const docs = (await store.documents(job.id, 0, 1e6)).data;
+    expect(docs.map((d) => d.metadata?.url)).toEqual([`${site.url}/hub/page`]);
+
+    // Another task for the same URL is a duplicate of a page that is already being crawled.
+    const [dup] = await store.schedule(job.id, undefined, [{ key: `${site.url}/hub/old2`, url: `${site.url}/hub/old`, blocked: false }], {
+      limit: 5,
+      depth: 1,
+      intervalMs: 0,
+      now: Date.now(),
+    });
+    await held(() => runTask(engine, { ...task, taskId: dup?.taskId }));
+    expect((await store.documents(job.id, 0, 1e6)).data).toHaveLength(1);
   });
 
   test("a refused queue.add gives the scheduled pages' counts back", async () => {

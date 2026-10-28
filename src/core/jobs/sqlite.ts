@@ -474,6 +474,15 @@ export class SqliteJobStore implements JobStore {
     return this.db.transaction(() => keys.map((k) => insert.run(k, id).changes > 0))();
   }
 
+  async claimSeen(id: string, taskId: string | undefined, key: string) {
+    return this.db.transaction(() => {
+      if (taskId !== undefined && this.claimed(id, taskId, "redirect")) return true;
+      const fresh = this.exec("INSERT OR IGNORE INTO seen (job_id, key) SELECT id, ? FROM jobs WHERE id = ?", key, id).changes > 0;
+      if (fresh && taskId !== undefined) this.claim(id, taskId, "redirect");
+      return fresh;
+    })();
+  }
+
   async schedule(id: string, owner: string | undefined, candidates: LinkCandidate[], opts: ScheduleOptions) {
     return this.db.transaction((): OutboxTask[] => {
       const job = this.row(id);

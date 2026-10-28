@@ -142,7 +142,7 @@ describe("one deadline for the whole scrape", () => {
     expect(err.message).toContain("before the scrape started");
   });
 
-  test("the LLM formats are not part of `timeout`: SEX_LLM_TIMEOUT has them", async () => {
+  test("the LLM formats are part of `timeout`: a slow LLM ends the scrape with SCRAPE_TIMEOUT", async () => {
     const llm = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -154,7 +154,10 @@ describe("one deadline for the whole scrape", () => {
     servers.push(llm);
     const withLlm = testEngine({ llmModel: "m", llmBaseUrl: `http://127.0.0.1:${llm.port}/v1`, llmTimeout: 10_000 });
     try {
-      const doc = await withLlm.scrape({ url: `${site.url}/docs/a`, formats: ["markdown", "summary"], timeout: 1000 });
+      const err = await rejection(withLlm.scrape({ url: `${site.url}/docs/a`, formats: ["markdown", "summary"], timeout: 1000 }));
+      expect(err).toMatchObject({ status: 408, code: "SCRAPE_TIMEOUT" });
+      // With room for the LLM, the same request succeeds.
+      const doc = await withLlm.scrape({ url: `${site.url}/docs/a`, formats: ["markdown", "summary"], timeout: 5000 });
       expect(doc.summary).toBe("A summary.");
       expect(doc.warning).toBeUndefined();
     } finally {
