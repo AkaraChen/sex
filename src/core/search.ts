@@ -49,7 +49,8 @@ export async function searxng(engine: Engine, query: SearxQuery, pageno: number,
   const params = new URLSearchParams({ q: query.q, format: "json", categories: query.categories, pageno: String(pageno) });
   if (query.timeRange) params.set("time_range", query.timeRange);
   if (query.language) params.set("language", query.language);
-  const { timeout, searxngUrl } = engine.config;
+  const { timeout } = engine.config;
+  const searxngUrl = await engine.searxng.url();
   const deadline = AbortSignal.timeout(timeout);
   const sig = signal ? AbortSignal.any([signal, deadline]) : deadline;
   let res: Response;

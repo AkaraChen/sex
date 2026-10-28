@@ -26,6 +26,7 @@
     "@orpc/openapi": "^1.16.1",
     "@orpc/server": "^1.16.1",
     "@orpc/zod": "^1.16.1",
+    "@searxng-js/searxng": "0.1.0",
     "ajv": "^8.20.0",
     "bunqueue": "2.9.20",
     "citty": "^0.2.2",

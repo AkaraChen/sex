@@ -1,5 +1,5 @@
-# SearXNG + sex (HTTP API on :3002, MCP over HTTP at :3002/mcp).
-# One sex process does everything: Lightpanda runs as its child process, crawl/batch/extract jobs run in-process
+# sex (HTTP API on :3002, MCP over HTTP at :3002/mcp).
+# One sex process does everything: SearXNG and Lightpanda run as its child processes, crawl/batch/extract jobs run in-process
 # and are kept in SQLite on the sex-data volume, so they survive a restart.
 # LLM features: set SEX_LLM_MODEL (and SEX_LLM_BASE_URL / SEX_LLM_API_KEY) in .env.
 services:
@@ -7,12 +7,12 @@ services:
     build: .
     image: sex:latest
     restart: unless-stopped
-    depends_on: [searxng]
     command: ["serve", "--host", "0.0.0.0", "--port", "3002"]
     ports: ["3002:3002"]
     volumes: [sex-data:/data]
     environment:
-      SEX_SEARXNG_URL: http://searxng:8080
+      # Empty: sex runs the SearXNG embedded in its binary (linux-x64 only). Set it to use a deployed SearXNG instead.
+      SEX_SEARXNG_URL: ${SEX_SEARXNG_URL:-}
       # The image ships Lightpanda; sex runs it as a child process, so there is no browser service.
       SEX_LIGHTPANDA: "1"
       SEX_LLM_MODEL: ${SEX_LLM_MODEL:-}
@@ -20,16 +20,6 @@ services:
       SEX_LLM_API_KEY: ${SEX_LLM_API_KEY:-}
       # here-docs (structured PDF/office, local OCR) is in the image too, but CPU-heavy: opt in with SEX_DOCS=1 in .env.
       SEX_DOCS: ${SEX_DOCS:-}
-
-  # Pin to a tested tag or digest in production (set SEARXNG_IMAGE).
-  searxng:
-    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
-    restart: unless-stopped
-    ports: ["127.0.0.1:${SEARXNG_PORT:-8080}:8080"]
-    volumes:
-      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
-    environment:
-      SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me}
 
 volumes:
   sex-data:

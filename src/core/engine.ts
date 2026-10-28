@@ -23,10 +23,13 @@ import { Llm } from "./llm.ts";
 import { mapSite } from "./map.ts";
 import { scrapeUrl } from "./scrape.ts";
 import { search } from "./search.ts";
+import { SearxngService } from "./searxng.ts";
 import { runTask } from "./tasks.ts";
 
 /** Everything the HTTP, MCP and CLI front-ends share. */
 export class Engine {
+  /** The external SearXNG, or the one sex runs as a child process. */
+  readonly searxng: SearxngService;
   readonly browser: BrowserPool;
   readonly llm: Llm;
   readonly scrapeLimit: ReturnType<typeof pLimit>;
@@ -36,6 +39,7 @@ export class Engine {
   readonly docs: DocsConverter;
 
   constructor(readonly config: Config) {
+    this.searxng = new SearxngService(config);
     this.browser = new BrowserPool(config);
     this.llm = new Llm(config);
     this.scrapeLimit = pLimit(config.concurrency);
@@ -98,7 +102,7 @@ export class Engine {
   /** One-line description of optional capabilities, for startup logs. */
   describe(): Record<string, string> {
     return {
-      searxng: this.config.searxngUrl,
+      searxng: this.searxng.describe(),
       browser: this.browser.enabled ? (this.config.cdpUrl ?? "lightpanda") : "off (Defuddle/linkedom)",
       llm: this.config.llm ? `${this.config.llm.model} @ ${this.config.llm.baseUrl}` : "off",
       docs: this.docs.enabled ? "here-docs (structured PDF/office, OCR)" : "off (unpdf text only)",
@@ -111,5 +115,6 @@ export class Engine {
     await this.browser.close();
     await this.extractPool.close();
     await this.docs.close();
+    await this.searxng.close();
   }
 }

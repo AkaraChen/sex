@@ -8,7 +8,12 @@ import { type Document, type FormatOption, type ScrapeOptions, ScrapeRequest, Se
 import { VERSION } from "./version.ts";
 
 const commonArgs = {
-  "searxng-url": { type: "string", description: "SearXNG base URL (env SEX_SEARXNG_URL, default http://127.0.0.1:8080)" },
+  "searxng-url": {
+    type: "string",
+    description: "Use a running SearXNG at this base URL instead of starting one (env SEX_SEARXNG_URL; default: sex runs SearXNG itself)",
+  },
+  "searxng-path": { type: "string", description: "SearXNG executable to run (env SEX_SEARXNG_PATH; default: the bundled binary)" },
+  "searxng-settings": { type: "string", description: "settings.yml for the SearXNG sex runs (env SEX_SEARXNG_SETTINGS)" },
   lightpanda: { type: "boolean", description: "Spawn a local Lightpanda browser for page rendering (env SEX_LIGHTPANDA)" },
   "lightpanda-path": { type: "string", description: "Path to the lightpanda binary (env SEX_LIGHTPANDA_PATH)" },
   "cdp-url": { type: "string", description: "Use an existing CDP browser, e.g. ws://127.0.0.1:9222 (env SEX_CDP_URL)" },
@@ -60,6 +65,8 @@ function engineFrom(
   if (args["log-level"]) setLogLevel(args["log-level"]);
   const overrides: ConfigOverrides = {
     searxngUrl: args["searxng-url"],
+    searxngPath: args["searxng-path"],
+    searxngSettings: args["searxng-settings"],
     lightpanda: args.lightpanda,
     lightpandaPath: args["lightpanda-path"],
     cdpUrl: args["cdp-url"],
@@ -114,9 +121,10 @@ async function oneShot(engine: Engine, fn: () => Promise<void>) {
   }
 }
 
-/** Starts the browser and document converter up front; a broken install prints `error: CODE: message` and exits 1. */
+/** Starts SearXNG, the browser and document converter up front; a broken install prints `error: CODE: message` and exits 1. */
 async function warmupOrExit(engine: Engine): Promise<boolean> {
   try {
+    await engine.searxng.warmup();
     await engine.browser.warmup();
     await engine.docs.warmup();
     return true;

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -67,7 +67,42 @@ async function freePort(): Promise<number> {
   });
 }
 
-function findLightpanda(explicit?: string): string {
+/** Lightpanda embedded in the compiled binary by `scripts/build.ts`, zstd-compressed. */
+let embedded: { version: string; sha256: string; file: string } | undefined;
+
+export function registerEmbeddedLightpanda(version: string, sha256: string, file: string): void {
+  embedded = { version, sha256, file };
+}
+
+/** Decompresses the embedded Lightpanda to $XDG_CACHE_HOME/sex/lightpanda-<version>-<hash>/ (once) and returns its path. */
+async function extractEmbeddedLightpanda(bundle: { version: string; sha256: string; file: string }): Promise<string> {
+  const dir = join(
+    process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+    "sex",
+    `lightpanda-${bundle.version}-${bundle.sha256.slice(0, 16)}`,
+  );
+  const bin = join(dir, "lightpanda");
+  if (existsSync(bin)) return bin;
+  const t0 = performance.now();
+  mkdirSync(dir, { recursive: true });
+  // Write beside the target and rename, so an interrupted extraction is never mistaken for a complete one.
+  const tmp = `${bin}.tmp-${process.pid}`;
+  writeFileSync(tmp, Bun.zstdDecompressSync(await Bun.file(bundle.file).bytes()));
+  chmodSync(tmp, 0o755);
+  try {
+    renameSync(tmp, bin);
+  } catch (err) {
+    // Another sex process finished the same extraction first.
+    rmSync(tmp, { force: true });
+    if (!existsSync(bin)) throw err;
+  }
+  log.info("lightpanda extracted", { bin, version: bundle.version, ms: Math.round(performance.now() - t0) });
+  return bin;
+}
+
+/** An explicit path, else the Lightpanda embedded in this binary, else one on PATH or in the usual install locations. */
+async function findLightpanda(explicit?: string): Promise<string> {
+  if (!explicit && embedded) return extractEmbeddedLightpanda(embedded);
   const candidates = [
     explicit,
     Bun.which("lightpanda"),
@@ -79,7 +114,7 @@ function findLightpanda(explicit?: string): string {
     throw new AppError(
       501,
       "BROWSER_NOT_CONFIGURED",
-      "Lightpanda binary not found. Download it from https://github.com/lightpanda-io/browser/releases and put it on PATH, or pass --lightpanda-path.",
+      "Lightpanda binary not found (this sex was not built with one embedded). Download it from https://github.com/lightpanda-io/browser/releases and put it on PATH, or pass --lightpanda-path.",
     );
   }
   return found;
@@ -185,7 +220,7 @@ export class BrowserPool {
         `Not starting Lightpanda for another ${Math.ceil((this.cooldownUntil - now) / 1000)}s after ${START_FAILURE_LIMIT} failed starts. Last error: ${this.lastStartError}`,
       );
     }
-    const bin = findLightpanda(this.config.lightpandaPath);
+    const bin = await findLightpanda(this.config.lightpandaPath);
     try {
       const endpoint = await this.startLightpanda(bin);
       this.startFailures = [];
