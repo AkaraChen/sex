@@ -75,3 +75,56 @@ describe("SearXNG robustness", () => {
     expect(normalizeDomain("*.Example.com")).toBe("example.com");
   });
 });
+
+describe("search v2 parameters", () => {
+  const seen: URL[] = [];
+  const wide = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(req) {
+      const u = new URL(req.url);
+      seen.push(u);
+      if (u.searchParams.get("pageno") !== "1") return Response.json({ results: [] });
+      return Response.json({
+        results: [
+          { url: "https://github.com/a/b", title: "gh", content: "" },
+          { url: "https://example.org/paper.pdf", title: "pdf", content: "" },
+          { url: "https://arxiv.example/x", title: "sci", content: "", category: "science" },
+          { url: "https://other.test/", title: "plain", content: "" },
+        ],
+      });
+    },
+  });
+  const e = testCoreEngine({ searxngUrl: `http://127.0.0.1:${wide.port}` });
+  afterAll(async () => {
+    await e.close();
+    wide.stop(true);
+  });
+
+  test("safe sets safesearch=2, and is absent otherwise", async () => {
+    seen.length = 0;
+    await e.search({ query: "x", safe: true });
+    await e.search({ query: "x" });
+    const first = seen.filter((u) => u.searchParams.get("pageno") === "1");
+    expect(first[0]?.searchParams.get("safesearch")).toBe("2");
+    expect(first[1]?.searchParams.has("safesearch")).toBe(false);
+  });
+
+  test("results are tagged with a category", async () => {
+    const { data } = await e.search({ query: "x", limit: 10 });
+    expect(data.web?.map((r) => r.category)).toEqual(["github", "pdf", "research", undefined]);
+  });
+
+  test("unsupported parameters are named in the warning", async () => {
+    const { warning } = await e.search({ query: "x", tbs: "sbd:1", country: "DE", location: "Berlin" });
+    expect(warning).toContain("tbs");
+    expect(warning).toContain("country");
+    expect(warning).toContain("location");
+    expect((await e.search({ query: "x", tbs: "qdr:w" })).warning).toBeUndefined();
+  });
+
+  test("site: filters the results", async () => {
+    const { data } = await e.search({ query: "site:github.com x" });
+    expect(data.web?.map((r) => r.url)).toEqual(["https://github.com/a/b"]);
+  });
+});

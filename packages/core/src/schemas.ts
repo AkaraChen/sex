@@ -226,7 +226,7 @@ const CategoryName = z.enum(["github", "research", "pdf", "developer", "gov"]);
 
 export const SearchRequest = z.object({
   query: z.string().min(1).max(2000),
-  limit: z.number().int().min(1).max(100).optional().describe("Max results per source. Defaults to 5."),
+  limit: z.number().int().min(1).max(100).optional().describe("Max results per source. Defaults to 10 over HTTP, 5 in the CLI and MCP."),
   sources: z
     .array(z.union([SourceName, z.object({ type: SourceName })]))
     .optional()
@@ -237,9 +237,12 @@ export const SearchRequest = z.object({
   tbs: z
     .string()
     .optional()
-    .describe("Time filter: qdr:h, qdr:d, qdr:w, qdr:m, qdr:y. qdr:h is treated as qdr:d (SearXNG has no hourly range)."),
-  location: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
-  country: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+    .describe(
+      "Time filter: qdr:h, qdr:d, qdr:w, qdr:m, qdr:y. qdr:h is treated as qdr:d (SearXNG has no hourly range). Other formats are ignored with a warning.",
+    ),
+  safe: z.boolean().optional().describe("Strict safe search (SearXNG safesearch=2). Otherwise the instance default applies."),
+  location: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored with a warning."),
+  country: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored with a warning."),
   lang: z.string().optional().describe("SearXNG language code, e.g. en, zh-CN (extension)"),
   timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
   ignoreInvalidURLs: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
@@ -261,6 +264,7 @@ export const SearchResultNews = z.object({
   date: z.string().optional(),
   imageUrl: z.string().optional(),
   position: z.number().optional(),
+  category: z.string().optional(),
 });
 export const SearchResultImage = z.object({
   url: z.string().optional(),
@@ -278,4 +282,10 @@ export const SearchData = z.object({
 });
 export type SearchData = z.infer<typeof SearchData>;
 
-export const SearchResponse = z.object({ success: z.literal(true), data: SearchData, warning: z.string().optional() });
+export const SearchResponse = z.object({
+  success: z.literal(true),
+  id: z.string(),
+  creditsUsed: z.number(),
+  data: SearchData,
+  warning: z.string().optional(),
+});

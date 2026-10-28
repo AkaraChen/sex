@@ -2,6 +2,7 @@ import type { LimitFunction } from "p-limit";
 import { Deadline } from "./deadline.ts";
 import { AppError, badRequest, toAppError } from "./errors.ts";
 import { log } from "./log.ts";
+import { matchesQueryOperators, planOperatorQuery } from "./operators.ts";
 import type { Document, SearchData, SearchRequest } from "./schemas.ts";
 import { assertScrapeCapabilities, type ScrapeContext, scrapeUrl } from "./scrape.ts";
 import type { SearxngService } from "./searxng.ts";
@@ -30,9 +31,12 @@ interface SearxQuery {
   categories: string;
   timeRange?: string;
   language?: string;
+  safe?: boolean;
 }
 
 const MAX_PAGES = 5;
+/** Results per source when the request has no `limit`. The HTTP route asks for 10 (Firecrawl's default). */
+export const DEFAULT_LIMIT = 5;
 const TIME_RANGES: Record<string, string> = { h: "day", d: "day", w: "week", m: "month", y: "year" };
 
 // SearXNG marks matched terms with private-use characters.
@@ -90,6 +94,7 @@ async function searxngOnce(
   const params = new URLSearchParams({ q: query.q, format: "json", categories: query.categories, pageno: String(pageno) });
   if (query.timeRange) params.set("time_range", query.timeRange);
   if (query.language) params.set("language", query.language);
+  if (query.safe) params.set("safesearch", "2");
   const searxngUrl = await engine.searxng.url();
   // One request gets SEX_TIMEOUT of what the search has left.
   const request = deadline.slice(engine.config.timeout, { expiredCode: "TIMEOUT" });
@@ -148,6 +153,20 @@ async function collect(
   return out;
 }
 
+/** Firecrawl's `category` of a result: by URL first, then by the SearXNG category it came from. */
+export function categoryOf(r: SearxResult): string | undefined {
+  try {
+    const url = new URL(r.url as string);
+    const host = url.hostname.toLowerCase();
+    if (host === "github.com" || host.endsWith(".github.com")) return "github";
+    if (url.pathname.toLowerCase().endsWith(".pdf")) return "pdf";
+    if (host.endsWith(".gov") || host.includes(".gov.")) return "gov";
+  } catch {}
+  if (r.category === "science") return "research";
+  if (r.category === "it") return "developer";
+  return undefined;
+}
+
 function sourceList(req: SearchRequest): Array<"web" | "news" | "images"> {
   const list = (req.sources?.length ? req.sources : ["web" as const]).map((s) => (typeof s === "string" ? s : s.type));
   return Array.from(new Set(list));
@@ -169,7 +188,7 @@ export async function search(
   req: SearchRequest,
   signal?: AbortSignal,
 ): Promise<{ data: SearchData; warning?: string }> {
-  const limit = req.limit ?? 5;
+  const limit = req.limit ?? DEFAULT_LIMIT;
   const wantsScrape = !!req.scrapeOptions?.formats?.length;
   if (wantsScrape) assertScrapeCapabilities(engine, req.scrapeOptions);
   if (req.includeDomains?.length && req.excludeDomains?.length) {
@@ -193,13 +212,21 @@ export async function search(
   }
   for (const d of req.excludeDomains ?? []) mods.push(`-site:${d}`);
   const timeRange = req.tbs?.match(/qdr:([hdwmy])/)?.[1];
+  const warnings: string[] = [];
+  if (req.tbs && !timeRange) warnings.push(`tbs "${req.tbs}" is not supported and was ignored (only qdr:h, qdr:d, qdr:w, qdr:m, qdr:y)`);
+  for (const name of ["country", "location"] as const) {
+    if (req[name]) warnings.push(`${name} is not supported by SearXNG and was ignored`);
+  }
   const base = {
     timeRange: timeRange ? TIME_RANGES[timeRange] : undefined,
     language: req.lang,
+    safe: req.safe,
   };
-  const q = [req.query, ...mods].join(" ");
+  const plan = planOperatorQuery(req.query);
+  const q = [plan.query, ...mods].join(" ");
   const accept = (r: SearxResult) => {
     if (!r.url) return false;
+    if (!matchesQueryOperators(r, plan)) return false;
     if (req.excludeDomains?.some((d) => hostMatches(r.url as string, d))) return false;
     if (includeDomains?.length && !includeDomains.some((d) => hostMatches(r.url as string, d))) return false;
     return true;
@@ -230,7 +257,6 @@ export async function search(
   };
 
   const data: SearchData = {};
-  const warnings: string[] = [];
   const failures: unknown[] = [];
   let succeeded = 0;
   await Promise.all(
@@ -243,6 +269,7 @@ export async function search(
             title: clean(r.title),
             description: clean(r.content),
             position: i + 1,
+            category: categoryOf(r),
           }));
         } else if (source === "news") {
           const results = await run("news");
@@ -253,6 +280,7 @@ export async function search(
             date: r.publishedDate ?? undefined,
             imageUrl: r.thumbnail || r.img_src || undefined,
             position: i + 1,
+            category: categoryOf(r),
           }));
         } else if (source === "images") {
           const results = await run("images");
