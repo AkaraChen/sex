@@ -91,6 +91,15 @@ bun src/cli.ts fetch https://example.com --lightpanda --lightpanda-path ./lightp
 
 **内网保护**：`--allow-private-network` 关闭时（`serve` 默认），子进程会带上 `--block-private-networks`，Lightpanda 在 DNS 解析后再拦一次内网地址，作为 request interception 之外的第二道防线。`--cdp-url` 接外部浏览器时没有这一层，只有 request interception。
 
+**请求头与凭据**：请求里的 `headers` 在浏览器路径上的处理和 HTTP 路径一致，凭据只发给目标页所在的 origin（协议 + 主机 + 端口）：
+
+- `Authorization` / `Proxy-Authorization` 只附加在发往目标 origin 的请求上（包括它的子资源），CDN、统计、广告等第三方域名收不到；重定向到其它 origin 后也不再带上。这需要 request interception，所以即使开了 `--allow-private-network` 也会启用。
+- `Cookie` 拆开写进浏览器的 cookie jar，只属于目标页的主机（host-only，不猜“末两段”域名），浏览器只会发给这个主机。
+- 其它头（如 `Accept-Language`）仍对页面的所有请求生效。页面自己设置的头不受影响。
+- 浏览器不支持 request interception 时：需要内网保护或带了 `Authorization` / `Proxy-Authorization` 的请求返回 `501 BROWSER_INTERCEPTION_UNSUPPORTED`，不会退回“发给所有域名”。不支持 `Network.setCookies` 时，`Cookie` 改为和 `Authorization` 一样只附加在目标 origin 的请求上（同样需要 request interception）。
+- Lightpanda 1.0.2 已实测：支持带 headers 的 `Fetch.continueRequest` 和 `Network.setCookies`。它对 request interception 里暂停的请求会把 `Cookie` 头少报一个字符，所以 sex 不会把它传回浏览器，由 cookie jar 负责发送。
+- `X-Api-Key` 这类自定义的鉴权头不在上面的名单里，仍会发给页面的所有请求；需要限定范围的话请用 `Authorization`。
+
 ### 配置
 
 优先级：命令行 flag > `SEX_*` 环境变量 > 默认值。规则：
