@@ -1,6 +1,7 @@
 // Crawl politeness delay: slots are reserved relative to "now", so pages discovered late never burst.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Engine } from "../src/core/engine.ts";
+import { MemoryDocumentLog } from "../src/core/jobs/documents.ts";
 import { SqliteJobStore } from "../src/core/jobs/sqlite.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
@@ -64,7 +65,7 @@ describe("crawl delay slots", () => {
   }, 15_000);
 
   test("reserveSlots hands out non-overlapping slots", async () => {
-    const store = new SqliteJobStore(":memory:", 60_000);
+    const store = new SqliteJobStore(":memory:", 60_000, new MemoryDocumentLog());
     try {
       const job = await store.create({ kind: "crawl", url: "http://example.test/", options: {} });
       expect(await store.reserveSlots(job.id, 3, 100, 1000)).toBe(1000);

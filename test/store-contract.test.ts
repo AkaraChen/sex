@@ -1,22 +1,110 @@
-// JobStore behaviour, against SQLite in memory and in a file.
+// JobStore behaviour against every DocumentLog: memory, JSONL files, and S3 when SEX_TEST_S3_URL is set
+// (s3://bucket/prefix, with S3_ENDPOINT / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY / S3_REGION for Bun.S3Client).
+import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  truncateSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type DocumentLog, type DocumentRef, FsDocumentLog, MemoryDocumentLog, S3DocumentLog } from "../src/core/jobs/documents.ts";
 import { SqliteJobStore } from "../src/core/jobs/sqlite.ts";
+import type { Document } from "../src/schemas.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "sex-store-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-for (const [name, path] of [
-  ["memory", ":memory:"],
-  ["file", join(dir, "jobs.sqlite")],
-] as const) {
-  describe(`job store contract (${name})`, () => {
-    const store = new SqliteJobStore(path, 60_000);
-    afterAll(() => store.close());
+const doc = (n: number, text = "x") => ({ markdown: text.repeat(n), metadata: { sourceURL: `https://e.com/${n}` } });
 
-    const doc = (n: number) => ({ markdown: "x".repeat(n), metadata: { sourceURL: `https://e.com/${n}` } });
+/** Every page of a job's documents, following nextSkip. */
+async function allPages(store: SqliteJobStore, id: string, maxChars: number) {
+  const pages: Document[][] = [];
+  let skip: number | null = 0;
+  while (skip !== null) {
+    const page: Awaited<ReturnType<SqliteJobStore["documents"]>> = await store.documents(id, skip, maxChars);
+    pages.push(page.data);
+    skip = page.nextSkip;
+  }
+  return pages;
+}
+
+const s3Url = process.env.SEX_TEST_S3_URL;
+/** Each run writes under its own prefix and removes it afterwards. */
+const s3 = s3Url
+  ? (() => {
+      const url = new URL(s3Url);
+      const prefix = `${url.pathname.replace(/^\/+|\/+$/g, "")}/store-contract-${Bun.randomUUIDv7()}`.replace(/^\//, "");
+      return { client: new Bun.S3Client({ bucket: url.hostname }), prefix };
+    })()
+  : undefined;
+/**
+ * Wraps a log so a test can see which jobs still have readable documents (through the DocumentLog interface alone),
+ * make the next drops fail, and hold appends until it releases them.
+ */
+function recorded(inner: DocumentLog) {
+  const refs: Array<{ jobId: string; ref: DocumentRef }> = [];
+  let failDrops = 0;
+  let held: Promise<void> = Promise.resolve();
+  const log: DocumentLog = {
+    append: async (jobId, json) => {
+      await held;
+      const ref = await inner.append(jobId, json);
+      refs.push({ jobId, ref });
+      return ref;
+    },
+    read: (object, offset, length) => inner.read(object, offset, length),
+    drop: async (jobId) => {
+      if (failDrops > 0) {
+        failDrops--;
+        throw new Error("drop failed");
+      }
+      await inner.drop(jobId);
+    },
+    ...(inner.truncate ? { truncate: inner.truncate.bind(inner) } : {}),
+  };
+  return {
+    log,
+    /** Ids of jobs with at least one document whose bytes are still all there, sorted. */
+    stored: async () => {
+      const ids = new Set<string>();
+      for (const { jobId, ref } of refs) {
+        if ((await inner.read(ref.object, ref.offset, ref.length)).length === ref.length) ids.add(jobId);
+      }
+      return [...ids].sort();
+    },
+    failNextDrops: (n: number) => {
+      failDrops = n;
+    },
+    holdAppends: () => {
+      let release = () => {};
+      held = new Promise((resolve) => (release = resolve));
+      return release;
+    },
+  };
+}
+
+let logs = 0;
+const backends: Array<[string, () => ReturnType<typeof recorded>]> = [
+  ["memory", () => recorded(new MemoryDocumentLog())],
+  ["file", () => recorded(new FsDocumentLog(join(dir, `docs-${logs++}`)))],
+];
+if (s3) backends.push(["s3", () => recorded(new S3DocumentLog(s3.client, `${s3.prefix}/${logs++}`))]);
+
+for (const [name, makeLog] of backends) {
+  describe(`job store contract (${name})`, () => {
+    const { log: docs } = makeLog();
+    const store = new SqliteJobStore(":memory:", 60_000, docs);
+    afterAll(() => store.close());
 
     test("documents() pages by size without skipping or repeating items", async () => {
       const job = await store.create({ kind: "batch_scrape", options: {} });
@@ -40,6 +128,56 @@ for (const [name, path] of [
     test("documents() on an empty job returns nothing and no next page", async () => {
       const job = await store.create({ kind: "batch_scrape", options: {} });
       expect(await store.documents(job.id, 0, 1000)).toEqual({ data: [], nextSkip: null });
+      expect(await store.documents(job.id, 5, 1000)).toEqual({ data: [], nextSkip: null });
+      expect(await store.documentsJson(job.id, 0, 1000)).toEqual({ data: [], nextSkip: null });
+      expect(await store.documents("missing", 0, 1000)).toEqual({ data: [], nextSkip: null });
+    });
+
+    test("a document larger than the budget still comes back, alone on its page", async () => {
+      const job = await store.create({ kind: "batch_scrape", options: {} });
+      for (const n of [5000, 10, 6000, 10, 10]) await store.pushDocument(job.id, doc(n));
+      const pages = await allPages(store, job.id, 1000);
+      expect(pages.map((p) => p.map((d) => d.markdown?.length))).toEqual([[5000], [10], [6000], [10, 10]]);
+    });
+
+    test("the budget counts characters, and multi-byte text round-trips", async () => {
+      const job = await store.create({ kind: "batch_scrape", options: {} });
+      const docs = [doc(100, "é"), doc(100, "中"), doc(50, "😀"), doc(100, "x")];
+      for (const d of docs) await store.pushDocument(job.id, d);
+      const size = JSON.stringify(docs[0]).length;
+      // Two documents fit by characters, though the first two take 500 bytes of UTF-8.
+      expect((await store.documents(job.id, 0, 2 * size + 1)).data).toEqual(docs.slice(0, 2));
+      expect((await allPages(store, job.id, 1e6)).flat()).toEqual(docs);
+    });
+
+    test("documentsJson() is the same page as documents(), as JSON texts", async () => {
+      const job = await store.create({ kind: "crawl", url: "https://e.com/", options: {} });
+      for (const n of [10, 20, 30]) await store.pushDocument(job.id, { ...doc(n, 'a\n"b'), metadata: { title: "t\u2028" } });
+      for (const [skip, max] of [
+        [0, 1e6],
+        [1, 1e6],
+        [0, 50],
+        [2, 1],
+      ] as const) {
+        const raw = await store.documentsJson(job.id, skip, max);
+        const parsed = await store.documents(job.id, skip, max);
+        const text = new TextDecoder();
+        expect(JSON.parse(`[${raw.data.map((d) => text.decode(d)).join(",")}]`)).toEqual(parsed.data);
+        expect(raw.nextSkip).toBe(parsed.nextSkip);
+      }
+    });
+
+    test("documents of jobs written in turn stay with their job and in order", async () => {
+      const jobs = await Promise.all([1, 2, 3].map(() => store.create({ kind: "batch_scrape", options: {} })));
+      for (let i = 0; i < 30; i++) {
+        const job = jobs[i % 3]!;
+        await store.pushDocument(job.id, { markdown: `${i % 3}:${i}:${"y".repeat(i * 37)}`, metadata: {} });
+      }
+      await store.pushDocument("missing", doc(1));
+      for (const [k, job] of jobs.entries()) {
+        const got = (await allPages(store, job.id, 400)).flat().map((d) => d.markdown?.split(":").slice(0, 2).join(":"));
+        expect(got).toEqual(Array.from({ length: 10 }, (_, j) => `${k}:${j * 3 + k}`));
+      }
     });
 
     test("robots.txt is stored beside the job, not in its record", async () => {
@@ -84,30 +222,258 @@ for (const [name, path] of [
       await store.pushRobotsBlocked(a.id, "https://a/p");
       expect(await store.robotsBlocked(a.id)).toEqual(["https://a/p"]);
     });
+
+    test("a reopened store keeps jobs and documents, and appends after them", async () => {
+      const path = join(dir, `reopen-${name}.sqlite`);
+      const { log } = makeLog();
+      const first = new SqliteJobStore(path, 60_000, log);
+      const job = await first.create({ kind: "crawl", url: "https://e.com/", options: { limit: 3 } });
+      await first.incr(job.id, "pending", 2);
+      await first.pushDocument(job.id, { markdown: "kept", metadata: {} });
+      await first.markSeen(job.id, ["https://e.com/"]);
+      await first.close();
+
+      const second = new SqliteJobStore(path, 60_000, log);
+      expect(await second.get(job.id)).toMatchObject({ status: "scraping", pending: 2, options: { limit: 3 } });
+      expect((await second.documents(job.id, 0, 1e6)).data).toEqual([{ markdown: "kept", metadata: {} }]);
+      await second.pushDocument(job.id, { markdown: "more", metadata: {} });
+      expect((await second.documents(job.id, 0, 1e6)).data.map((d) => d.markdown)).toEqual(["kept", "more"]);
+      expect(await second.markSeen(job.id, ["https://e.com/"])).toEqual([false]);
+      await second.close();
+    });
+
+    test("the TTL sweep drops a job's documents, on open and periodically", async () => {
+      const path = join(dir, `sweep-${name}.sqlite`);
+      const { log, stored } = makeLog();
+      const expired = new SqliteJobStore(path, -1, log);
+      const onOpen = await expired.create({ kind: "batch_scrape", options: {} });
+      await expired.pushDocument(onOpen.id, doc(10));
+      await expired.close();
+      expect(await stored()).toEqual([onOpen.id]);
+
+      // Opening the store sweeps expired jobs, together with their documents and lists.
+      const store = new SqliteJobStore(path, -1, log);
+      expect(await store.get(onOpen.id)).toBeUndefined();
+      const periodic = await store.create({ kind: "batch_scrape", options: {} });
+      await store.pushDocument(periodic.id, doc(10));
+      (store as unknown as { sweep(): void }).sweep();
+      expect(await store.get(periodic.id)).toBeUndefined();
+      await store.close();
+      expect(await stored()).toEqual([]);
+    });
+
+    test("documents the store did not write are never deleted, by the sweep or on open", async () => {
+      const path = join(dir, `foreign-${name}.sqlite`);
+      const { log, stored } = makeLog();
+      // Another sex instance, or anything else, sharing the bucket, prefix or directory.
+      await log.append("not-ours", JSON.stringify(doc(5)));
+      const store = new SqliteJobStore(path, -1, log);
+      const job = await store.create({ kind: "batch_scrape", options: {} });
+      await store.pushDocument(job.id, doc(10));
+      (store as unknown as { sweep(): void }).sweep();
+      await store.close();
+      const reopened = new SqliteJobStore(path, -1, log);
+      await reopened.close();
+      expect(await stored()).toEqual(["not-ours"]);
+    });
+
+    test("a drop that failed (or never ran before a crash) is retried from its tombstone", async () => {
+      const path = join(dir, `tombstone-${name}.sqlite`);
+      const { log, stored, failNextDrops } = makeLog();
+      const first = new SqliteJobStore(path, -1, log);
+      const job = await first.create({ kind: "batch_scrape", options: {} });
+      await first.pushDocument(job.id, doc(10));
+      failNextDrops(1);
+      (first as unknown as { sweep(): void }).sweep();
+      await first.close();
+      expect(await stored()).toEqual([job.id]);
+
+      // Opening the store sweeps, and the sweep retries every tombstone.
+      const second = new SqliteJobStore(path, 60_000, log);
+      await second.close();
+      expect(await stored()).toEqual([]);
+    });
+
+    test("a document written while its job expired is dropped as well", async () => {
+      const path = join(dir, `late-${name}.sqlite`);
+      const { log, stored, holdAppends } = makeLog();
+      const store = new SqliteJobStore(path, -1, log);
+      const job = await store.create({ kind: "batch_scrape", options: {} });
+      const release = holdAppends();
+      const pushing = store.pushDocument(job.id, doc(10));
+      await Bun.sleep(5);
+      (store as unknown as { sweep(): void }).sweep();
+      release();
+      await pushing;
+      await store.close();
+      expect(await stored()).toEqual([]);
+    });
+
+    test("a read leaves out documents whose bytes are missing, and keeps their index rows", async () => {
+      const job = await store.create({ kind: "batch_scrape", options: {} });
+      for (const n of [10, 20]) await store.pushDocument(job.id, doc(n));
+      await docs.drop(job.id);
+      expect(await store.documents(job.id, 0, 1e6)).toEqual({ data: [], nextSkip: null });
+      await store.pushDocument(job.id, doc(30));
+      expect((await store.documents(job.id, 0, 1e6)).data).toEqual([doc(30)]);
+      // The missing documents still hold seqs 0 and 1, so the new one is seq 2.
+      expect((await store.documents(job.id, 2, 1e6)).data).toEqual([doc(30)]);
+      expect((await store.documents(job.id, 3, 1e6)).data).toEqual([]);
+    });
   });
 }
 
-test("a file store keeps jobs across a reopen and drops them after their TTL", async () => {
-  const path = join(dir, "reopen.sqlite");
-  const first = new SqliteJobStore(path, 60_000);
-  const job = await first.create({ kind: "crawl", url: "https://e.com/", options: { limit: 3 } });
-  await first.incr(job.id, "pending", 2);
-  await first.pushDocument(job.id, { markdown: "kept", metadata: {} });
-  await first.markSeen(job.id, ["https://e.com/"]);
+/** A store on SQLite and JSONL files under `<dir>/<name>`, the layout `serve` uses. */
+const fileStore = (name: string) => {
+  const dataDir = join(dir, name);
+  return {
+    open: () => new SqliteJobStore(join(dataDir, "jobs.sqlite"), 60_000, new FsDocumentLog(join(dataDir, "documents"))),
+    file: (id: string) => join(dataDir, "documents", `${id}.jsonl`),
+  };
+};
+const lines = (...docs: Document[]) => Buffer.byteLength(docs.map((d) => `${JSON.stringify(d)}\n`).join(""));
+
+test("unindexed bytes at the end of a file (a crash between write and index) are cut off on open", async () => {
+  const { open, file } = fileStore("torn-tail");
+  const first = open();
+  const job = await first.create({ kind: "crawl", url: "https://e.com/", options: {} });
+  const empty = await first.create({ kind: "crawl", url: "https://e.com/", options: {} });
+  await first.pushDocument(job.id, doc(10));
+  await first.pushDocument(job.id, doc(20));
   await first.close();
+  appendFileSync(file(job.id), '{"markdown":"half a docu');
+  // A job whose first document was written but never indexed.
+  writeFileSync(file(empty.id), `${JSON.stringify(doc(1))}\n`);
 
-  const second = new SqliteJobStore(path, 60_000);
-  expect(await second.get(job.id)).toMatchObject({ status: "scraping", pending: 2, options: { limit: 3 } });
-  expect((await second.documents(job.id, 0, 1e6)).data).toEqual([{ markdown: "kept", metadata: {} }]);
-  expect(await second.markSeen(job.id, ["https://e.com/"])).toEqual([false]);
+  const second = open();
+  expect((await second.documents(job.id, 0, 1e6)).data).toEqual([doc(10), doc(20)]);
+  expect(statSync(file(job.id)).size).toBe(lines(doc(10), doc(20)));
+  expect(statSync(file(empty.id)).size).toBe(0);
+  await second.pushDocument(job.id, doc(30));
+  await second.pushDocument(empty.id, doc(40));
+  expect((await second.documents(job.id, 0, 1e6)).data).toEqual([doc(10), doc(20), doc(30)]);
+  expect((await second.documents(empty.id, 0, 1e6)).data).toEqual([doc(40)]);
   await second.close();
+});
 
-  const expired = new SqliteJobStore(path, -1);
-  const gone = await expired.create({ kind: "batch_scrape", options: {} });
-  await expired.close();
-  // Opening the store sweeps expired jobs, together with their documents and lists.
-  const third = new SqliteJobStore(path, 60_000);
-  expect(await third.get(gone.id)).toBeUndefined();
-  expect(await third.get(job.id)).toBeDefined();
+test("index rows past the end of a file are dropped on open; a read only leaves them out", async () => {
+  const { open, file } = fileStore("past-eof");
+  const first = open();
+  const a = await first.create({ kind: "crawl", url: "https://a/", options: {} });
+  const b = await first.create({ kind: "crawl", url: "https://b/", options: {} });
+  for (const n of [10, 20, 30]) {
+    await first.pushDocument(a.id, doc(n));
+    await first.pushDocument(b.id, doc(n));
+  }
+  await first.close();
+  // The OS lost the end of a's file (mid-way through its third line) and all of b's.
+  truncateSync(file(a.id), statSync(file(a.id)).size - 10);
+  rmSync(file(b.id));
+
+  const second = open();
+  expect((await second.documents(a.id, 0, 1e6)).data).toEqual([doc(10), doc(20)]);
+  expect(await second.documents(b.id, 0, 1e6)).toEqual({ data: [], nextSkip: null });
+  // The next document takes the place of the lost one, and the file holds no leftover bytes.
+  await second.pushDocument(a.id, doc(40));
+  await second.pushDocument(b.id, doc(40));
+  expect((await second.documents(a.id, 0, 1e6)).data).toEqual([doc(10), doc(20), doc(40)]);
+  expect((await second.documents(b.id, 0, 1e6)).data).toEqual([doc(40)]);
+  expect(statSync(file(a.id)).size).toBe(lines(doc(10), doc(20), doc(40)));
+
+  // The file loses its tail while the store is open: reads leave those documents out but keep their rows (a page
+  // each), and only the repair on the next open drops them.
+  truncateSync(file(a.id), lines(doc(10)) + 5);
+  expect(await allPages(second, a.id, 1)).toEqual([[doc(10)], [], []]);
+  await second.close();
+  const third = open();
+  expect(await allPages(third, a.id, 1)).toEqual([[doc(10)]]);
+  await third.pushDocument(a.id, doc(50));
+  expect((await third.documents(a.id, 0, 1e6)).data).toEqual([doc(10), doc(50)]);
+  expect(statSync(file(a.id)).size).toBe(lines(doc(10), doc(50)));
   await third.close();
+});
+
+test("bytes that are not a whole JSON object are left out of the page instead of breaking it", async () => {
+  const { open, file } = fileStore("damaged");
+  const store = open();
+  const job = await store.create({ kind: "batch_scrape", options: {} });
+  for (const n of [10, 20, 30]) await store.pushDocument(job.id, doc(n));
+  const fd = openSync(file(job.id), "r+");
+  writeSync(fd, "X", lines(doc(10)));
+  closeSync(fd);
+  expect((await store.documents(job.id, 0, 1e6)).data).toEqual([doc(10), doc(30)]);
+  const raw = await store.documentsJson(job.id, 0, 1e6);
+  expect(raw.data).toHaveLength(2);
+  await store.close();
+});
+
+test("a whole page of a JSONL file is one read", async () => {
+  const dataDir = join(dir, "one-read");
+  const log = new FsDocumentLog(dataDir);
+  const reads: number[] = [];
+  const read = log.read.bind(log);
+  log.read = (object, offset, length) => {
+    reads.push(length);
+    return read(object, offset, length);
+  };
+  const store = new SqliteJobStore(":memory:", 60_000, log);
+  const job = await store.create({ kind: "batch_scrape", options: {} });
+  for (const n of [10, 20, 30]) await store.pushDocument(job.id, doc(n));
+  expect((await store.documents(job.id, 0, 1e6)).data).toHaveLength(3);
+  expect(reads).toEqual([lines(doc(10), doc(20), doc(30))]);
+  await store.close();
+  expect(readdirSync(dataDir)).toEqual([`${job.id}.jsonl`]);
+});
+
+test.skipIf(!s3)("an S3 object missing from a page is left out and keeps its index row", async () => {
+  if (!s3) return;
+  const prefix = `${s3.prefix}/missing`;
+  const log = new S3DocumentLog(s3.client, prefix);
+  const store = new SqliteJobStore(":memory:", 60_000, log);
+  const job = await store.create({ kind: "batch_scrape", options: {} });
+  for (const n of [10, 20, 30]) await store.pushDocument(job.id, doc(n));
+  // Object names are UUIDv7, so they list in write order.
+  const keys = ((await s3.client.list({ prefix: `${prefix}/${job.id}/` })).contents ?? []).map((o) => o.key).sort();
+  expect(keys).toHaveLength(3);
+  const middle = keys[1] as string;
+  const bytes = await s3.client.file(middle).bytes();
+  await s3.client.delete(middle);
+  expect(await store.documents(job.id, 0, 1e6)).toEqual({ data: [doc(10), doc(30)], nextSkip: null });
+  // A wrong prefix, missing permissions or read-after-write lag look the same; the document is back with its object.
+  await s3.client.write(middle, bytes);
+  expect((await store.documents(job.id, 0, 1e6)).data).toEqual([doc(10), doc(20), doc(30)]);
+  await store.close();
+  await log.drop(job.id);
+});
+
+afterAll(async () => {
+  if (!s3) return;
+  // Everything this run wrote; the contract tests leave nothing behind on their own, this is a safety net.
+  const keys = ((await s3.client.list({ prefix: `${s3.prefix}/` })).contents ?? []).map((o) => o.key);
+  await Promise.all(keys.map((k) => s3.client.delete(k)));
+});
+
+test("a database from before documents moved to files opens, without its documents", async () => {
+  const dataDir = join(dir, "old-schema");
+  mkdirSync(dataDir, { recursive: true });
+  const db = new Database(join(dataDir, "jobs.sqlite"), { create: true });
+  db.run(`CREATE TABLE jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, url TEXT, options TEXT NOT NULL,
+    created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, error TEXT, result TEXT, sources TEXT,
+    total INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0, pending INTEGER NOT NULL DEFAULT 0,
+    scheduled INTEGER NOT NULL DEFAULT 0, slots INTEGER NOT NULL DEFAULT 0, doc_count INTEGER NOT NULL DEFAULT 0,
+    next_slot_at INTEGER NOT NULL DEFAULT 0, robots_txt TEXT NOT NULL DEFAULT '')`);
+  db.run(`CREATE TABLE documents (job_id TEXT NOT NULL REFERENCES jobs (id) ON DELETE CASCADE, seq INTEGER NOT NULL,
+    size INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (job_id, seq)) WITHOUT ROWID`);
+  db.run(
+    `INSERT INTO jobs (id, kind, status, options, created_at, expires_at, doc_count) VALUES ('j', 'crawl', 'scraping', '{}', 0, ${Date.now() + 60_000}, 1)`,
+  );
+  db.run(`INSERT INTO documents VALUES ('j', 0, 2, '{}')`);
+  db.close();
+
+  const store = new SqliteJobStore(join(dataDir, "jobs.sqlite"), 60_000, new MemoryDocumentLog());
+  expect(await store.get("j")).toMatchObject({ status: "scraping" });
+  expect((await store.documents("j", 0, 1e6)).data).toEqual([]);
+  await store.pushDocument("j", doc(1));
+  expect((await store.documents("j", 0, 1e6)).data).toEqual([doc(1)]);
+  await store.close();
 });

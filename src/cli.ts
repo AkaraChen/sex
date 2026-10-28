@@ -48,6 +48,11 @@ const serverArgs = {
     type: "string",
     description: "Directory for the job database and task queue (env SEX_DATA_DIR, default $XDG_DATA_HOME/sex or ~/.local/share/sex)",
   },
+  "documents-url": {
+    type: "string",
+    description:
+      "Where job documents go: s3://bucket[/prefix] (credentials from S3_* / AWS_* env) or file:///path (env SEX_DOCUMENTS_URL, default <data-dir>/documents)",
+  },
   "cors-origin": {
     type: "string",
     description: "Comma-separated browser origins allowed cross-origin, e.g. https://app.example.com (env SEX_CORS_ORIGINS; default none)",
@@ -59,7 +64,7 @@ const serverArgs = {
 } as const;
 
 function engineFrom(
-  args: CommonArgs & { "data-dir"?: string; "cors-origin"?: string; "allowed-host"?: string },
+  args: CommonArgs & { "data-dir"?: string; "documents-url"?: string; "cors-origin"?: string; "allowed-host"?: string },
   defaults: { allowPrivateNetwork: boolean; dataDir?: string },
 ): Engine {
   if (args["log-level"]) setLogLevel(args["log-level"]);
@@ -79,6 +84,7 @@ function engineFrom(
     concurrency: int(args.concurrency, "--concurrency"),
     timeout: int(args.timeout, "--timeout"),
     dataDir: args["data-dir"],
+    documentsUrl: args["documents-url"],
     corsOrigins: args["cors-origin"],
     allowedHosts: args["allowed-host"],
   };

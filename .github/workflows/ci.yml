@@ -61,3 +61,30 @@ jobs:
       - run: bun test test/browser.test.ts
         env:
           SEX_TEST_LIGHTPANDA_PATH: ${{ runner.temp }}/lightpanda
+
+  s3:
+    runs-on: ubuntu-latest
+    env:
+      S3_ENDPOINT: http://127.0.0.1:8333
+      S3_ACCESS_KEY_ID: sex
+      S3_SECRET_ACCESS_KEY: sex-secret
+      S3_REGION: us-east-1
+      SEX_TEST_S3_URL: s3://sex-test/ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      # MinIO no longer publishes images on Docker Hub, so the S3 server is SeaweedFS. It runs with `docker run` rather
+      # than as a service container because it needs a command (`server -s3`); the bucket is created on first write.
+      - name: Start an S3 server (SeaweedFS)
+        run: |
+          docker run -d --name s3 -p 127.0.0.1:8333:8333 \
+            -e AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID" -e AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY" \
+            chrislusf/seaweedfs:4.48 server -s3 -dir=/data -ip.bind=0.0.0.0
+          for i in $(seq 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8333/)" != "000" ] && break
+            sleep 1
+          done
+      - run: bun test test/store-contract.test.ts test/durability.test.ts

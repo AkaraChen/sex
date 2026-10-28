@@ -29,6 +29,8 @@ export interface Config {
   llmTimeout: number;
   /** Directory for the job database and task queue (SQLite); jobs are kept in memory when unset. */
   dataDir?: string;
+  /** Where scraped documents of jobs go: `s3://bucket[/prefix]` or `file:///absolute/path`; unset means `<dataDir>/documents` (memory without a data dir). */
+  documentsUrl?: string;
   /** Max characters of page content sent to the LLM in one call. */
   llmMaxInputChars: number;
   /** Max response body size in bytes for a single page fetch. */
@@ -63,6 +65,7 @@ export interface ConfigOverrides {
   timeout?: number;
   llmTimeout?: number;
   dataDir?: string;
+  documentsUrl?: string;
   llmMaxInputChars?: number;
   /** Comma-separated origins, e.g. "https://app.example.com,https://other.example". */
   corsOrigins?: string;
@@ -100,6 +103,17 @@ const corsOriginsField = z.string().optional().transform(csv).pipe(z.array(origi
 /** Hostnames only (no port, no scheme); IPv6 literals in brackets. */
 const hostnameField = z.string().regex(/^(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9._-]+)$/, "must be a hostname without a port");
 const allowedHostsField = z.string().optional().transform(csv).pipe(z.array(hostnameField));
+/** `s3://bucket[/prefix]` (a bucket is required) or `file:///absolute/path` (no host). */
+const documentsUrlField = z
+  .string()
+  .refine((s) => {
+    if (!URL.canParse(s)) return false;
+    const url = new URL(s);
+    if (url.search || url.hash) return false;
+    if (url.protocol === "s3:") return url.hostname !== "";
+    return url.protocol === "file:" && url.host === "" && url.pathname !== "/";
+  })
+  .optional();
 const TRUE_WORDS = ["1", "true", "yes", "on"];
 const FALSE_WORDS = ["0", "false", "no", "off"];
 const flagField = z
@@ -126,6 +140,7 @@ const RAW_SCHEMA = z.object({
   allowPrivateNetwork: flagField,
   corsOrigins: corsOriginsField,
   allowedHosts: allowedHostsField,
+  documentsUrl: documentsUrlField,
 });
 
 /** Env name (or label) and the human description used in CONFIG_INVALID messages. */
@@ -145,6 +160,7 @@ const FIELD_RULES: Record<keyof z.infer<typeof RAW_SCHEMA>, [name: string, expec
   allowPrivateNetwork: ["SEX_ALLOW_PRIVATE_NETWORK", `one of ${[...TRUE_WORDS, ...FALSE_WORDS].join(", ")}`],
   corsOrigins: ["SEX_CORS_ORIGINS", "comma-separated origins like https://app.example.com (no path)"],
   allowedHosts: ["SEX_ALLOWED_HOSTS", "comma-separated hostnames without a port"],
+  documentsUrl: ["SEX_DOCUMENTS_URL", "an s3://bucket[/prefix] or file:///absolute/path URL"],
 };
 
 /** A boolean override arrives as a real boolean; normalise it to the same word form env values use. */
@@ -185,6 +201,7 @@ export function resolveConfig(
     allowPrivateNetwork: flag(o.allowPrivateNetwork, str(env.SEX_ALLOW_PRIVATE_NETWORK)),
     corsOrigins: str(o.corsOrigins) ?? str(env.SEX_CORS_ORIGINS),
     allowedHosts: str(o.allowedHosts) ?? str(env.SEX_ALLOWED_HOSTS),
+    documentsUrl: str(o.documentsUrl) ?? str(env.SEX_DOCUMENTS_URL),
   };
   const parsed = RAW_SCHEMA.safeParse(raw);
   if (!parsed.success) {
@@ -217,6 +234,7 @@ export function resolveConfig(
     timeout: v.timeout ?? 30_000,
     llmTimeout: v.llmTimeout ?? 120_000,
     dataDir: str(o.dataDir) ?? str(env.SEX_DATA_DIR) ?? defaults.dataDir,
+    documentsUrl: v.documentsUrl,
     llmMaxInputChars: v.llmMaxInputChars ?? 200_000,
     maxBodyBytes: v.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
     jobTtlMs: v.jobTtlMs ?? 24 * 60 * 60 * 1000,

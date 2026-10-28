@@ -1,4 +1,6 @@
 import { ORPCError, os } from "@orpc/server";
+import { JSON_SCHEMA_OUTPUT_REGISTRY, ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
+import { z } from "zod";
 import type { Engine } from "../core/engine.ts";
 import { PAGE_BUDGET_CHARS } from "../core/jobs/index.ts";
 import { toAppError } from "../errors.ts";
@@ -68,18 +70,45 @@ function redactOptions(options: unknown): unknown {
   return copy;
 }
 
+/**
+ * A job status page carries up to PAGE_BUDGET_CHARS of documents, which the store hands over as JSON text. It is sent
+ * as is instead of being parsed, validated and stringified again: oRPC passes a ReadableStream body through untouched
+ * when the route's output is "detailed". The OpenAPI document still describes the body as JobStatusResponse.
+ */
+// Not z.custom, which the converter turns into "never", nor a bare z.unknown(), which makes the body optional.
+const RawJobStatusBody = z
+  .unknown()
+  .refine((v) => v instanceof ReadableStream, "expected a ReadableStream")
+  .nonoptional();
+type RegistryJsonSchema = Parameters<typeof JSON_SCHEMA_OUTPUT_REGISTRY.add<typeof RawJobStatusBody>>[1];
+const [, jobStatusJsonSchema] = new ZodToJsonSchemaConverter().convert(JobStatusResponse, { strategy: "output" });
+// @orpc/openapi's JSONSchema type and the registry's are the same JSON Schema, declared twice.
+JSON_SCHEMA_OUTPUT_REGISTRY.add(RawJobStatusBody, jobStatusJsonSchema as RegistryJsonSchema);
+const RawJobStatusResponse = z.object({ headers: z.record(z.string(), z.string()), body: RawJobStatusBody });
+
 const jobStatus = async (engine: Engine, kind: JobKind, id: string, skip: number, statusUrl: string) => {
   const job = await engine.getJob(id, kind);
-  const { data, nextSkip } = await engine.jobs.store.documents(id, skip, PAGE_BUDGET_CHARS);
-  return {
-    success: true as const,
+  const { data, nextSkip } = await engine.jobs.store.documentsJson(id, skip, PAGE_BUDGET_CHARS);
+  const head: Omit<z.input<typeof JobStatusResponse>, "data"> = {
+    success: true,
     status: job.status,
     total: job.total,
     completed: job.completed,
     creditsUsed: job.completed,
     expiresAt: new Date(job.expiresAt).toISOString(),
     next: nextSkip === null ? null : `${statusUrl}?skip=${nextSkip}`,
-    data,
+  };
+  // `{...head,"data":[doc,doc,...]}`
+  const parts: Array<string | Uint8Array> = [JSON.stringify(head).slice(0, -1), ',"data":['];
+  for (const [i, doc] of data.entries()) {
+    if (i > 0) parts.push(",");
+    parts.push(doc);
+  }
+  parts.push("]}");
+  const body = new Blob(parts);
+  return {
+    headers: { "content-type": "application/json", "content-length": String(body.size) },
+    body: body.stream(),
   };
 };
 
@@ -151,9 +180,15 @@ export const router = {
         data: { url: input.url, ...(await context.engine.crawlParamsPreview(input.url, input.prompt)) },
       })),
     status: base
-      .route({ method: "GET", path: "/v2/crawl/{id}", tags: ["Crawl"], summary: "Get crawl status and results" })
+      .route({
+        method: "GET",
+        path: "/v2/crawl/{id}",
+        tags: ["Crawl"],
+        summary: "Get crawl status and results",
+        outputStructure: "detailed",
+      })
       .input(JobStatusInput)
-      .output(JobStatusResponse)
+      .output(RawJobStatusResponse)
       .handler(({ input, context }) =>
         jobStatus(context.engine, "crawl", input.id, input.skip ?? 0, `${context.origin}/v2/crawl/${input.id}`),
       ),
@@ -184,9 +219,15 @@ export const router = {
         };
       }),
     status: base
-      .route({ method: "GET", path: "/v2/batch/scrape/{id}", tags: ["Batch scrape"], summary: "Get batch scrape status and results" })
+      .route({
+        method: "GET",
+        path: "/v2/batch/scrape/{id}",
+        tags: ["Batch scrape"],
+        summary: "Get batch scrape status and results",
+        outputStructure: "detailed",
+      })
       .input(JobStatusInput)
-      .output(JobStatusResponse)
+      .output(RawJobStatusResponse)
       .handler(({ input, context }) =>
         jobStatus(context.engine, "batch_scrape", input.id, input.skip ?? 0, `${context.origin}/v2/batch/scrape/${input.id}`),
       ),

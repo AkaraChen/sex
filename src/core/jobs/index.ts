@@ -5,6 +5,7 @@ import { log } from "../../log.ts";
 import type { WebhookConfig } from "../../schemas.ts";
 import type { Engine } from "../engine.ts";
 import { assertPublicUrl, parseHttpUrl, safeFetch } from "../net.ts";
+import { createDocumentLog } from "./documents.ts";
 import { BunqueueTaskQueue } from "./queue.ts";
 import { SqliteJobStore } from "./sqlite.ts";
 import type { JobRecord, JobStore, TaskQueue } from "./types.ts";
@@ -17,11 +18,15 @@ export interface JobBackend {
   close(): Promise<void>;
 }
 
-/** Job state and tasks in SQLite files under `config.dataDir` (they survive a restart), or in memory without one. */
+/**
+ * Job state and tasks in SQLite files under `config.dataDir` (they survive a restart), or in memory without one.
+ * Scraped documents go to the DocumentLog that `createDocumentLog` picks: `config.documentsUrl`, else JSONL files
+ * under `<dataDir>/documents`, else memory.
+ */
 export function createJobBackend(config: Config): JobBackend {
   if (config.dataDir) mkdirSync(config.dataDir, { recursive: true });
   const path = (file: string) => (config.dataDir ? join(config.dataDir, file) : ":memory:");
-  const store = new SqliteJobStore(path("jobs.sqlite"), config.jobTtlMs);
+  const store = new SqliteJobStore(path("jobs.sqlite"), config.jobTtlMs, createDocumentLog(config));
   const queue = new BunqueueTaskQueue(path("queue.sqlite"), config.concurrency);
   return {
     store,
