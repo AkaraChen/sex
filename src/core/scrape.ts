@@ -333,7 +333,9 @@ async function scrapeInner(
   }
   if (warnings.length) doc.warning = warnings.join("; ");
 
-  return { document: doc, links: extracted?.links, linkTitles: extracted?.linkTitles };
+  // The page script keeps mailto: links for the `links` format; crawl and map only follow http(s).
+  const links = extracted?.links?.filter((l) => /^https?:/i.test(l));
+  return { document: doc, links, linkTitles: extracted?.linkTitles };
 }
 
 /** Firecrawl `parsers`: which file parsers may run, and the PDF page budget. Omitted means every parser, all pages. */

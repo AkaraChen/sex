@@ -19,6 +19,15 @@ const fixtures: Record<string, string> = {
   "/dup-title": page('<meta name="title" content="First title"><meta name="title" content="Second title">', "Dup", "dup"),
   // No <title> element at all; two different meta titles must not be comma-joined into metadata.title.
   "/no-title-tag": `<!doctype html><html lang="en"><head><meta name="title" content="A"><meta name="title" content="B"></head><body><main><article><h1>Heading</h1>${body("no title tag")}</article></main></body></html>`,
+  "/v2": `<!doctype html><html lang="en"><head>
+<meta property="og:title" content="OG Title"><meta name="twitter:image" content="/tw.png"><meta property="og:image:secure_url" content="https://cdn.test/secure.png">
+</head><body><main><article><h1>V2</h1>${body("v2")}
+<a href="/a#one">A1</a><a href="/a#two">A2</a><a href="#top">Top</a><a href="mailto:hi@example.test">Mail</a>
+<img src="/i.png" srcset="/i-1x.png 1x, /i-2x.png 2x">
+<picture><source srcset="/p-small.webp 480w, /p-large.webp 960w"><img src="/p.png"></picture>
+<video poster="/poster.png"></video>
+<div class="x" data-label="from data"></div>
+</article></main></body></html>`,
 };
 
 let server: ReturnType<typeof Bun.serve>;
@@ -88,5 +97,43 @@ describe("metadata arrays", () => {
     });
     expect(status.data).toHaveLength(1);
     expect(status.data[0].metadata.description).toBe("Plain description");
+  });
+});
+
+describe("v2 metadata, links and images", () => {
+  const scrape = (path: string, extra: Record<string, unknown> = {}) =>
+    engine.scrape({ url: `${base}${path}`, formats: ["markdown", "links", "images"], ...extra } as never);
+
+  test("mapped meta names are also kept under their original name", async () => {
+    const doc = await scrape("/v2");
+    expect(doc.metadata?.ogTitle).toBe("OG Title");
+    expect(doc.metadata?.["og:title"]).toBe("OG Title");
+  });
+
+  test("a page without <title> falls back to og:title, and no favicon is guessed", async () => {
+    const doc = await scrape("/v2");
+    expect(doc.metadata?.title).toBe("OG Title");
+    expect(doc.metadata?.favicon).toBeUndefined();
+  });
+
+  test("links lose their fragment, dedupe, skip pure fragments and keep mailto", async () => {
+    const doc = await scrape("/v2");
+    expect(doc.links).toEqual([`${base}/a`, "mailto:hi@example.test"]);
+  });
+
+  test("images include srcset candidates, picture sources, video posters and social meta images", async () => {
+    const doc = await scrape("/v2");
+    for (const path of ["/i.png", "/i-1x.png", "/i-2x.png", "/p-small.webp", "/p-large.webp", "/p.png", "/poster.png", "/tw.png"]) {
+      expect(doc.images).toContain(`${base}${path}`);
+    }
+    expect(doc.images).toContain("https://cdn.test/secure.png");
+  });
+
+  test("attributes fall back to the data- attribute", async () => {
+    const doc = await engine.scrape({
+      url: `${base}/v2`,
+      formats: [{ type: "attributes", selectors: [{ selector: ".x", attribute: "label" }] }],
+    } as never);
+    expect(doc.attributes).toEqual([{ selector: ".x", attribute: "label", values: ["from data"] }]);
   });
 });

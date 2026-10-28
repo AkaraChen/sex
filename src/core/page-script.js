@@ -76,25 +76,37 @@ async function sexExtract(doc, opts, runDefuddle) {
     const content = meta.getAttribute("content");
     if (!name || content == null) continue;
     const mapped = META_MAP[name.toLowerCase()];
+    // Both names are kept: the Firecrawl camelCase name and the original one (`og:title`).
     if (mapped) add(mapped, content);
-    else add(name, content);
+    if (mapped !== name) add(name, content);
   }
   if (Array.isArray(metadata.ogLocaleAlternate) === false && metadata.ogLocaleAlternate)
     metadata.ogLocaleAlternate = [metadata.ogLocaleAlternate];
   const title = doc.querySelector("title")?.textContent?.trim();
+  const firstOf = (v) => (Array.isArray(v) ? v[0] : v);
+  const fallbackTitle = firstOf(metadata["og:title"]) || firstOf(metadata["twitter:title"]);
   if (title) metadata.title = title;
+  else if (!metadata.title && fallbackTitle) metadata.title = fallbackTitle;
   const lang = doc.documentElement?.getAttribute("lang");
   if (lang) metadata.language = lang;
   const icon = doc.querySelector('link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]');
-  const favicon = abs(icon?.getAttribute("href")) || abs("/favicon.ico");
+  const favicon = abs(icon?.getAttribute("href"));
   if (favicon) metadata.favicon = favicon;
 
   // ---- links / images / attributes (from the untouched document)
+  // Whole-page links without their #fragment, deduplicated; pure #fragment links are dropped and mailto: is kept.
+  const linkUrl = (value) => {
+    const v = (value || "").trim();
+    if (!v || v.startsWith("#")) return null;
+    if (/^mailto:/i.test(v)) return v;
+    const url = abs(v);
+    return url ? url.replace(/#.*$/, "") : null;
+  };
   const links = opts.wantLinks
     ? Array.from(
         new Set(
           safeQueryAll(doc, "a[href]")
-            .map((a) => abs(a.getAttribute("href")))
+            .map((a) => linkUrl(a.getAttribute("href")))
             .filter(Boolean),
         ),
       )
@@ -102,7 +114,7 @@ async function sexExtract(doc, opts, runDefuddle) {
   const linkTitles = {};
   if (opts.wantLinkTitles) {
     for (const a of safeQueryAll(doc, "a[href]")) {
-      const href = abs(a.getAttribute("href"));
+      const href = linkUrl(a.getAttribute("href"));
       const text = (a.textContent || "").replace(/\s+/g, " ").trim();
       if (href && text && !linkTitles[href]) linkTitles[href] = text.slice(0, 200);
     }
@@ -116,13 +128,32 @@ async function sexExtract(doc, opts, runDefuddle) {
     }
     return null;
   };
-  const ogImages = [].concat(metadata.ogImage || []).map((v) => abs(String(v)));
-  const images = opts.wantImages ? Array.from(new Set(safeQueryAll(doc, "img").map(imageUrl).concat(ogImages).filter(Boolean))) : undefined;
+  // Every candidate of a srcset ("a.jpg 1x, b.jpg 2x"), made absolute.
+  const srcsetUrls = (el) =>
+    (el.getAttribute("srcset") || "")
+      .split(/\s*,\s+/)
+      .map((c) => abs(c.trim().split(/\s+/)[0].replace(/,$/, "")))
+      .filter(Boolean);
+  const metaImages = ["ogImage", "og:image:secure_url", "twitter:image"].flatMap((k) =>
+    [].concat(metadata[k] || []).map((v) => abs(String(v))),
+  );
+  const images = opts.wantImages
+    ? Array.from(
+        new Set(
+          safeQueryAll(doc, "img")
+            .flatMap((img) => [imageUrl(img), ...srcsetUrls(img)])
+            .concat(safeQueryAll(doc, "picture source[srcset]").flatMap(srcsetUrls))
+            .concat(safeQueryAll(doc, "video[poster]").map((v) => abs(v.getAttribute("poster"))))
+            .concat(metaImages)
+            .filter(Boolean),
+        ),
+      )
+    : undefined;
   const attributes = (opts.attributes || []).map(({ selector, attribute }) => ({
     selector,
     attribute,
     values: safeQueryAll(doc, selector)
-      .map((el) => el.getAttribute(attribute))
+      .map((el) => el.getAttribute(attribute) ?? el.getAttribute(`data-${attribute}`))
       .filter((v) => v != null),
   }));
 
