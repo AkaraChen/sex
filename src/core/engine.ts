@@ -34,6 +34,8 @@ export class Engine {
   readonly browser: BrowserPool;
   readonly llm: Llm;
   readonly scrapeLimit: ReturnType<typeof pLimit>;
+  /** Caps the per-domain SearXNG queries of includeDomains across all concurrent searches, so they cannot get the upstream engines banned. */
+  readonly searchDomainLimit = pLimit(4);
   /** HTML and PDF parsing, off the main thread. */
   readonly extractPool: ExtractPool;
   /** PDFs, office documents and images via here-docs, when SEX_DOCS is on. */

@@ -1,4 +1,3 @@
-import pLimit from "p-limit";
 import { AppError, badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import type { Document, SearchData, SearchRequest } from "../schemas.ts";
@@ -45,7 +44,41 @@ function hostMatches(url: string, domain: string): boolean {
   }
 }
 
-export async function searxng(engine: Engine, query: SearxQuery, pageno: number, signal?: AbortSignal): Promise<SearxResult[]> {
+/** Wait before the one retry of a SearXNG request that failed on the network or with a 5xx. */
+const RETRY_DELAY_MS = 400;
+
+/** "engine: reason" for every engine SearXNG reports as unresponsive (captcha, timeout, ...). */
+function unresponsiveEngines(body: { unresponsive_engines?: unknown }): string[] {
+  const list = Array.isArray(body.unresponsive_engines) ? body.unresponsive_engines : [];
+  return list.flatMap((e) => (Array.isArray(e) && typeof e[0] === "string" ? [`${e[0]}: ${e[1] ?? "unresponsive"}`] : []));
+}
+
+/** Queries SearXNG, retrying once on network errors and 5xx within the caller's deadline. Unresponsive engines are appended to `unresponsive`. */
+export async function searxng(
+  engine: Engine,
+  query: SearxQuery,
+  pageno: number,
+  signal?: AbortSignal,
+  unresponsive?: string[],
+): Promise<SearxResult[]> {
+  try {
+    return await searxngOnce(engine, query, pageno, signal, unresponsive);
+  } catch (err) {
+    const retryable = err instanceof AppError && (err.details as { retryable?: boolean } | undefined)?.retryable;
+    if (!retryable || signal?.aborted) throw err;
+    log.debug("retrying SearXNG request", { error: err.message });
+    await Bun.sleep(RETRY_DELAY_MS);
+    return searxngOnce(engine, query, pageno, signal, unresponsive);
+  }
+}
+
+async function searxngOnce(
+  engine: Engine,
+  query: SearxQuery,
+  pageno: number,
+  signal?: AbortSignal,
+  unresponsive?: string[],
+): Promise<SearxResult[]> {
   const params = new URLSearchParams({ q: query.q, format: "json", categories: query.categories, pageno: String(pageno) });
   if (query.timeRange) params.set("time_range", query.timeRange);
   if (query.language) params.set("language", query.language);
@@ -63,21 +96,23 @@ export async function searxng(engine: Engine, query: SearxQuery, pageno: number,
       502,
       "SEARCH_BACKEND_UNAVAILABLE",
       `Cannot reach SearXNG at ${searxngUrl}: ${err instanceof Error ? err.message : String(err)}`,
+      { retryable: true },
     );
   }
   if (!res.ok) {
     const hint = res.status === 403 ? " (is the json format enabled in SearXNG settings.yml?)" : "";
-    throw new AppError(502, "SEARCH_BACKEND_ERROR", `SearXNG returned HTTP ${res.status}${hint}`);
+    throw new AppError(502, "SEARCH_BACKEND_ERROR", `SearXNG returned HTTP ${res.status}${hint}`, { retryable: res.status >= 500 });
   }
-  let body: { results?: SearxResult[] };
+  let body: { results?: SearxResult[]; unresponsive_engines?: unknown };
   try {
-    body = (await res.json()) as { results?: SearxResult[] };
+    body = (await res.json()) as typeof body;
   } catch {
     if (deadline.aborted) throw new AppError(408, "TIMEOUT", `SearXNG request timed out after ${timeout}ms`);
     if (signal?.aborted) throw new AppError(408, "TIMEOUT", "SearXNG request cancelled");
     const type = res.headers.get("content-type") ?? "none";
     throw new AppError(502, "SEARCH_BACKEND_ERROR", `SearXNG returned a non-JSON response (content-type: ${type})`);
   }
+  unresponsive?.push(...unresponsiveEngines(body));
   return body.results ?? [];
 }
 
@@ -88,11 +123,12 @@ async function collect(
   want: number,
   accept: (r: SearxResult) => boolean,
   signal?: AbortSignal,
+  unresponsive?: string[],
 ): Promise<SearxResult[]> {
   const seen = new Set<string>();
   const out: SearxResult[] = [];
   for (let page = 1; page <= MAX_PAGES && out.length < want; page++) {
-    const results = await searxng(engine, query, page, signal);
+    const results = await searxng(engine, query, page, signal, unresponsive);
     let added = 0;
     for (const r of results) {
       if (!r.url || seen.has(r.url)) continue;
@@ -112,18 +148,29 @@ function sourceList(req: SearchRequest): Array<"web" | "news" | "images"> {
   return Array.from(new Set(list));
 }
 
+/** Trims and lowercases a domain filter, drops a leading `*.` / `.`, and rejects anything that is not a hostname. */
+export function normalizeDomain(raw: string): string {
+  const d = raw
+    .trim()
+    .toLowerCase()
+    .replace(/^\*?\./, "");
+  const label = "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?";
+  if (!new RegExp(`^${label}(\\.${label})*$`).test(d) || d.length > 253) throw badRequest(`Invalid domain in includeDomains: ${raw}`);
+  return d;
+}
+
 export async function search(engine: Engine, req: SearchRequest, signal?: AbortSignal): Promise<{ data: SearchData; warning?: string }> {
   const limit = req.limit ?? 5;
-  // Caps the per-domain fan-out so one request cannot start an unbounded number of concurrent SearXNG queries.
-  const domainLimit = pLimit(4);
   const wantsScrape = !!req.scrapeOptions?.formats?.length;
   if (wantsScrape) assertScrapeCapabilities(engine, req.scrapeOptions);
   if (req.includeDomains?.length && req.excludeDomains?.length) {
     throw new AppError(400, "BAD_REQUEST", "includeDomains and excludeDomains cannot both be specified");
   }
-  const timeoutSignal = req.timeout ? AbortSignal.timeout(req.timeout) : undefined;
-  const sig = [signal, timeoutSignal].filter((s): s is AbortSignal => !!s);
-  const combined = sig.length ? AbortSignal.any(sig) : undefined;
+  const includeDomains = req.includeDomains?.map(normalizeDomain);
+  // Without a request timeout the whole search (pages and scrapes) still gets a deadline.
+  const timeoutSignal = AbortSignal.timeout(req.timeout ?? Math.max(engine.config.timeout * 2, 60_000));
+  const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  const unresponsive: string[] = [];
 
   const categories = (req.categories ?? []).map((c) => (typeof c === "string" ? c : c.type));
   const mods: string[] = [];
@@ -145,16 +192,18 @@ export async function search(engine: Engine, req: SearchRequest, signal?: AbortS
   const accept = (r: SearxResult) => {
     if (!r.url) return false;
     if (req.excludeDomains?.some((d) => hostMatches(r.url as string, d))) return false;
-    if (req.includeDomains?.length && !req.includeDomains.some((d) => hostMatches(r.url as string, d))) return false;
+    if (includeDomains?.length && !includeDomains.some((d) => hostMatches(r.url as string, d))) return false;
     return true;
   };
 
   const run = async (categories: string): Promise<SearxResult[]> => {
-    if (!req.includeDomains?.length) return collect(engine, { ...base, q, categories }, limit, accept, combined);
+    if (!includeDomains?.length) return collect(engine, { ...base, q, categories }, limit, accept, combined, unresponsive);
     // One site: query per domain, interleaved, since multi-site syntax is not portable across engines.
     const perDomain = await Promise.all(
-      req.includeDomains.map((d) =>
-        domainLimit(() => collect(engine, { ...base, q: `${q} site:${d}`, categories }, limit, accept, combined)),
+      includeDomains.map((d) =>
+        engine.searchDomainLimit(() =>
+          collect(engine, { ...base, q: `${q} site:${d}`, categories }, limit, accept, combined, unresponsive),
+        ),
       ),
     );
     const merged: SearxResult[] = [];
@@ -221,6 +270,8 @@ export async function search(engine: Engine, req: SearchRequest, signal?: AbortS
   );
   // Fail the whole request only when no source succeeded; partial results come back with a warning.
   if (!succeeded && failures.length) throw failures[0];
+  const empty = !data.web?.length && !data.news?.length && !data.images?.length;
+  if (empty && unresponsive.length) warnings.push(`No results; unresponsive engines: ${[...new Set(unresponsive)].join(", ")}`);
 
   if (wantsScrape) {
     const scrapeOne = async <T extends { url?: string }>(item: T): Promise<T & Document> => {

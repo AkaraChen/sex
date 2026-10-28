@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { AppError, browserRequired, llmRequired, unsupported } from "../errors.ts";
+import { AppError, browserRequired, llmRequired, toAppError, unsupported } from "../errors.ts";
+import { log } from "../log.ts";
 import type { Document, FormatOption, ScrapeOptions } from "../schemas.ts";
 import type { BrowserScrapeResult } from "./browser.ts";
 import type { Engine } from "./engine.ts";
 import { compileJsonSchema } from "./json-schema.ts";
 import { assertPublicUrl, decodeBody, MARKUP_TYPE, parseHttpUrl, safeFetch } from "./net.ts";
 import type { PageExtractResult } from "./page.ts";
+import { fileKindOf, rewriteUrl } from "./rewrite.ts";
 
 export interface NormalizedFormats {
   markdown: boolean;
@@ -121,18 +123,21 @@ export async function scrapeUrl(
   internal: ScrapeInternalOptions = {},
 ): Promise<ScrapeOutcome> {
   const formats = assertScrapeCapabilities(engine, options);
-  const url = parseHttpUrl(rawUrl.trim());
+  const requested = parseHttpUrl(rawUrl.trim());
+  // Rewritten before the SSRF check, so the URL that is actually fetched is the one that gets validated.
+  const url = rewriteUrl(requested);
   await assertPublicUrl(url, engine.config.allowPrivateNetwork);
   return engine.scrapeLimit(() => {
     // Waiting in the queue can outlast the caller; do not start work nobody is waiting for.
     if (internal.signal?.aborted) throw new AppError(408, "TIMEOUT", "Request cancelled before the scrape started");
-    return scrapeInner(engine, url.href, options, formats, internal);
+    return scrapeInner(engine, url.href, requested.href, options, formats, internal);
   });
 }
 
 async function scrapeInner(
   engine: Engine,
   url: string,
+  sourceUrl: string,
   options: ScrapeOptions,
   formats: NormalizedFormats,
   internal: ScrapeInternalOptions,
@@ -166,7 +171,8 @@ async function scrapeInner(
   const parsers = fileParsers(options.parsers);
   let browserResult: BrowserScrapeResult | undefined;
 
-  if (engine.browser.enabled) {
+  // Documents and images have nothing for a browser to render, so they go straight to the HTTP fetch.
+  if (engine.browser.enabled && !fileKindOf(new URL(url)) && url === sourceUrl) {
     browserResult = await engine.browser.scrape({
       url,
       timeout,
@@ -224,6 +230,8 @@ async function scrapeInner(
         pdfMeta = { title: pdf.title, numPages: pdf.numPages };
       }
       contentType ||= "application/pdf";
+    } else if (!contentType && engine.docs.enabled && isConvertibleByExtension(finalUrl, parsers.image)) {
+      plainMarkdown = (await convertDocument(engine, res.body, finalUrl, undefined, timeout, internal.signal, warnings)).markdown;
     } else if (!contentType || MARKUP_TYPE.test(contentType)) {
       rawHtml = decodeBody(res.body, contentType);
       extracted = await engine.extractPool.html(rawHtml, { ...extractOpts, url: finalUrl });
@@ -269,7 +277,7 @@ async function scrapeInner(
   }
   if (pdfMeta?.numPages) metadata.numPages = pdfMeta.numPages;
   Object.assign(metadata, {
-    sourceURL: url,
+    sourceURL: sourceUrl,
     url: finalUrl,
     statusCode: status,
     contentType: contentType.split(";")[0]?.trim() || undefined,
@@ -305,7 +313,7 @@ async function scrapeInner(
     const { text: content, truncated } = engine.llm.fit(`${title ? `# ${title}\n\n` : ""}${markdown}`);
     if (truncated) warnings.push(`The page was too long for the LLM; only its first ${engine.llm.maxInputChars} characters were used.`);
     const { llm } = engine;
-    const [json, summary, answer, highlights] = await Promise.all([
+    const settled = await Promise.allSettled([
       formats.json ? llm.extractJson(content, { ...formats.json, url: finalUrl }, sig) : undefined,
       formats.summary ? llm.summarize(content, sig, finalUrl) : undefined,
       formats.question
@@ -315,14 +323,26 @@ async function scrapeInner(
         : undefined,
       formats.highlights ? llm.selectLines(content, formats.highlights, "highlights", sig, finalUrl) : undefined,
     ]);
-    if (formats.json) doc.json = json;
-    if (summary !== undefined) doc.summary = summary;
-    if (answer !== undefined) doc.answer = answer;
-    if (highlights !== undefined) doc.highlights = highlights;
+    // A failed format must not throw away the rest of the page; only configuration, injection and cancellation do.
+    const labels = ["JSON extraction", "Summary", "Question answering", "Highlights"];
+    const values: unknown[] = settled.map((r, i) => {
+      if (r.status === "fulfilled") return r.value;
+      const err = toAppError(r.reason);
+      if (sig?.aborted || err.status === 501 || err.code === "SCRAPE_PROMPT_INJECTION_DETECTED") throw r.reason;
+      log.warn("LLM format failed", { format: labels[i], code: err.code, error: err.message });
+      warnings.push(`${labels[i]} failed: ${err.message}`);
+      return undefined;
+    });
+    if (formats.json) doc.json = (values[0] as typeof doc.json | undefined) ?? null;
+    if (values[1] !== undefined) doc.summary = values[1] as string;
+    if (values[2] !== undefined) doc.answer = values[2] as typeof doc.answer;
+    if (values[3] !== undefined) doc.highlights = values[3] as typeof doc.highlights;
   }
   if (warnings.length) doc.warning = warnings.join("; ");
 
-  return { document: doc, links: extracted?.links, linkTitles: extracted?.linkTitles };
+  // The page script keeps mailto: links for the `links` format; crawl and map only follow http(s).
+  const links = extracted?.links?.filter((l) => /^https?:/i.test(l));
+  return { document: doc, links, linkTitles: extracted?.linkTitles };
 }
 
 /** Firecrawl `parsers`: which file parsers may run, and the PDF page budget. Omitted means every parser, all pages. */
@@ -355,6 +375,12 @@ async function convertDocument(
     warnings.push(`Converted the first ${doc.pagesConverted} of ${doc.numPages} pages (parsers maxPages)`);
   }
   return doc;
+}
+
+/** A response without a content-type is HTML unless the URL names a file here-docs can convert. */
+function isConvertibleByExtension(url: string, images: boolean): boolean {
+  const kind = fileKindOf(new URL(url));
+  return kind === "document" || (kind === "image" && images);
 }
 
 function startsWith(body: Uint8Array, prefix: string): boolean {
