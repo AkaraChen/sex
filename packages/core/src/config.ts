@@ -24,6 +24,8 @@ export interface CoreConfig {
   corsOrigins: string[];
   /** Host header hostnames accepted by the HTTP API and MCP endpoint; empty means only the bind-address check applies. */
   allowedHosts: string[];
+  /** Reject request fields the schema does not declare with 400 instead of dropping them (HTTP API; SEX_STRICT_REQUESTS). */
+  strictRequests: boolean;
 }
 
 /** Values given on the command line; anything missing falls back to SEX_* env vars, then defaults. */
@@ -90,6 +92,7 @@ export const CORE_FIELDS = {
   allowPrivateNetwork: flagField,
   corsOrigins: corsOriginsField,
   allowedHosts: allowedHostsField,
+  strictRequests: flagField,
 };
 
 /** Env name (or label) and the human description used in CONFIG_INVALID messages. */
@@ -104,6 +107,7 @@ export const CORE_FIELD_RULES: FieldRules<keyof typeof CORE_FIELDS> = {
   allowPrivateNetwork: ["SEX_ALLOW_PRIVATE_NETWORK", FLAG_WORDS],
   corsOrigins: ["SEX_CORS_ORIGINS", "comma-separated origins like https://app.example.com (no path)"],
   allowedHosts: ["SEX_ALLOWED_HOSTS", "comma-separated hostnames without a port"],
+  strictRequests: ["SEX_STRICT_REQUESTS", FLAG_WORDS],
 };
 
 /** A boolean override arrives as a real boolean; normalise it to the same word form env values use. */
@@ -120,6 +124,7 @@ export function coreRawValues(o: CoreConfigOverrides, env: Env) {
     allowPrivateNetwork: flag(o.allowPrivateNetwork, str(env.SEX_ALLOW_PRIVATE_NETWORK)),
     corsOrigins: str(o.corsOrigins) ?? str(env.SEX_CORS_ORIGINS),
     allowedHosts: str(o.allowedHosts) ?? str(env.SEX_ALLOWED_HOSTS),
+    strictRequests: str(env.SEX_STRICT_REQUESTS),
   };
 }
 
@@ -158,6 +163,7 @@ export function coreConfigFrom(
     extractWorkers: v.extractWorkers ?? Math.max(1, Math.min(4, navigator.hardwareConcurrency - 1)),
     corsOrigins: v.corsOrigins.map((o) => new URL(o).origin),
     allowedHosts: v.allowedHosts.map((h) => h.toLowerCase()),
+    strictRequests: v.strictRequests ?? false,
   };
 }
 

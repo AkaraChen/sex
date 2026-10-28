@@ -11,11 +11,13 @@ export const FORMAT_NAMES = [
   "markdown",
   "html",
   "rawHtml",
+  "rawBase64",
   "links",
   "images",
   "screenshot",
   "summary",
   "json",
+  "deterministicJson",
   "attributes",
   "changeTracking",
   "branding",
@@ -31,6 +33,7 @@ export const JsonFormat = z.object({
   type: z.literal("json"),
   prompt: z.string().optional(),
   schema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema the extracted object must match"),
+  model: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored (the model is SEX_LLM_MODEL). Adds a warning."),
 });
 
 export const ScreenshotFormat = z.object({
@@ -105,8 +108,20 @@ export function totalWaitMs(o: { waitFor?: number; actions?: Action[] }): number
 }
 
 export const LocationConfig = z.object({
-  country: z.string().optional().describe("ISO 3166-1 alpha-2 country code. Accepted; not used for geo-targeting."),
+  country: z.string().optional().describe("ISO 3166-1 alpha-2 country code. Accepted; not used for geo-targeting (adds a warning)."),
   languages: z.array(z.string()).optional().describe("Preferred languages, sent as Accept-Language"),
+});
+
+/** `{ type: "pdf" }`; only `maxPages` is used, the other options are accepted and reported in `warning`. */
+const PdfParser = z.strictObject({
+  type: z.literal("pdf"),
+  maxPages: z.number().int().min(1).max(10_000).optional(),
+  mode: z.enum(["fast", "auto", "ocr"]).optional().describe("Accepted; not used."),
+  pages: z.boolean().optional().describe("Accepted; not used."),
+  pageMarkdown: z.boolean().optional().describe("Accepted; not used."),
+  blocks: z.boolean().optional().describe("Accepted; not used."),
+  pageMarkers: z.boolean().optional().describe("Accepted; not used."),
+  refresh: z.boolean().optional().describe("Accepted; not used (there is no cache)."),
 });
 
 export const ScrapeOptions = z
@@ -116,7 +131,7 @@ export const ScrapeOptions = z
       .max(20)
       .optional()
       .describe(
-        'Output formats. Defaults to ["markdown"]. At most 20. "screenshot", "changeTracking", "branding", "product", "menu", "audio" and "video" return 501 NOT_SUPPORTED.',
+        'Output formats. Defaults to ["markdown"]. At most 20. "screenshot", "deterministicJson", "changeTracking", "branding", "product", "menu", "audio" and "video" return 501 NOT_SUPPORTED. "rawBase64" (the file\'s bytes as base64) cannot be combined with other formats.',
       ),
     onlyMainContent: z.boolean().optional().describe("Return only the main content (Defuddle). Defaults to true."),
     includeTags: z
@@ -140,11 +155,11 @@ export const ScrapeOptions = z
     skipTlsVerification: z.boolean().optional(),
     timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
     parsers: z
-      .array(z.union([z.string(), z.object({ type: z.string(), maxPages: z.number().int().min(1).max(10_000).optional() }).loose()]))
+      .array(z.union([z.enum(["pdf", "image"]), PdfParser, z.strictObject({ type: z.literal("image") })]))
       .max(10)
       .optional()
       .describe(
-        'File parsers that may run: "pdf" (optionally { type: "pdf", maxPages }) and "image" (OCR, needs SEX_DOCS). Default: both.',
+        'File parsers that may run: "pdf" (optionally { type: "pdf", maxPages }) and "image" (OCR, needs SEX_DOCS). Default: both. Without "pdf" a PDF comes back as base64 in markdown and html.',
       ),
     actions: z.array(Action).max(50).optional().describe("Browser actions run before the page is captured (browser only, at most 50)"),
     location: LocationConfig.optional(),
@@ -159,9 +174,21 @@ export const ScrapeOptions = z
       .describe(
         "Block ad and tracker requests (EasyList / EasyPrivacy) while the browser renders the page. Default true; no effect without a browser.",
       ),
-    proxy: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
-    maxAge: z.number().optional().describe("Accepted for Firecrawl compatibility; ignored (there is no cache)."),
-    storeInCache: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+    proxy: z
+      .enum(["basic", "stealth", "enhanced", "auto"])
+      .optional()
+      .describe('Every request is fetched directly ("basic"); "stealth" and "enhanced" add a warning.'),
+    fastMode: z.boolean().optional().describe("Skip the browser and fetch the page over plain HTTP, so scripts do not run."),
+    maxAge: z.number().optional().describe("Ignored: there is no cache, so the page is always fetched fresh."),
+    storeInCache: z.boolean().optional().describe("Ignored: nothing is cached."),
+    minAge: z.number().int().min(0).optional().describe("Cache only; there is no cache, so this returns 404 SCRAPE_NO_CACHED_DATA."),
+    lockdown: z.boolean().optional().describe("Cache only; there is no cache, so true returns 404 SCRAPE_NO_CACHED_DATA."),
+    redactPII: z
+      .union([z.boolean(), z.record(z.string(), z.unknown())])
+      .optional()
+      .describe("Not supported: true (or options) returns 501 NOT_SUPPORTED."),
+    zeroDataRetention: z.boolean().optional().describe("Not supported: true returns 501 NOT_SUPPORTED."),
+    onlyCleanContent: z.boolean().optional().describe("Not supported: true returns 501 NOT_SUPPORTED."),
   })
   .superRefine((o, ctx) => {
     if (totalWaitMs(o) > MAX_TOTAL_WAIT_MS) {
@@ -206,6 +233,7 @@ export const Document = z
     links: z.array(z.string()).optional(),
     images: z.array(z.string()).optional(),
     summary: z.string().optional(),
+    rawBase64: z.string().optional(),
     json: z.unknown().optional(),
     answer: z.string().optional(),
     highlights: z.string().optional(),
@@ -246,6 +274,7 @@ export const SearchRequest = z.object({
   lang: z.string().optional().describe("SearXNG language code, e.g. en, zh-CN (extension)"),
   timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
   ignoreInvalidURLs: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+  zeroDataRetention: z.boolean().optional().describe("Not supported: true returns 501 NOT_SUPPORTED."),
   scrapeOptions: ScrapeOptions.optional().describe("If formats are given, every web/news result is scraped too"),
 });
 export type SearchRequest = z.infer<typeof SearchRequest>;

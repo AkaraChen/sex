@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Deadline } from "@sex/core/deadline.ts";
 import { AppError } from "@sex/core/errors.ts";
+import { markdownToHtml } from "@sex/core/markdown-html.ts";
 import { MARKUP_TYPE } from "@sex/core/net.ts";
-import { DocsConverter } from "../src/engine/docs.ts";
+import { DocsConverter, type HereDocs } from "../src/engine/docs.ts";
 import { testEngine } from "./helpers.ts";
 
 const fixture = (name: string) => Bun.file(new URL(`./fixtures/${name}`, import.meta.url));
@@ -35,6 +36,7 @@ function textPdf(pages: number): Uint8Array {
 
 const TYPES: Record<string, string> = {
   pdf: "application/pdf",
+  csv: "text/csv",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   png: "image/png",
 };
@@ -44,6 +46,7 @@ const site = Bun.serve({
   hostname: "127.0.0.1",
   async fetch(req) {
     const name = new URL(req.url).pathname.slice(1);
+    if (name === "data.csv") return new Response("name,qty\nwidget,4\ngadget,7\n", { headers: { "content-type": "text/csv" } });
     const body = name === "text3.pdf" ? textPdf(3) : await fixture(name).bytes();
     return new Response(body, { headers: { "content-type": TYPES[name.split(".").pop() ?? ""] ?? "application/octet-stream" } });
   },
@@ -88,8 +91,21 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
     const doc = await docs.scrape({ url: at("text3.pdf"), parsers: [{ type: "pdf", maxPages: 2 }] });
     expect(doc.markdown).toContain("Text page 2");
     expect(doc.markdown).not.toContain("Text page 3");
-    expect(doc.metadata?.numPages).toBe(3);
+    expect(doc.metadata?.numPages).toBe(2);
+    expect(doc.metadata?.totalPages).toBe(3);
     expect(doc.warning).toContain("first 2 of 3 pages");
+  });
+
+  test("html and rawHtml of a converted document are its Markdown rendered", async () => {
+    const doc = await docs.scrape({ url: at("report.docx"), formats: ["markdown", "html", "rawHtml"] });
+    expect(doc.html).toContain("<strong>12%</strong>");
+    expect(doc.html).toContain("<table>");
+    expect(doc.rawHtml).toBe(doc.html);
+  });
+
+  test("text/csv goes through here-docs as a table", async () => {
+    const doc = await docs.scrape({ url: at("data.csv") });
+    expect(doc.markdown).toContain("| widget | 4 |");
   });
 
   test("a Word document keeps its structure", async () => {
@@ -108,14 +124,6 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
     const bytes = await fixture("scan.pdf").bytes();
     const err = await rejection(docs.docs.convert(bytes, { deadline: Deadline.start(1) }));
     expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "SCRAPE_TIMEOUT" });
-  });
-
-  test("a long document over its deadline returns the pages converted so far, with a warning", async () => {
-    const pages = 3000;
-    const doc = await docs.docs.convert(textPdf(pages), { deadline: Deadline.start(300) });
-    if (doc.pagesConverted === pages) return; // fast machine: nothing to cut
-    expect(doc.pagesConverted).toBeGreaterThan(0);
-    expect(doc.warnings.some((w) => w.code === "timeout" && w.message.includes(`first ${doc.pagesConverted} of ${pages}`))).toBe(true);
   });
 
   test("time spent waiting for a conversion slot counts against the deadline", async () => {
@@ -140,12 +148,71 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
   });
 });
 
+/** here-docs stand-in that converts `pages` pages at once, then hangs until the signal aborts, like a conversion that runs out of time. */
+function stalledHereDocs(pages: number, pageCount: number): HereDocs {
+  return {
+    createEngine: async () => ({ close: async () => {} }),
+    async *convertPages(_bytes: Uint8Array, opts: { signal?: AbortSignal }) {
+      for (let page = 1; page <= pages; page++) yield { page, pageCount, markdown: `page ${page}`, warnings: [] };
+      await new Promise((_, reject) => opts.signal?.addEventListener("abort", () => reject(opts.signal?.reason), { once: true }));
+    },
+  } as unknown as HereDocs;
+}
+
+describe("a conversion that runs out of time", () => {
+  const converter = (hereDocs: HereDocs) => new DocsConverter({ ...plain.config, docs: true }, async () => hereDocs);
+
+  test("returns the pages converted so far, with a warning", async () => {
+    const c = converter(stalledHereDocs(2, 5));
+    const doc = await c.convert(new Uint8Array([1]), { deadline: Deadline.start(100) });
+    expect(doc.markdown).toBe("page 1\n\npage 2");
+    expect({ numPages: doc.numPages, pagesConverted: doc.pagesConverted }).toEqual({ numPages: 5, pagesConverted: 2 });
+    expect(doc.warnings).toEqual([{ code: "timeout", message: "Timed out: converted only the first 2 of 5 pages" }]);
+    await c.close();
+  });
+
+  test("with no page converted is a 408 SCRAPE_TIMEOUT", async () => {
+    const c = converter(stalledHereDocs(0, 5));
+    const err = await rejection(c.convert(new Uint8Array([1]), { deadline: Deadline.start(100) }));
+    expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "SCRAPE_TIMEOUT" });
+    await c.close();
+  });
+});
+
 describe("without SEX_DOCS", () => {
   test("PDFs fall back to unpdf, which honours maxPages too", async () => {
     const doc = await plain.scrape({ url: at("text3.pdf"), parsers: [{ type: "pdf", maxPages: 2 }] });
     expect(doc.markdown).toContain("Text page 2");
     expect(doc.markdown).not.toContain("Text page 3");
-    expect(doc.metadata?.numPages).toBe(3);
+    expect(doc.metadata?.numPages).toBe(2);
+    expect(doc.metadata?.totalPages).toBe(3);
+    expect(doc.warning).toContain("first 2 of 3 pages");
+  });
+
+  test("without maxPages numPages and totalPages are the page count", async () => {
+    const doc = await plain.scrape({ url: at("text3.pdf") });
+    expect({ numPages: doc.metadata?.numPages, totalPages: doc.metadata?.totalPages }).toEqual({ numPages: 3, totalPages: 3 });
+    expect(doc.warning).toBeUndefined();
+  });
+
+  test("html and rawHtml of a PDF are its Markdown rendered, raw HTML in the text escaped", async () => {
+    const doc = await plain.scrape({ url: at("text3.pdf"), formats: ["html", "rawHtml"] });
+    expect(doc.html).toContain("<p>Text page 1</p>");
+    expect(doc.html).toContain("<hr");
+    expect(doc.rawHtml).toBe(doc.html);
+    expect(markdownToHtml("<script>alert(1)</script> and <img src=x onerror=y>")).not.toContain("<script");
+  });
+
+  test("a PDF is returned as base64 when the parsers list leaves out pdf", async () => {
+    const doc = await plain.scrape({ url: at("text3.pdf"), formats: ["markdown", "html"], parsers: ["image"] });
+    expect(
+      Buffer.from(doc.markdown ?? "", "base64")
+        .subarray(0, 5)
+        .toString(),
+    ).toBe("%PDF-");
+    expect(doc.html).toBe(doc.markdown);
+    expect(doc.metadata?.contentType).toBe("application/pdf");
+    expect(doc.warning).toContain("parsers");
   });
 
   test("office documents and images are unsupported", async () => {
