@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { resolveConfig } from "../src/config.ts";
-import { Engine } from "../src/core/engine.ts";
 import { BunqueueTaskQueue } from "../src/core/jobs/queue.ts";
 import type { Task } from "../src/core/jobs/types.ts";
 
@@ -27,15 +25,5 @@ describe("task queue delays", () => {
     await Bun.sleep(200);
     expect(ran.length).toBe(1);
     await queue.close();
-  });
-});
-
-describe("crawl start validation", () => {
-  test("rejects a delay x limit that outlives the job TTL", async () => {
-    const engine = new Engine(resolveConfig({}, { allowPrivateNetwork: true }, { SEX_JOB_TTL_MS: "60000" }));
-    const err = await engine.crawl({ url: "http://127.0.0.1:1/", delay: 10, limit: 100 }).catch((e: unknown) => e);
-    expect((err as { status?: number }).status).toBe(400);
-    expect((err as Error).message).toContain("job lifetime");
-    await engine.close();
   });
 });

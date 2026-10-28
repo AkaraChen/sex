@@ -129,7 +129,8 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
 /**
  * Job state in SQLite (bun:sqlite), in a file under SEX_DATA_DIR or in memory. Only this process opens the
  * database, and bun:sqlite calls are synchronous, so each method is atomic without explicit locking; multi-statement
- * updates still run in a transaction so a crash cannot leave them half applied. Jobs expire after `ttlMs`.
+ * updates still run in a transaction so a crash cannot leave them half applied. A job expires `ttlMs` after it finished;
+ * running jobs are never swept (their `expires_at` is provisional, counted from creation, until they finish).
  *
  * Scraped documents are too large for rows (WAL checkpoints of ~200 KB rows stalled the event loop), so their bytes
  * go to a DocumentLog (JSONL files, S3 or memory) and the `documents` table only indexes them: object, offset and
@@ -252,7 +253,9 @@ export class SqliteJobStore implements JobStore {
 
   async finish(id: string, status: Exclude<JobState, "scraping">, patch?: JobPatch) {
     return this.db.transaction(() => {
-      const changed = this.exec("UPDATE jobs SET status = ? WHERE id = ? AND status = 'scraping'", status, id).changes > 0;
+      const changed =
+        this.exec("UPDATE jobs SET status = ?, expires_at = ? WHERE id = ? AND status = 'scraping'", status, Date.now() + this.ttlMs, id)
+          .changes > 0;
       if (changed && patch) this.applyPatch(id, patch);
       return changed;
     })();
@@ -425,10 +428,12 @@ export class SqliteJobStore implements JobStore {
     this.db.close();
   }
 
-  /** Deletes expired jobs, leaving a tombstone for each, then drops the documents of every tombstoned job. */
+  /** Deletes expired finished jobs, leaving a tombstone for each, then drops the documents of every tombstoned job. */
   private sweep() {
     this.db.transaction(() => {
-      const gone = this.db.query<{ id: string }, [number]>("DELETE FROM jobs WHERE expires_at < ? RETURNING id").all(Date.now());
+      const gone = this.db
+        .query<{ id: string }, [number]>("DELETE FROM jobs WHERE status != 'scraping' AND expires_at < ? RETURNING id")
+        .all(Date.now());
       const tombstone = this.db.query("INSERT OR IGNORE INTO dropped_jobs (job_id) VALUES (?)");
       for (const { id } of gone) tombstone.run(id);
     })();

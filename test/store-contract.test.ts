@@ -248,6 +248,7 @@ for (const [name, makeLog] of backends) {
       const expired = new SqliteJobStore(path, -1, log);
       const onOpen = await expired.create({ kind: "batch_scrape", options: {} });
       await expired.pushDocument(onOpen.id, doc(10));
+      await expired.finish(onOpen.id, "completed");
       await expired.close();
       expect(await stored()).toEqual([onOpen.id]);
 
@@ -256,10 +257,34 @@ for (const [name, makeLog] of backends) {
       expect(await store.get(onOpen.id)).toBeUndefined();
       const periodic = await store.create({ kind: "batch_scrape", options: {} });
       await store.pushDocument(periodic.id, doc(10));
+      await store.finish(periodic.id, "failed");
       (store as unknown as { sweep(): void }).sweep();
       expect(await store.get(periodic.id)).toBeUndefined();
       await store.close();
       expect(await stored()).toEqual([]);
+    });
+
+    test("a running job is never swept, and a finished one expires counted from when it finished", async () => {
+      const path = join(dir, `running-${name}.sqlite`);
+      const { log, stored } = makeLog();
+      const store = new SqliteJobStore(path, -1, log);
+      const job = await store.create({ kind: "crawl", options: {} });
+      await store.pushDocument(job.id, doc(10));
+      (store as unknown as { sweep(): void }).sweep();
+      expect((await store.get(job.id))?.status).toBe("scraping");
+      await store.close();
+
+      // Reopening sweeps too; the running job is still there.
+      const ttl = 60_000;
+      const reopened = new SqliteJobStore(path, ttl, log);
+      expect((await reopened.get(job.id))?.status).toBe("scraping");
+      const before = Date.now();
+      await reopened.finish(job.id, "completed");
+      expect((await reopened.get(job.id))?.expiresAt).toBeGreaterThanOrEqual(before + ttl);
+      (reopened as unknown as { sweep(): void }).sweep();
+      expect(await reopened.get(job.id)).toBeDefined();
+      await reopened.close();
+      expect(await stored()).toEqual([job.id]);
     });
 
     test("documents the store did not write are never deleted, by the sweep or on open", async () => {
@@ -270,6 +295,7 @@ for (const [name, makeLog] of backends) {
       const store = new SqliteJobStore(path, -1, log);
       const job = await store.create({ kind: "batch_scrape", options: {} });
       await store.pushDocument(job.id, doc(10));
+      await store.finish(job.id, "completed");
       (store as unknown as { sweep(): void }).sweep();
       await store.close();
       const reopened = new SqliteJobStore(path, -1, log);
@@ -283,6 +309,7 @@ for (const [name, makeLog] of backends) {
       const first = new SqliteJobStore(path, -1, log);
       const job = await first.create({ kind: "batch_scrape", options: {} });
       await first.pushDocument(job.id, doc(10));
+      await first.finish(job.id, "completed");
       failNextDrops(1);
       (first as unknown as { sweep(): void }).sweep();
       await first.close();
@@ -299,6 +326,7 @@ for (const [name, makeLog] of backends) {
       const { log, stored, holdAppends } = makeLog();
       const store = new SqliteJobStore(path, -1, log);
       const job = await store.create({ kind: "batch_scrape", options: {} });
+      await store.finish(job.id, "cancelled");
       const release = holdAppends();
       const pushing = store.pushDocument(job.id, doc(10));
       await Bun.sleep(5);
