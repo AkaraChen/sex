@@ -83,7 +83,7 @@ describe("abandonTask", () => {
   const webhook = () => ({ url: `http://127.0.0.1:${hook.port}/hook` });
   const pageTask = (jobId: string, taskId: string, url: string): Task => ({ type: "page", jobId, taskId, url, depth: 0 });
 
-  test("a batch page is recorded as failed, counted and settled once, and announced as a failed page", async () => {
+  test("a batch page is recorded as failed, taken out of the total and settled once, and announced as a failed page", async () => {
     const { store } = engine.jobs;
     const job = await store.create({ kind: "batch_scrape", options: { webhook: webhook() } });
     await store.incr(job.id, "pending", 2);
@@ -91,10 +91,10 @@ describe("abandonTask", () => {
 
     await abandonTask(engine, pageTask(job.id, "t1", "http://x.test/a"));
     await abandonTask(engine, pageTask(job.id, "t1", "http://x.test/a"));
-    expect(await store.get(job.id)).toMatchObject({ status: "scraping", pending: 1, completed: 1 });
+    expect(await store.get(job.id)).toMatchObject({ status: "scraping", pending: 1, total: 1, completed: 0 });
     await abandonTask(engine, pageTask(job.id, "t2", "http://x.test/b"));
 
-    expect(await store.get(job.id)).toMatchObject({ status: "completed", pending: 0, completed: 2 });
+    expect(await store.get(job.id)).toMatchObject({ status: "completed", pending: 0, total: 0, completed: 0 });
     expect((await store.errors(job.id)).map((e) => e.url)).toEqual(["http://x.test/a", "http://x.test/b"]);
     await waitFor(() => (events.filter((e) => e.id === job.id).length === 3 ? true : undefined));
     const mine = events.filter((e) => e.id === job.id);
@@ -106,8 +106,9 @@ describe("abandonTask", () => {
     const { store } = engine.jobs;
     const job = await store.create({ kind: "crawl", url: "http://x.test/", options: {} });
     await store.incr(job.id, "pending", 1);
+    await store.incr(job.id, "total", 1);
     await abandonTask(engine, pageTask(job.id, "t1", "http://x.test/a"));
-    expect(await store.get(job.id)).toMatchObject({ status: "completed", pending: 0, completed: 0 });
+    expect(await store.get(job.id)).toMatchObject({ status: "completed", pending: 0, total: 0, completed: 0 });
     expect(await store.errors(job.id)).toHaveLength(1);
   });
 

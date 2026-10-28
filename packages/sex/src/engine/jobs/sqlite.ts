@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   warning TEXT,
   result TEXT,
   sources TEXT,
+  tokens_used INTEGER,
   total INTEGER NOT NULL DEFAULT 0,
   completed INTEGER NOT NULL DEFAULT 0,
   pending INTEGER NOT NULL DEFAULT 0,
@@ -95,6 +96,7 @@ interface JobRow {
   warning: string | null;
   result: string | null;
   sources: string | null;
+  tokens_used: number | null;
   total: number;
   completed: number;
   pending: number;
@@ -103,7 +105,7 @@ interface JobRow {
 
 const COUNTERS = new Set<CounterName>(["total", "completed", "pending", "scheduled"]);
 
-function toRecord(r: JobRow): JobRecord {
+function toRecord(r: JobRow, ttlMs: number): JobRecord {
   const rec: JobRecord = {
     id: r.id,
     kind: r.kind,
@@ -116,11 +118,13 @@ function toRecord(r: JobRow): JobRecord {
     pending: r.pending,
     scheduled: r.scheduled,
   };
+  if (r.status !== "scraping") rec.finishedAt = r.expires_at - ttlMs;
   if (r.url !== null) rec.url = r.url;
   if (r.error !== null) rec.error = r.error;
   if (r.warning !== null) rec.warning = r.warning;
   if (r.result !== null) rec.result = JSON.parse(r.result);
   if (r.sources !== null) rec.sources = JSON.parse(r.sources);
+  if (r.tokens_used !== null) rec.tokensUsed = r.tokens_used;
   return rec;
 }
 
@@ -204,6 +208,9 @@ export class SqliteJobStore implements JobStore {
     if (!this.db.query("SELECT 1 FROM pragma_table_info('jobs') WHERE name = 'warning'").get()) {
       this.db.run("ALTER TABLE jobs ADD COLUMN warning TEXT");
     }
+    if (!this.db.query("SELECT 1 FROM pragma_table_info('jobs') WHERE name = 'tokens_used'").get()) {
+      this.db.run("ALTER TABLE jobs ADD COLUMN tokens_used INTEGER");
+    }
     // `settled` (job_id, task_id) became the "settle" rows of `task_effects`; tasks in flight keep their settlements.
     if (this.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settled'").get()) {
       this.db.transaction(() => {
@@ -280,12 +287,12 @@ export class SqliteJobStore implements JobStore {
       now,
       now + this.ttlMs,
     );
-    return toRecord(this.row(id) as JobRow);
+    return toRecord(this.row(id) as JobRow, this.ttlMs);
   }
 
   async get(id: string) {
     const r = this.row(id);
-    return r ? toRecord(r) : undefined;
+    return r ? toRecord(r, this.ttlMs) : undefined;
   }
 
   async patch(id: string, patch: JobPatch) {
@@ -297,6 +304,9 @@ export class SqliteJobStore implements JobStore {
     if ("warning" in patch) this.exec("UPDATE jobs SET warning = ? WHERE id = ?", patch.warning ?? null, id);
     if ("result" in patch) this.exec("UPDATE jobs SET result = ? WHERE id = ?", json(patch.result), id);
     if ("sources" in patch) this.exec("UPDATE jobs SET sources = ? WHERE id = ?", json(patch.sources), id);
+    if ("tokensUsed" in patch) this.exec("UPDATE jobs SET tokens_used = ? WHERE id = ?", patch.tokensUsed ?? null, id);
+    if (patch.total !== undefined) this.exec("UPDATE jobs SET total = ? WHERE id = ?", patch.total, id);
+    if (patch.completed !== undefined) this.exec("UPDATE jobs SET completed = ? WHERE id = ?", patch.completed, id);
   }
 
   async finish(id: string, status: Exclude<JobState, "scraping">, patch?: JobPatch) {
@@ -337,14 +347,12 @@ export class SqliteJobStore implements JobStore {
     return taskId === undefined ? this.jobExists(id) : this.claim(id, taskId, effect);
   }
 
-  async settle(id: string, taskId: string | undefined, countCompleted = false) {
+  async settle(id: string, taskId: string | undefined) {
     return this.db.transaction(() => {
       if (taskId !== undefined && !this.claim(id, taskId, "settle")) return null;
       const r = this.db
-        .query<{ pending: number }, [number, string]>(
-          "UPDATE jobs SET pending = pending - 1, completed = completed + ? WHERE id = ? RETURNING pending",
-        )
-        .get(countCompleted ? 1 : 0, id);
+        .query<{ pending: number }, [string]>("UPDATE jobs SET pending = pending - 1 WHERE id = ? RETURNING pending")
+        .get(id);
       return r ? r.pending : null;
     })();
   }
@@ -379,7 +387,12 @@ export class SqliteJobStore implements JobStore {
     return outcome === "stored";
   }
 
-  async documentsJson(id: string, skip: number, maxChars: number): Promise<{ data: Uint8Array[]; nextSkip: number | null }> {
+  async documentsJson(
+    id: string,
+    skip: number,
+    maxChars: number,
+    maxDocs = Number.POSITIVE_INFINITY,
+  ): Promise<{ data: Uint8Array[]; nextSkip: number | null; cursor: number }> {
     await this.ready;
     // The page is chosen from the index, so no document is read that is not returned. The first document is always
     // included, even when it alone exceeds maxChars.
@@ -392,7 +405,7 @@ export class SqliteJobStore implements JobStore {
     );
     try {
       for (const r of rows.iterate(id, skip)) {
-        if (page.length > 0 && chars + r.chars > maxChars) {
+        if (page.length > 0 && (chars + r.chars > maxChars || page.length >= maxDocs)) {
           more = true;
           break;
         }
@@ -403,7 +416,7 @@ export class SqliteJobStore implements JobStore {
       rows.finalize();
     }
     const last = page.at(-1);
-    if (!last) return { data: [], nextSkip: null };
+    if (!last) return { data: [], nextSkip: null, cursor: skip };
 
     // Runs of documents stored back to back in one object are read at once: a whole page of a JSONL file is one
     // read, while on S3 every document is its own read.
@@ -431,19 +444,22 @@ export class SqliteJobStore implements JobStore {
       }
     }
     if (missing.length > 0) log.warn("documents unreadable; left out of the page", { job: id, seqs: missing.join(",") });
-    return { data, nextSkip: more ? last.seq + 1 : null };
+    return { data, nextSkip: more ? last.seq + 1 : null, cursor: last.seq + 1 };
   }
 
-  async documents(id: string, skip: number, maxChars: number) {
-    const { data, nextSkip } = await this.documentsJson(id, skip, maxChars);
+  async documents(id: string, skip: number, maxChars: number, maxDocs?: number) {
+    const { data, nextSkip } = await this.documentsJson(id, skip, maxChars, maxDocs);
     const text = new TextDecoder();
     return { data: data.map((bytes) => JSON.parse(text.decode(bytes)) as Document), nextSkip };
   }
 
-  async pushError(id: string, error: JobError, taskId?: string) {
+  async pushError(id: string, error: JobError, taskId?: string, opts?: { dropFromTotal?: boolean }) {
     return this.db.transaction(() => {
       if (taskId !== undefined && !this.claim(id, taskId, "error")) return false;
-      return this.exec("INSERT INTO job_errors (job_id, json) SELECT id, ? FROM jobs WHERE id = ?", JSON.stringify(error), id).changes > 0;
+      const recorded =
+        this.exec("INSERT INTO job_errors (job_id, json) SELECT id, ? FROM jobs WHERE id = ?", JSON.stringify(error), id).changes > 0;
+      if (recorded && opts?.dropFromTotal) this.exec("UPDATE jobs SET total = total - 1 WHERE id = ?", id);
+      return recorded;
     })();
   }
 
@@ -529,7 +545,12 @@ export class SqliteJobStore implements JobStore {
     return this.db
       .query<JobRow, [string]>("SELECT * FROM jobs WHERE kind = ? AND status = 'scraping' ORDER BY created_at")
       .all(kind)
-      .map(toRecord);
+      .map((r) => toRecord(r, this.ttlMs));
+  }
+
+  async lastCompletedAt() {
+    const r = this.db.query<{ at: number | null }, []>("SELECT max(expires_at) AS at FROM jobs WHERE status = 'completed'").get();
+    return r?.at == null ? undefined : r.at - this.ttlMs;
   }
 
   async close() {

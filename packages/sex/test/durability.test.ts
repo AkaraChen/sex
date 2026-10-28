@@ -222,7 +222,7 @@ test("a page that kills the process three times is given up on: the job records 
       return s.status === "scraping" ? undefined : s;
     }, 30_000);
     expect(never).toBe(3);
-    expect(done).toMatchObject({ status: "completed", completed: 2, total: 2 });
+    expect(done).toMatchObject({ status: "completed", completed: 1, total: 1 });
     const { errors } = (await (await fetch(`${base}/v2/batch/scrape/${started.id}/errors`)).json()) as {
       errors: Array<{ url: string; error: string }>;
     };

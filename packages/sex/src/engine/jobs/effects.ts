@@ -14,12 +14,15 @@ import type { JobRecord } from "./types.ts";
  */
 export interface TaskEffects {
   /**
-   * Stores the page's document and, when it was new, sends the `page` webhook. With `countCompleted` the page is
-   * also added to `completed`, atomically with the document. Returns whether the document was new.
+   * Stores the page's document and, when it was new, sends the `page` webhook. The page is also added to
+   * `completed`, atomically with the document. Returns whether the document was new.
    */
-  page(document: Document, opts?: { countCompleted?: boolean }): Promise<boolean>;
-  /** Records that scraping `url` failed and, when that was new, sends the `page` webhook with `success: false`. */
-  failure(url: string, message: string): Promise<void>;
+  page(document: Document): Promise<boolean>;
+  /**
+   * Records that scraping `url` failed (with the error's `code`) and, when that was new, takes the page out of `total`
+   * (atomically with the record) and sends the `page` webhook with `success: false`.
+   */
+  failure(url: string, message: string, code?: string): Promise<void>;
   /** Sends the job's `started` webhook, unless an earlier delivery of this task did. */
   started(): Promise<void>;
 }
@@ -27,16 +30,17 @@ export interface TaskEffects {
 export function taskEffects(engine: Engine, job: JobRecord, taskId: string | undefined): TaskEffects {
   const { store } = engine.jobs;
   return {
-    async page(document, opts) {
-      const fresh = await store.pushDocument(job.id, document, taskId, opts?.countCompleted);
+    async page(document) {
+      const fresh = await store.pushDocument(job.id, document, taskId, true);
       if (fresh) await sendWebhook(engine, job, "page", [document]);
       return fresh;
     },
-    async failure(url, message) {
+    async failure(url, message, code) {
       const fresh = await store.pushError(
         job.id,
-        { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: message },
+        { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: message, ...(code ? { code } : {}) },
         taskId,
+        { dropFromTotal: true },
       );
       if (fresh) await sendWebhook(engine, job, "page", [{ metadata: { sourceURL: url } }], message);
     },

@@ -129,7 +129,7 @@ for (const [name, makeLog] of backends) {
       const job = await store.create({ kind: "batch_scrape", options: {} });
       expect(await store.documents(job.id, 0, 1000)).toEqual({ data: [], nextSkip: null });
       expect(await store.documents(job.id, 5, 1000)).toEqual({ data: [], nextSkip: null });
-      expect(await store.documentsJson(job.id, 0, 1000)).toEqual({ data: [], nextSkip: null });
+      expect(await store.documentsJson(job.id, 0, 1000)).toEqual({ data: [], nextSkip: null, cursor: 0 });
       expect(await store.documents("missing", 0, 1000)).toEqual({ data: [], nextSkip: null });
     });
 
@@ -191,12 +191,12 @@ for (const [name, makeLog] of backends) {
     test("settle counts a taskId once and completes only from pending", async () => {
       const job = await store.create({ kind: "batch_scrape", options: {} });
       await store.incr(job.id, "pending", 2);
-      expect(await store.settle(job.id, "t1", true)).toBe(1);
-      expect(await store.settle(job.id, "t1", true)).toBeNull();
+      expect(await store.settle(job.id, "t1")).toBe(1);
+      expect(await store.settle(job.id, "t1")).toBeNull();
       expect(await store.settle(job.id, "t2")).toBe(0);
       const after = await store.get(job.id);
-      expect({ pending: after?.pending, completed: after?.completed }).toEqual({ pending: 0, completed: 1 });
-      expect(await store.settle("missing", "t", true)).toBeNull();
+      expect({ pending: after?.pending, completed: after?.completed }).toEqual({ pending: 0, completed: 0 });
+      expect(await store.settle("missing", "t")).toBeNull();
     });
 
     test("finish moves a job out of scraping once, with its patch", async () => {
@@ -404,13 +404,49 @@ for (const [name, makeLog] of backends) {
     test("effects of one task are independent: settle, document and error each happen once", async () => {
       const job = await store.create({ kind: "batch_scrape", options: {} });
       await store.incr(job.id, "pending", 2);
-      expect(await store.pushDocument(job.id, doc(1), "t1")).toBe(true);
+      expect(await store.pushDocument(job.id, doc(1), "t1", true)).toBe(true);
       expect(await store.pushError(job.id, { id: "1", timestamp: "t", url: "u", error: "e" }, "t1")).toBe(true);
       expect(await store.pushError(job.id, { id: "2", timestamp: "t", url: "u", error: "e" }, "t1")).toBe(false);
-      expect(await store.settle(job.id, "t1", true)).toBe(1);
-      expect(await store.settle(job.id, "t1", true)).toBeNull();
+      expect(await store.settle(job.id, "t1")).toBe(1);
+      expect(await store.settle(job.id, "t1")).toBeNull();
       expect((await store.errors(job.id)).map((e) => e.id)).toEqual(["1"]);
       expect((await store.get(job.id))?.completed).toBe(1);
+    });
+
+    test("a redelivered task counts its document in `completed` and its failure out of `total` once", async () => {
+      const job = await store.create({ kind: "batch_scrape", options: {} });
+      await store.incr(job.id, "total", 3);
+      expect(await store.pushDocument(job.id, doc(1), "ok", true)).toBe(true);
+      expect(await store.pushDocument(job.id, doc(1), "ok", true)).toBe(false);
+      const failure = { id: "1", timestamp: "t", url: "u", error: "e", code: "FETCH_FAILED" };
+      expect(await store.pushError(job.id, failure, "bad", { dropFromTotal: true })).toBe(true);
+      expect(await store.pushError(job.id, failure, "bad", { dropFromTotal: true })).toBe(false);
+      const after = await store.get(job.id);
+      expect({ total: after?.total, completed: after?.completed }).toEqual({ total: 2, completed: 1 });
+      expect(await store.errors(job.id)).toEqual([failure]);
+    });
+
+    test("documents() takes a document limit, and documentsJson() a cursor for a job that is still running", async () => {
+      const job = await store.create({ kind: "crawl", options: {} });
+      for (const n of [1, 2, 3]) await store.pushDocument(job.id, doc(n), `t${n}`);
+      const first = await store.documents(job.id, 0, 1e6, 2);
+      expect(first.data).toEqual([doc(1), doc(2)]);
+      expect(first.nextSkip).toBe(2);
+      expect((await store.documents(job.id, 2, 1e6, 2)).nextSkip).toBeNull();
+      expect((await store.documentsJson(job.id, 0, 1e6)).cursor).toBe(3);
+      expect((await store.documentsJson(job.id, 3, 1e6)).cursor).toBe(3);
+    });
+
+    test("finishedAt is set once the job left scraping; lastCompletedAt follows completed jobs", async () => {
+      const job = await store.create({ kind: "batch_scrape", options: {} });
+      expect(job.finishedAt).toBeUndefined();
+      expect(await store.lastCompletedAt()).toBeUndefined();
+      const before = Date.now();
+      await store.finish(job.id, "completed");
+      const done = await store.get(job.id);
+      expect(done?.finishedAt).toBeGreaterThanOrEqual(before);
+      expect(done?.finishedAt).toBeLessThanOrEqual(Date.now());
+      expect(await store.lastCompletedAt()).toBe(done?.finishedAt);
     });
   });
 }

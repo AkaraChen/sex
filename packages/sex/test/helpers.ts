@@ -3,9 +3,17 @@ import { Engine } from "../src/engine/engine.ts";
 
 export { CERT, KEY, startFixtureSite, startMockSearxng, waitFor } from "@sex/core/test/helpers.ts";
 
+/** Tokens the mock LLM reports for each call. */
+export const MOCK_LLM_TOKENS = 15;
+
 export function chatCompletionStream(content: string, opts: { finishReason?: string; refusal?: string } = {}): Response {
   const delta = opts.refusal ? { role: "assistant", refusal: opts.refusal } : { role: "assistant", content };
-  const chunks = [{ choices: [{ index: 0, delta }] }, { choices: [{ index: 0, delta: {}, finish_reason: opts.finishReason ?? "stop" }] }];
+  const chunks = [
+    { choices: [{ index: 0, delta }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: opts.finishReason ?? "stop" }] },
+    // Every call is billed MOCK_LLM_TOKENS.
+    { choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: MOCK_LLM_TOKENS } },
+  ];
   const sse = `${chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("")}data: [DONE]\n\n`;
   return new Response(sse, { headers: { "content-type": "text/event-stream" } });
 }

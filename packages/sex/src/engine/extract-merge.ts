@@ -118,3 +118,52 @@ export function mergeValues(a: unknown, b: unknown): unknown {
 export function mergeAll(values: unknown[]): unknown {
   return values.reduce((acc, v) => mergeValues(acc, v), undefined);
 }
+
+/** Fields (dotted paths) where a later result disagrees with the value already kept; `mergeValues` keeps the first. Arrays are concatenated, so never conflict. */
+export function conflictingFields(values: unknown[]): string[] {
+  const found = new Set<string>();
+  const walk = (kept: unknown, next: unknown, path: string) => {
+    if (isEmpty(kept) || isEmpty(next) || Array.isArray(kept) || Array.isArray(next)) return;
+    if (isObject(kept) && isObject(next)) {
+      for (const [k, v] of Object.entries(next)) if (k in kept) walk(kept[k], v, path ? `${path}.${k}` : k);
+    } else if (kept !== next) found.add(path || "(value)");
+  };
+  let acc: unknown;
+  for (const value of values) {
+    walk(acc, value, "");
+    acc = mergeValues(acc, value);
+  }
+  return [...found];
+}
+
+const sameItem = (a: unknown, b: unknown) => (isObject(a) && isObject(b) && sameEntity(a, b)) || JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Which pages each array item of a merged result came from, as Firecrawl's `{"products[0]": [url, ...]}`. A page's
+ * item is traced to the merged item `mergeEntities` folded it into: the first one that is the same entity (a merged
+ * item agrees with every item merged into it, so the lookup finds it again). Only the top-level arrays are covered;
+ * a root array is keyed `[0]`, `[1]`, ...
+ */
+export function entitySources(merged: unknown, pieces: Array<{ url: string; value: unknown }>): Record<string, string[]> {
+  const arrays: Array<[string, unknown[]]> = Array.isArray(merged)
+    ? [["", merged]]
+    : isObject(merged)
+      ? Object.entries(merged).filter((e): e is [string, unknown[]] => Array.isArray(e[1]))
+      : [];
+  const out: Record<string, string[]> = {};
+  for (const [key, items] of arrays) {
+    for (const piece of pieces) {
+      const own = Array.isArray(piece.value) ? piece.value : isObject(piece.value) ? piece.value[key] : undefined;
+      if (!Array.isArray(own)) continue;
+      for (const item of own) {
+        const at = items.findIndex((m) => sameItem(m, item));
+        if (at === -1) continue;
+        const name = `${key}[${at}]`;
+        const urls = out[name] ?? [];
+        if (!urls.includes(piece.url)) urls.push(piece.url);
+        out[name] = urls;
+      }
+    }
+  }
+  return out;
+}

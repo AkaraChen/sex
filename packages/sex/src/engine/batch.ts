@@ -26,7 +26,7 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
   const { urls, ignoreInvalidURLs, appendToId, webhook, ...rest } = req;
   assertScrapeCapabilities(engine, rest);
   await validateWebhook(engine, webhook);
-  const { valid, invalid } = await splitUrls(engine, urls, !!ignoreInvalidURLs);
+  const { valid, invalid } = await splitUrls(engine, urls, ignoreInvalidURLs ?? true);
   if (!valid.length) throw badRequest("No valid URLs to scrape", { invalidURLs: invalid });
 
   const { store, scheduler } = engine.jobs;
@@ -69,10 +69,10 @@ export async function startBatchScrape(engine: Engine, req: BatchScrapeRequest):
     }
     throw err;
   }
-  return { job, invalidURLs: ignoreInvalidURLs ? invalid : undefined };
+  return { job, invalidURLs: invalid.length ? invalid : undefined };
 }
 
-/** Scrapes one batch page. The page is counted in `completed` when its task settles (see runTask), exactly once per task. */
+/** Scrapes one batch page. A page that was stored counts in `completed`, one that failed leaves `total` (both once per task, see `TaskEffects`). */
 export async function handleBatchPage(engine: Engine, job: JobRecord, url: string, taskOptions?: Record<string, unknown>, taskId?: string) {
   const { store } = engine.jobs;
   const fx = taskEffects(engine, job, taskId);
@@ -83,6 +83,7 @@ export async function handleBatchPage(engine: Engine, job: JobRecord, url: strin
     if ((await store.get(job.id))?.status !== "scraping") return;
     await fx.page(document);
   } catch (err) {
-    await fx.failure(url, toAppError(err).message);
+    const e = toAppError(err);
+    await fx.failure(url, e.message, e.code);
   }
 }

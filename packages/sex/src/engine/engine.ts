@@ -57,8 +57,13 @@ export class Engine extends BaseEngine<Config> {
     return mapSite(this, req, signal);
   }
 
-  crawl(req: CrawlRequest, defaults?: Partial<CrawlRequest>): Promise<JobRecord> {
+  /** Starts a crawl; also reports the options a `prompt` was turned into. */
+  startCrawl(req: CrawlRequest, defaults?: Partial<CrawlRequest>) {
     return startCrawl(this, req, defaults);
+  }
+
+  async crawl(req: CrawlRequest, defaults?: Partial<CrawlRequest>): Promise<JobRecord> {
+    return (await this.startCrawl(req, defaults)).job;
   }
 
   crawlParamsPreview(url: string, prompt: string): Promise<Record<string, unknown>> {

@@ -170,7 +170,7 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 | `SEX_CONCURRENCY` | `--concurrency` | `8` | 单进程内同时进行的页面抓取数 |
 | `SEX_TIMEOUT` | `--timeout` | `30000`（毫秒，最小 1） | 单页默认超时（请求用到 LLM（LLM 格式或 `checkPromptInjection`）且没传 `timeout` 时至少 60000）|
 | `SEX_MAX_BODY_BYTES` | — | `26214400`（25 MiB，最小 1024） | 单次页面下载的响应体上限 |
-| `SEX_EXTRACT_WILDCARD_PAGES` | — | `25` | extract 的 URL 以 `/*` 结尾时，最多展开的页面数 |
+| `SEX_EXTRACT_WILDCARD_PAGES` | — | `25` | extract 的 URL 以 `/*` 结尾时，最多展开的页面数（请求里的 `limit` 优先） |
 | `SEX_DOCS_CONCURRENCY` | — | `min(2, CPU 核数 - 1)`，至少 1 | 同时用 here-docs 转换的文档数，超出的排队（排队时间计入请求的 `timeout`） |
 | `SEX_EXTRACT_WORKERS` | — | `min(4, CPU 核数 - 1)`，至少 1 | HTML/PDF 解析的 worker 线程数；`0` 表示在主线程解析 |
 | `SEX_DATA_DIR` | `--data-dir` | `serve`：`$XDG_DATA_HOME/sex` 或 `~/.local/share/sex`；Docker：`/data` | 任务数据库和任务队列（SQLite）所在目录，抓到的文档默认也在这里（`documents/`）；`search` / `fetch` 不使用 |
@@ -200,6 +200,27 @@ crawl、batch scrape、extract 都是异步任务。任务按页拆分：crawl �
 - **单进程**：同一个数据目录同一时间只能有一个 sex 进程在用。
 - `SEX_REDIS_URL` / `SEX_REDIS_PREFIX` 已经不再支持，设置了会在启动时报 `CONFIG_INVALID`。
 
+## 任务状态与默认值
+
+`GET /v2/crawl/{id}`、`GET /v2/batch/scrape/{id}` 的响应（与 Firecrawl v2 对齐）：
+
+- 时间：`createdAt`、`completedAt`（job 结束后才有；等于 `expiresAt` 减 `SEX_JOB_TTL_MS`）、`duration`（秒，运行中算到现在）。`failed` 时有 `error`。
+- `?limit=N`：本页最多返回 N 个文档（仍受 10 MB 一页的上限约束）；`next` 会带上同样的 `limit`。job 还在 `scraping` 时 `next` 总是有，即使暂时没有新文档（指向下一个还没出现的文档）。
+- `warning`（job 结束后）：被 robots.txt 拦掉过页面时提示去看 `/errors` 的 `robotsBlocked`；否则 crawl 只得到不超过 1 条结果、起始 URL 不是站点根路径、也没开 `crawlEntireDomain` 时建议开 `crawlEntireDomain` 或从上一级路径开始。
+- **计数口径变了**：`completed` 只数存下来的文档，失败的页面既不进 `completed`，也不进 `total`（只出现在 `/errors`）。以前 batch 的 `completed` 含失败页，crawl 的 `total` 含失败页，所以 `total` 在 job 运行中会随失败页减少。重启后任务被重新投递时不会重复计数（和文档、错误记录一样按 task 只算一次）。`creditsUsed` 等于 `completed`。
+- `/errors` 里每条错误多了 `code`（错误码，见下；重启前记下的旧错误没有）。`/v2/crawl/active` 的每项多了 `created_at`。
+- 带 `prompt` 的 `POST /v2/crawl` 响应多了 `promptGeneratedOptions`（LLM 从 prompt 得到、通过校验的选项）和 `finalCrawlerOptions`（实际使用的选项，header 值打码）。
+
+batch 和 extract 的默认值：
+
+- **`ignoreInvalidURLs` 默认 `true`**（以前是 `false`）：无效 URL 被跳过，列在响应的 `invalidURLs` 里（没有无效 URL 时没有这个字段，以前显式设 `true` 时是 `[]`）；设成 `false` 恢复 400。URL 全部无效时仍是 400。
+- **extract 没有 `urls` 时直接搜索 prompt**，不再要求 `enableWebSearch: true`；搜索取 10 条结果（以前 5 条）。有 `urls` 时 `enableWebSearch: true` 仍会把搜索结果加进去。**只想抽给定页面的调用方注意**：现在 `urls` 里的 URL 全部无效时返回 400，不会退化成联网搜索；`enableWebSearch` 没有 `prompt` 也是 400。
+- extract 新增 `limit`（`/*` 展开的页数上限，覆盖 `SEX_EXTRACT_WILDCARD_PAGES`）、`includeSubdomains`（`/*` 展开是否含子域名，默认 `true`）、`timeout`（毫秒，整个 extract 的期限，到期 job 记为 `failed`；不设则没有期限）。这三个以前被静默丢掉。
+- extract 状态多了 `tokensUsed`（这次运行里所有 LLM 调用的 token 数，含 prompt 注入检查和纠错重试；重新投递的 extract 从零开始数，不累加），`creditsUsed` 是读到的页面数。
+- `showSources: true` 时 `sources` 除 `"*"`（用到的全部页面）外，还有数组项的来源，如 `"products[0]": [url, ...]`（只覆盖顶层数组；根是数组时键为 `[0]`）。来源是合并后按"同一个实体"反查的，两个字段都空的对象只在内容完全相同时才算同一个。
+- 单答案字段在不同页面的 LLM 回答里取值不同时，仍取第一个，但 `warning` 会列出这些字段。
+- extract 的 `total` 和 `completed` 都是成功读到的页数；读不到的页面只在 `/errors` 里。
+
 ## Webhook
 
 crawl、batch scrape、extract 的请求都可以带 `webhook`（URL 字符串，或 `{ url, headers, metadata, events }`）。事件类型是 `<kind>.<event>`：`crawl` / `batch_scrape` / `extract` 加上 `started` / `page` / `completed` / `failed`；`events` 不写就是全部。
@@ -219,9 +240,10 @@ crawl、batch scrape、extract 的请求都可以带 `webhook`（URL 字符串�
 | `POST /v2/scrape` | 单页抓取 |
 | `POST /v2/search` | 搜索（`sources`: web/news/images，`scrapeOptions` 会顺便抓取结果页） |
 | `POST /v2/map` | 列出站点 URL（sitemap + 页面链接 + SearXNG `site:`）；入口重定向后以最终地址为准，`filterByPath` 默认只返回入口路径下的 URL，`includePaths` / `excludePaths` 是路径正则，响应带 `id`，`useIndex` / `ignoreCache` 接受但忽略 |
-| `POST /v2/crawl`、`GET/DELETE /v2/crawl/{id}`、`GET /v2/crawl/{id}/errors`、`GET /v2/crawl/active`、`POST /v2/crawl/params-preview` | 异步爬取 |
+| `POST /v2/crawl`、`GET/DELETE /v2/crawl/{id}`、`GET /v2/crawl/{id}/errors`、`GET /v2/crawl/active`（别名 `/v2/crawl/ongoing`）、`POST /v2/crawl/params-preview` | 异步爬取 |
 | `POST /v2/batch/scrape`、`GET/DELETE /v2/batch/scrape/{id}`、`GET /v2/batch/scrape/{id}/errors` | 批量抓取 |
 | `POST /v2/extract`、`GET /v2/extract/{id}` | LLM 结构化抽取 |
+| `GET /v2/concurrency-check`、`GET /v2/team/queue-status` | 队列状态：数字直接取自队列（bunqueue）的计数和任务存储，`maxConcurrency` 是 `SEX_CONCURRENCY`。数的是**任务**（每个页面一个，webhook 投递也算），不是 job；`waitingJobsInQueue` 含延迟中的任务和被 `delay` / `maxConcurrency` 压住的任务。`mostRecentSuccess` 是最近一个 completed 的 job（只看还留着的 job，过了 `SEX_JOB_TTL_MS` 就没了），没有则为 `null` |
 
 直接用官方 SDK：
 
@@ -245,7 +267,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
   - `rawBase64` 格式返回原始字节的 base64（`document.rawBase64`），不能和其它格式、`checkPromptInjection`、`actions` 组合（`400`）；有浏览器时也直接 HTTP 抓取，不渲染。
   - `fastMode: true` 跳过浏览器，只做 HTTP 抓取（脚本不会运行），不能和 `actions` 一起用（`400`）。
   - 其它不存在的字段仍被丢掉（官方 SDK 会带 `origin`、`integration` 之类）；设 `SEX_STRICT_REQUESTS=1` 后改为返回 `400`（`Unrecognized key in body: "..."`）。
-  - `ignoreInvalidURLs`、extract 的 `allowExternalLinks` 等参数会接受但忽略。
+  - extract 的 `allowExternalLinks` 会接受但忽略。
 - `parsers` 只接受 `"pdf"`、`"image"`、`{ "type": "pdf", ... }` 和 `{ "type": "image" }`，拼错或多出字段返回 `400`。PDF parser 只用 `maxPages`；`mode`、`pages`、`pageMarkdown`、`blocks`、`pageMarkers`、`refresh` 接受但没有效果，设了会在 `warning` 里列出。`parsers` 不含 `pdf` 时 PDF 不解析，`markdown` 和 `html` 是文件的 base64，`metadata.contentType` 为 `application/pdf`（和 Firecrawl 一致，以前是 `415`）。开了 `--docs` 时 PDF 的 `metadata.title` 不再取自 PDF 元数据（here-docs 不提供），标题以正文里的标题为准。
 - **`metadata.numPages` 的语义变了**：以前是文件的总页数，现在是实际解析的页数（`min(总页数, maxPages)`，超时只转换了一部分时是已转换的页数），和 Firecrawl 一致；总页数在新增的 `metadata.totalPages` 里。没传 `maxPages` 的请求两者相同；传了的，读 `numPages` 当总页数的调用方要改读 `totalPages`。
 - 搜索：SearXNG 请求遇到网络错误或 5xx 时，约 400 ms 后重试 1 次（在整体 deadline 内）；结果为空且 SearXNG 报告了 `unresponsive_engines`（如 Google 被 captcha）时，引擎和原因写进 `warning`。不传 `timeout` 时整个搜索（含 scrape）的 deadline 是 `max(SEX_TIMEOUT × 2, 60000)` ms。`includeDomains` 会去掉首尾空白、转小写并校验主机名（不合法返回 `400`），按域名并发的 SearXNG 查询在整个进程内共享 4 个并发。没有搜索结果缓存。

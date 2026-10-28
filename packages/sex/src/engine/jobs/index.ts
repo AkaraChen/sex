@@ -52,11 +52,11 @@ export async function validateWebhook(engine: Engine, webhook: WebhookConfig | u
 
 /**
  * Marks one task of a job done; whoever finishes the last task completes the job. Each taskId settles at most once,
- * so a redelivered task cannot complete the job early or be counted twice. `countCompleted` also adds the task's page
- * to `completed`, in the same step.
+ * so a redelivered task cannot complete the job early or be counted twice. (`completed` is not counted here: a page
+ * is counted when its document is stored, see `TaskEffects.page`.)
  */
-export async function settleTask(engine: Engine, jobId: string, taskId?: string, countCompleted = false): Promise<void> {
-  const left = await engine.jobs.store.settle(jobId, taskId, countCompleted);
+export async function settleTask(engine: Engine, jobId: string, taskId?: string): Promise<void> {
+  const left = await engine.jobs.store.settle(jobId, taskId);
   if (left === null || left > 0) return;
   await engine.jobs.scheduler.release(jobId);
   if (await engine.jobs.store.finish(jobId, "completed")) {

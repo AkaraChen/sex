@@ -2,11 +2,12 @@ import { JSON_SCHEMA_OUTPUT_REGISTRY, ZodToJsonSchemaConverter } from "@orpc/zod
 import { coreRoutes, procedureBase } from "@sex/core/http/procedures.ts";
 import { z } from "zod";
 import type { Engine } from "../engine/engine.ts";
-import { PAGE_BUDGET_CHARS } from "../engine/jobs/index.ts";
+import { type JobRecord, PAGE_BUDGET_CHARS } from "../engine/jobs/index.ts";
 import {
   ActiveCrawlsResponse,
   BatchScrapeRequest,
   CancelResponse,
+  ConcurrencyCheckResponse,
   CrawlParamsPreviewRequest,
   CrawlParamsPreviewResponse,
   CrawlRequest,
@@ -20,6 +21,7 @@ import {
   JobStatusResponse,
   MapRequest,
   MapResponse,
+  QueueStatusResponse,
 } from "../schemas.ts";
 
 const base = procedureBase<Engine>();
@@ -62,9 +64,34 @@ const [, jobStatusJsonSchema] = new ZodToJsonSchemaConverter().convert(JobStatus
 JSON_SCHEMA_OUTPUT_REGISTRY.add(RawJobStatusBody, jobStatusJsonSchema as RegistryJsonSchema);
 const RawJobStatusResponse = z.object({ headers: z.record(z.string(), z.string()), body: RawJobStatusBody });
 
-const jobStatus = async (engine: Engine, kind: JobKind, id: string, skip: number, statusUrl: string) => {
+/** Firecrawl's "base domain" test for the few-results hint: the start URL is already the site's root. */
+const isSiteRoot = (url: string) => new URL(url).pathname.replace(/\/+$/, "") === "";
+
+/** Hints about a finished job's result (Firecrawl's wording, pointing at sex's own routes). */
+async function statusWarning(engine: Engine, job: JobRecord, path: string): Promise<string | undefined> {
+  if (job.status === "scraping") return undefined;
+  if ((await engine.jobs.store.robotsBlocked(job.id)).length > 0) {
+    return `One or more pages could not be crawled because the site's robots.txt disallows them. See the robotsBlocked list on GET ${path}/${job.id}/errors. Set ignoreRobotsTxt: true to crawl them anyway.`;
+  }
+  if (
+    job.kind === "crawl" &&
+    job.completed <= 1 &&
+    job.url &&
+    !isSiteRoot(job.url) &&
+    !(job.options as { crawlEntireDomain?: boolean }).crawlEntireDomain
+  ) {
+    return `Only ${job.completed} result(s) found. For broader coverage, try crawling with crawlEntireDomain=true or start from a higher-level path like ${new URL(job.url).origin}/`;
+  }
+  return undefined;
+}
+
+const jobStatus = async (engine: Engine, kind: JobKind, id: string, skip: number, limit: number | undefined, statusUrl: string) => {
   const job = await engine.getJob(id, kind);
-  const { data, nextSkip } = await engine.jobs.store.documentsJson(id, skip, PAGE_BUDGET_CHARS);
+  const { data, nextSkip, cursor } = await engine.jobs.store.documentsJson(id, skip, PAGE_BUDGET_CHARS, limit);
+  // A running job may still produce documents, so it always has a next page: the cursor, even when nothing is new yet.
+  const next = nextSkip ?? (job.status === "scraping" ? cursor : null);
+  const finishedAt = job.finishedAt;
+  const warning = await statusWarning(engine, job, new URL(statusUrl).pathname.replace(/\/[^/]+$/, ""));
   const head: Omit<z.input<typeof JobStatusResponse>, "data"> = {
     success: true,
     status: job.status,
@@ -72,7 +99,12 @@ const jobStatus = async (engine: Engine, kind: JobKind, id: string, skip: number
     completed: job.completed,
     creditsUsed: job.completed,
     expiresAt: new Date(job.expiresAt).toISOString(),
-    next: nextSkip === null ? null : `${statusUrl}?skip=${nextSkip}`,
+    createdAt: new Date(job.createdAt).toISOString(),
+    ...(finishedAt === undefined ? {} : { completedAt: new Date(finishedAt).toISOString() }),
+    duration: Math.max(0, (finishedAt ?? Date.now()) - job.createdAt) / 1000,
+    ...(job.status === "failed" && job.error ? { error: job.error } : {}),
+    ...(warning ? { warning } : {}),
+    next: next === null ? null : `${statusUrl}?skip=${next}${limit ? `&limit=${limit}` : ""}`,
   };
   // `{...head,"data":[doc,doc,...]}`
   const parts: Array<string | Uint8Array> = [JSON.stringify(head).slice(0, -1), ',"data":['];
@@ -92,6 +124,17 @@ const cancel = async (engine: Engine, kind: JobKind, id: string) => {
   await engine.cancelJob(await engine.getJob(id, kind));
   return { success: true as const, status: "cancelled" as const };
 };
+
+const activeCrawls = async (engine: Engine) => ({
+  success: true as const,
+  crawls: (await engine.jobs.store.active("crawl")).map((j) => ({
+    id: j.id,
+    teamId: "local",
+    url: j.url ?? "",
+    created_at: new Date(j.createdAt).toISOString(),
+    options: redactOptions(j.options),
+  })),
+});
 
 const errorsOf = async (engine: Engine, kind: JobKind, id: string) => {
   await engine.getJob(id, kind);
@@ -114,21 +157,24 @@ export const router = {
       .input(CrawlRequest)
       .output(JobCreatedResponse)
       .handler(async ({ input, context }) => {
-        const job = await context.engine.crawl(input);
-        return { success: true as const, id: job.id, url: `${context.origin}/v2/crawl/${job.id}` };
+        const { job, promptGeneratedOptions } = await context.engine.startCrawl(input);
+        return {
+          success: true as const,
+          id: job.id,
+          url: `${context.origin}/v2/crawl/${job.id}`,
+          ...(promptGeneratedOptions
+            ? { promptGeneratedOptions, finalCrawlerOptions: redactOptions(job.options) as Record<string, unknown> }
+            : {}),
+        };
       }),
     active: base
       .route({ method: "GET", path: "/v2/crawl/active", tags: ["Crawl"], summary: "List running crawls" })
       .output(ActiveCrawlsResponse)
-      .handler(async ({ context }) => ({
-        success: true as const,
-        crawls: (await context.engine.jobs.store.active("crawl")).map((j) => ({
-          id: j.id,
-          teamId: "local",
-          url: j.url ?? "",
-          options: redactOptions(j.options),
-        })),
-      })),
+      .handler(({ context }) => activeCrawls(context.engine)),
+    ongoing: base
+      .route({ method: "GET", path: "/v2/crawl/ongoing", tags: ["Crawl"], summary: "List running crawls (alias of /v2/crawl/active)" })
+      .output(ActiveCrawlsResponse)
+      .handler(({ context }) => activeCrawls(context.engine)),
     paramsPreview: base
       .route({
         method: "POST",
@@ -153,7 +199,7 @@ export const router = {
       .input(JobStatusInput)
       .output(RawJobStatusResponse)
       .handler(({ input, context }) =>
-        jobStatus(context.engine, "crawl", input.id, input.skip ?? 0, `${context.origin}/v2/crawl/${input.id}`),
+        jobStatus(context.engine, "crawl", input.id, input.skip ?? 0, input.limit, `${context.origin}/v2/crawl/${input.id}`),
       ),
     cancel: base
       .route({ method: "DELETE", path: "/v2/crawl/{id}", tags: ["Crawl"], summary: "Cancel a crawl" })
@@ -192,7 +238,7 @@ export const router = {
       .input(JobStatusInput)
       .output(RawJobStatusResponse)
       .handler(({ input, context }) =>
-        jobStatus(context.engine, "batch_scrape", input.id, input.skip ?? 0, `${context.origin}/v2/batch/scrape/${input.id}`),
+        jobStatus(context.engine, "batch_scrape", input.id, input.skip ?? 0, input.limit, `${context.origin}/v2/batch/scrape/${input.id}`),
       ),
     cancel: base
       .route({ method: "DELETE", path: "/v2/batch/scrape/{id}", tags: ["Batch scrape"], summary: "Cancel a batch scrape" })
@@ -204,6 +250,34 @@ export const router = {
       .input(JobIdInput)
       .output(JobErrorsResponse)
       .handler(({ input, context }) => errorsOf(context.engine, "batch_scrape", input.id)),
+  },
+
+  concurrencyCheck: base
+    .route({ method: "GET", path: "/v2/concurrency-check", tags: ["Team"], summary: "Tasks running now and the concurrency limit" })
+    .output(ConcurrencyCheckResponse)
+    .handler(async ({ context }) => ({
+      success: true as const,
+      concurrency: (await context.engine.jobs.queue.counts()).active,
+      maxConcurrency: context.engine.config.concurrency,
+    })),
+
+  team: {
+    queueStatus: base
+      .route({ method: "GET", path: "/v2/team/queue-status", tags: ["Team"], summary: "Tasks in the queue" })
+      .output(QueueStatusResponse)
+      .handler(async ({ context }) => {
+        const { store, queue } = context.engine.jobs;
+        const { active, waiting } = await queue.counts();
+        const last = await store.lastCompletedAt();
+        return {
+          success: true as const,
+          jobsInQueue: active + waiting,
+          activeJobsInQueue: active,
+          waitingJobsInQueue: waiting,
+          maxConcurrency: context.engine.config.concurrency,
+          mostRecentSuccess: last === undefined ? null : new Date(last).toISOString(),
+        };
+      }),
   },
 
   extract: {
@@ -229,6 +303,8 @@ export const router = {
           ...(job.warning ? { warning: job.warning } : {}),
           ...(job.sources ? { sources: job.sources } : {}),
           expiresAt: new Date(job.expiresAt).toISOString(),
+          creditsUsed: job.completed,
+          ...(job.tokensUsed === undefined ? {} : { tokensUsed: job.tokensUsed }),
         };
       }),
   },
