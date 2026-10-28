@@ -182,21 +182,37 @@ async function sexExtract(doc, opts, runDefuddle) {
     for (const c of clones) doc.body.appendChild(c);
   }
 
+  // Defuddle's own options for "the whole body, nothing removed or scored".
+  const BODY_ONLY = {
+    contentSelector: "body",
+    removeExactSelectors: false,
+    removePartialSelectors: false,
+    removeLowScoring: false,
+    removeSmallImages: false,
+  };
+  // The same, without the content-pattern pass and the standardizing pass either, which are most of what is left on a huge page.
+  const CONVERT_ONLY = { ...BODY_ONLY, removeContentPatterns: false, standardize: false };
+  const run = (extra) => runDefuddle(doc, { url: opts.url, separateMarkdown: true, useAsync: false, ...extra });
+  const notes = [];
   const full = scoped || opts.onlyMainContent === false;
-  const result = await runDefuddle(doc, {
-    url: opts.url,
-    separateMarkdown: true,
-    useAsync: false,
-    ...(full
-      ? {
-          contentSelector: "body",
-          removeExactSelectors: false,
-          removePartialSelectors: false,
-          removeLowScoring: false,
-          removeSmallImages: false,
-        }
-      : {}),
-  });
+  // Defuddle clones the document for each run, so a second run sees the same page. Its selector removal and scoring
+  // cost grows with the number of elements (seconds for tens of thousands; see scripts/bench-extract.ts), so past
+  // `maxScoredElements` the page is only converted, as a whole.
+  const elements = full ? 0 : doc.querySelectorAll("*").length;
+  const huge = !full && elements > (opts.maxScoredElements ?? 30000);
+  let result = await run(huge ? CONVERT_ONLY : full ? BODY_ONLY : {});
+  if (huge) {
+    notes.push(
+      `The page has ${elements} elements, so its main content was not detected (that takes too long on a page this size); the whole body was converted, navigation and other page furniture included.`,
+    );
+  } else if (!full && (result.wordCount || 0) < 20) {
+    // Main-content detection kept (almost) nothing: take the whole body when that gives more.
+    const whole = await run(BODY_ONLY);
+    if ((whole.wordCount || 0) > (result.wordCount || 0)) {
+      result = whole;
+      notes.push("No main content was detected on the page, so the whole body was converted.");
+    }
+  }
 
   return {
     metadata,
@@ -206,6 +222,7 @@ async function sexExtract(doc, opts, runDefuddle) {
     attributes,
     html: result.content || "",
     markdown: result.contentMarkdown || "",
+    notes,
     defuddle: {
       title: result.title || "",
       description: result.description || "",

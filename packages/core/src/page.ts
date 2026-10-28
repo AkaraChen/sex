@@ -12,6 +12,8 @@ export interface PageExtractOptions {
   wantLinkTitles?: boolean;
   wantImages: boolean;
   attributes?: Array<{ selector: string; attribute: string }>;
+  /** Pages with more elements than this are converted whole, without main-content detection (default 30000; tests and the benchmark lower or raise it). */
+  maxScoredElements?: number;
 }
 
 export interface PageExtractResult {
@@ -23,6 +25,8 @@ export interface PageExtractResult {
   /** Cleaned HTML (main content unless onlyMainContent=false). */
   html: string;
   markdown: string;
+  /** What the extraction did that the caller should hear about (it became the `warning` of the document). */
+  notes: string[];
   defuddle: {
     title: string;
     description: string;
