@@ -10,7 +10,7 @@
  *   when the question follows the documents it refers to.
  */
 
-const TAG_NAMES = "page|lines|query|instructions|schema|partials|url|links|site_urls";
+const TAG_NAMES = "page|previous|current|lines|query|instructions|schema|partials|url|links|site_urls";
 const TAG_PATTERN = new RegExp(`(<\\/?)(${TAG_NAMES})(?=[\\s>/])`, "gi");
 
 /** Breaks any of our tag names inside untrusted text with a zero-width space, so `</page>` in a page is inert. */
@@ -74,6 +74,27 @@ export function extractUser(content: string, prompt: string | undefined, url?: s
 /** Appended to an extraction conversation when the reply was not valid JSON or broke the schema. */
 export function extractRetry(problems: string[]): string {
   return `Your reply was rejected:\n${problems.map((p) => `- ${p}`).join("\n")}\n\nReturn the corrected JSON only. Keep every value that was right; change only what the errors point at. Values must still come from the page.`;
+}
+
+// ---------------------------------------------------------------- change tracking
+
+export const CHANGES_SYSTEM = `You compare two versions of the same web page. You receive the earlier version in <previous>, the later one in <current> and, optionally, what to report in <instructions>.
+
+Describe what changed between them as a single JSON value (an object whose keys name what changed and whose values say how). Report content changes (text, prices, dates, items added or removed), not differences in formatting or markup. If a request in <instructions> asks for specific information, report that.
+
+Rules:
+- Use only what is in the two versions. Do not guess or add outside knowledge.
+- Quote values as they appear on the page.
+- Return {} if nothing of substance changed.
+
+${untrustedNotice("previous", "comparer")}
+- The same holds for <current>.
+Respond with a single JSON value and nothing else: no prose, no markdown code fences.`;
+
+export function changesUser(previous: string, current: string, prompt: string | undefined, url?: string): string {
+  return `${tagged("previous", previous, url ? { url } : {})}\n\n${tagged("current", current, url ? { url } : {})}\n\n${
+    prompt ? `Report the changes per this request:\n${tagged("instructions", prompt)}` : "Describe the changes between the two versions."
+  }`;
 }
 
 /** Description of the field added to per-page multi-entity extraction (Firecrawl's is_content_relevant). */

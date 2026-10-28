@@ -190,7 +190,7 @@ SSRF 防护在代理之前仍然生效：
 | `SEX_EXTRACT_WILDCARD_PAGES` | — | `25` | extract 的 URL 以 `/*` 结尾时，最多展开的页面数（请求里的 `limit` 优先） |
 | `SEX_DOCS_CONCURRENCY` | — | `min(2, CPU 核数 - 1)`，至少 1 | 同时用 here-docs 转换的文档数，超出的排队（排队时间计入请求的 `timeout`） |
 | `SEX_EXTRACT_WORKERS` | — | `min(4, CPU 核数 - 1)`，至少 1 | HTML/PDF 解析的 worker 线程数；`0` 表示在主线程解析 |
-| `SEX_DATA_DIR` | `--data-dir` | `serve`：`$XDG_DATA_HOME/sex` 或 `~/.local/share/sex`；Docker：`/data` | 任务数据库和任务队列（SQLite）所在目录，抓到的文档默认也在这里（`documents/`）；`search` / `fetch` 不使用 |
+| `SEX_DATA_DIR` | `--data-dir` | `serve`：`$XDG_DATA_HOME/sex` 或 `~/.local/share/sex`；Docker：`/data` | 任务数据库和任务队列（SQLite）所在目录，抓到的文档默认也在这里（`documents/`），页面缓存（`cache.sqlite`）和变更追踪（`change-tracking.sqlite`）也在这里；`search` / `fetch` 不使用 |
 | `SEX_DOCUMENTS_URL` | `serve --documents-url` | `SEX_DATA_DIR/documents` | 任务抓到的文档存在哪里：`s3://bucket/prefix`（prefix 可省略；endpoint、凭据、region 读 Bun 的 `S3_ENDPOINT`、`S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY`、`S3_REGION`，或对应的 `AWS_*`）或 `file:///绝对路径`，其它值报 `CONFIG_INVALID`。一个 prefix（或目录）只能给一个 sex 实例用。见[任务队列](#任务队列) |
 | `SEX_JOB_TTL_MS` | — | `86400000`（24 小时，最小 60000） | 任务结束后的保留时间（从结束时开始算，运行中的任务不会过期） |
 | `SEX_CACHE_MAX_AGE_MS` | — | `0`（不用缓存） | 请求没给 `maxAge` 时用的 `maxAge`（毫秒）。`0` 表示请求不给 `maxAge` 时完全不用缓存（不读也不写）；要默认用缓存就设成比如 `172800000`（Firecrawl 的默认值，两天）。见[页面缓存](#页面缓存) |
@@ -212,6 +212,17 @@ SSRF 防护在代理之前仍然生效：
 - **读写**：`maxAge`（毫秒）内的缓存命中；没命中就现抓，并写入缓存，除非 `storeInCache: false`。请求里明确给 `maxAge: 0`（和 Firecrawl 一致）是不读缓存、照常现抓，但仍然写入，用来刷新一条缓存。`metadata.cacheState` 是 `hit` / `miss`，命中时还有 `metadata.cachedAt`（写入时间，ISO 8601）。`lockdown` 和 `minAge` 只读缓存，永远不抓页面：`minAge` 要求缓存至少这么旧，没给 `maxAge` 时上限是 `SEX_CACHE_TTL_MS`，没有符合的缓存（或请求本来就不缓存）返回 `404 SCRAPE_NO_CACHED_DATA`。
 - **过期与容量**：超过 `SEX_CACHE_TTL_MS` 的在启动时和之后每 10 分钟（写入时检查）删除；总大小超过 `SEX_CACHE_MAX_BYTES` 时删最久没被用到的；压缩后超过上限 1/8 的单个页面不缓存。缓存文件打不开或不是数据库时重建。
 - **命中和现抓的差别**：浏览器渲染的页面存的是渲染后的 HTML，命中时在 Node 里用 linkedom 重新解析，而现抓是在浏览器里跑页面脚本，个别页面的结果会有细微差别；命中时 `mobile` 没有浏览器的 warning 也不再出现。crawl、batch 和 search 的 `scrapeOptions` 里给 `maxAge` 同样生效。
+
+### 变更追踪
+
+`formats: ["markdown", { "type": "changeTracking", "modes": ["git-diff", "json"], "tag": "daily" }]` 把这次抓到的页面和同一个 URL（和 `tag`）上一次抓到的比较，结果在文档的 `changeTracking` 里，字段和 Firecrawl 一样：`changeStatus`（`new` / `same` / `changed` / `removed`）、`previousScrapeAt`（上一次抓取时间，ISO 8601，第一次是 `null`）、`visibility`、`diff`、`json`。只有 sex 支持；sex-lite 和没有 `SEX_DATA_DIR` 的 sex 返回 `501 NOT_SUPPORTED`（提示里写明怎么开）。
+
+- **存储**：`SEX_DATA_DIR/change-tracking.sqlite`（bun:sqlite），每个 (URL, tag) 一行，存最近一次的 markdown（zstd 压缩）。新的抓取直接覆盖旧的，**不过期、不淘汰**，也不是页面缓存（缓存会过期和淘汰，这里存的是下一次比较的唯一依据）。文件打不开时 `changeTracking` 不返回、文档带 `warning`，不会悄悄重建成全部 `new`。URL 是请求的 URL（`sourceURL`），`tag` 为空串等于没给 `tag`。
+- **`changeStatus`**（Firecrawl 的规则）：没有上一次是 `new`；页面返回 404 是 `removed`；否则去掉空白和 `[iframe](…)` 后，字符一样（和顺序无关）就是 `same`，不然 `changed`。只有 2xx 的页面会写入，所以 404 或错误页不会成为下一次的比较对象。必须同时请求 `markdown`，否则 `400`。上传（`/v2/parse`）不支持。
+- **`modes`**（只在 `changed` 时给）：`git-diff` 给 `diff.text`（`previous.md` → `current.md` 的 unified diff，3 行上下文）和 `diff.json`（Firecrawl 的 `{ files: [{ from, to, chunks: [{ content, changes }] }] }` 结构），用 [jsdiff](https://github.com/kpdecker/jsdiff) 生成，页面太大、5 秒内比不完时跳过并加 warning。`json` 需要 LLM（没有是 `501 LLM_NOT_CONFIGURED`）：给了 `schema` 就对两个版本各抽取一次、逐个顶层字段比较（`{ 字段: { previous, current } }`）；没给就让 LLM 按 `prompt` 描述两个版本的差别。LLM 调用失败只丢掉 `json`（带 warning），不影响抓取和写入。
+- **`visibility`** 总是 `visible`：Firecrawl 的 `hidden` 是 crawl 里不在范围内的 URL，sex 没有这个概念。
+- 和 Firecrawl 的差别：Firecrawl 在带 `changeTracking` 时把 `waitFor` 提到 5 秒、`timeout` 提到 60 秒，sex 不改（`json` 模式照常按 LLM 格式给至少 60 秒）；不带 `changeTracking` 的抓取不会更新记录；`changed` 判断和 Firecrawl 一样不看字符顺序，调换段落顺序不算变化（`git-diff` 因此可能比 `changeStatus` 看到更多）。
+- 同一个 (URL, tag) 并发抓取时后写入的覆盖先写入的，没有锁。
 
 ## 任务队列
 
@@ -291,7 +302,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 
 - 不鉴权，`Authorization` 头会被忽略。
 - `blockAds` 默认 true 且真的生效，但只在浏览器路径上，用 EasyList / EasyPrivacy 的域名表按 label 匹配（Firecrawl 的 playwright-service 是 13 个域名的子串匹配），见[浏览器](#浏览器)。
-- 不支持 `screenshot`、`deterministicJson`、`changeTracking`、`branding`、`product`、`menu`、`audio`、`video` 这几种格式，以及 `screenshot` / `pdf` 这两种 action，会返回 `501 NOT_SUPPORTED`。
+- 不支持 `screenshot`、`deterministicJson`、`branding`、`product`、`menu`、`audio`、`video` 这几种格式，以及 `screenshot` / `pdf` 这两种 action，会返回 `501 NOT_SUPPORTED`。`changeTracking` 只有 sex 且有数据目录时支持，见[变更追踪](#变更追踪)，否则同样是 501。
 - 没做的参数不会静默丢掉：
   - `redactPII`、`zeroDataRetention`（scrape、search）、`onlyCleanContent` 为真时返回 `501 NOT_SUPPORTED`。
   - `maxAge`、`storeInCache`、`minAge`、`lockdown` 见[页面缓存](#页面缓存)。**默认 `maxAge` 是 0（总是现抓），不是 Firecrawl 的两天**，要默认用缓存设 `SEX_CACHE_MAX_AGE_MS`。sex-lite 和没有数据目录的 sex 没有缓存：`maxAge`、`storeInCache` 接受但没有效果，`lockdown`、`minAge` 返回 Firecrawl 的 `404 SCRAPE_NO_CACHED_DATA`，不去抓活页面。

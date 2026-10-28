@@ -52,7 +52,7 @@ await step("crawl cancel", async () => {
 });
 await step("error mapping", async () => {
   try {
-    await fc.scrape("https://example.com", { formats: ["changeTracking"] });
+    await fc.scrape("https://example.com", { formats: ["branding"] });
     return "unexpected success";
   } catch (err) {
     return (err as Error).message;
@@ -78,7 +78,7 @@ await step("deterministic failures are requested once", async () => {
     const cases: Array<[string, () => Promise<unknown>]> = [
       ["unknown host (SCRAPE_DNS_RESOLUTION_ERROR)", () => client.scrape("http://no-such-host.invalid/")],
       ["refused connection (SCRAPE_SITE_ERROR, or PRIVATE_NETWORK_BLOCKED)", () => client.scrape("http://127.0.0.1:1/")],
-      ["unsupported format (NOT_SUPPORTED)", () => client.scrape("https://example.com", { formats: ["changeTracking"] })],
+      ["unsupported format (NOT_SUPPORTED)", () => client.scrape("https://example.com", { formats: ["branding"] })],
     ];
     const out: Record<string, string> = {};
     for (const [name, call] of cases) {

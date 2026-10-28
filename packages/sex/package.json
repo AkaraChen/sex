@@ -17,6 +17,7 @@
     "bunqueue": "2.9.20",
     "citty": "^0.2.2",
     "defuddle": "^0.19.6",
+    "diff": "^9.0.0",
     "here-docs": "github:AkaraChen/here-docs#40febc7",
     "p-limit": "^7.3.3",
     "puppeteer-core": "^25.16.0",

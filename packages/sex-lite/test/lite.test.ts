@@ -71,6 +71,16 @@ describe("http", () => {
     expect(summary.body.error).toContain("sex-lite has no LLM");
   });
 
+  test("changeTracking is a 501 that points at sex", async () => {
+    const res = await call("POST", "/v2/scrape", {
+      url: `${site.url}/docs/b`,
+      formats: ["markdown", { type: "changeTracking", modes: ["git-diff"] }],
+    });
+    expect(res.status).toBe(501);
+    expect(res.body.code).toBe("NOT_SUPPORTED");
+    expect(res.body.error).toContain("sex supports it");
+  });
+
   test("options that cannot be honoured are refused or reported, not dropped", async () => {
     const redact = await call("POST", "/v2/scrape", { url: `${site.url}/docs/b`, redactPII: true });
     expect(redact.status).toBe(501);
