@@ -1,6 +1,6 @@
 import type { LimitFunction } from "p-limit";
 import { Deadline } from "./deadline.ts";
-import { AppError, badRequest, toAppError } from "./errors.ts";
+import { AppError, badRequest, toAppError, unsupported } from "./errors.ts";
 import { log } from "./log.ts";
 import { matchesQueryOperators, planOperatorQuery } from "./operators.ts";
 import type { Document, SearchData, SearchRequest } from "./schemas.ts";
@@ -189,6 +189,7 @@ export async function search(
   signal?: AbortSignal,
 ): Promise<{ data: SearchData; warning?: string }> {
   const limit = req.limit ?? DEFAULT_LIMIT;
+  if (req.zeroDataRetention) throw unsupported("zeroDataRetention");
   const wantsScrape = !!req.scrapeOptions?.formats?.length;
   if (wantsScrape) assertScrapeCapabilities(engine, req.scrapeOptions);
   if (req.includeDomains?.length && req.excludeDomains?.length) {

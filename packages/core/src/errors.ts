@@ -23,6 +23,8 @@ export const ERRORS = {
   BAD_REQUEST: spec(400),
   CONFIG_INVALID: spec(400),
   NOT_FOUND: spec(404),
+  /** `lockdown` / `minAge` ask for cached data only, and sex has no cache. */
+  SCRAPE_NO_CACHED_DATA: spec(404),
   JOB_FINISHED: spec(409),
   /** A browser action failed (selector not found, script threw): a property of the request, not of the site. */
   ACTION_FAILED: spec(400),

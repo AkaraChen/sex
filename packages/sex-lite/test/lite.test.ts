@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { resolveCoreConfig } from "@sex/core/config.ts";
 import type { BaseEngine } from "@sex/core/engine.ts";
 import { startFixtureSite, startMockSearxng, testCoreConfig } from "@sex/core/test/helpers.ts";
 import { liteEngine } from "../src/engine.ts";
@@ -67,6 +68,45 @@ describe("http", () => {
     expect(summary.status).toBe(501);
     expect(summary.body.code).toBe("LLM_NOT_CONFIGURED");
     expect(summary.body.error).toContain("sex-lite has no LLM");
+  });
+
+  test("options that cannot be honoured are refused or reported, not dropped", async () => {
+    const redact = await call("POST", "/v2/scrape", { url: `${site.url}/docs/b`, redactPII: true });
+    expect(redact.status).toBe(501);
+    const cached = await call("POST", "/v2/scrape", { url: `${site.url}/docs/b`, lockdown: true });
+    expect(cached.status).toBe(404);
+    expect(cached.body.code).toBe("SCRAPE_NO_CACHED_DATA");
+    const proxy = await call("POST", "/v2/scrape", { url: `${site.url}/docs/b`, proxy: "enhanced" });
+    expect(proxy.body.data.warning).toContain("your scrape may be partial");
+    const typo = await call("POST", "/v2/scrape", { url: site.url, parsers: ["pfd"] });
+    expect(typo.status).toBe(400);
+    const raw = await call("POST", "/v2/scrape", { url: `${site.url}/data.json`, formats: ["rawBase64"] });
+    expect(Buffer.from(raw.body.data.rawBase64, "base64").toString()).toContain("hello");
+  });
+
+  test("unknown fields are dropped, or 400 with SEX_STRICT_REQUESTS", async () => {
+    const lenient = await call("POST", "/v2/scrape", { url: `${site.url}/docs/b`, origin: "sdk" });
+    expect(lenient.status).toBe(200);
+    const strictEngine = liteEngine(
+      resolveCoreConfig({ allowPrivateNetwork: true }, { allowPrivateNetwork: true }, { SEX_STRICT_REQUESTS: "1" }),
+    );
+    const { app } = createApp(strictEngine);
+    const post = (path: string, body: unknown) =>
+      app.fetch(
+        new Request(`http://lite.test${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    const top = await post("/v2/scrape", { url: `${site.url}/docs/b`, origin: "sdk" });
+    expect(top.status).toBe(400);
+    expect(JSON.stringify(await top.json())).toContain('Unrecognized key in body: \\"origin\\"');
+    const nested = await post("/v2/search", { query: "docs", scrapeOptions: { formats: ["markdown"], bogus: 1 } });
+    expect(nested.status).toBe(400);
+    expect(JSON.stringify(await nested.json())).toContain("scrapeOptions.bogus");
+    expect((await post("/v2/scrape", { url: `${site.url}/docs/b`, formats: ["markdown"] })).status).toBe(200);
+    await strictEngine.close();
   });
 
   test("/health reports SearXNG only", async () => {

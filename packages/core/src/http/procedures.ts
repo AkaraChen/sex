@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { ORPCError, os } from "@orpc/server";
+import { z } from "zod";
 import type { BaseEngine } from "../engine.ts";
-import { AppError, toAppError } from "../errors.ts";
+import { AppError, badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import { ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse } from "../schemas.ts";
 
@@ -11,10 +12,31 @@ export interface HttpContext<E extends BaseEngine = BaseEngine> {
   origin: string;
 }
 
+/**
+ * With SEX_STRICT_REQUESTS: the first body field (nested object options included) that `schema` does not declare, as a dotted
+ * path. Zod strips unknown fields from the parsed input, so this looks at the raw one.
+ */
+function unknownField(schema: unknown, value: unknown, path = ""): string | undefined {
+  while (schema instanceof z.ZodOptional || schema instanceof z.ZodNullable) schema = schema.unwrap();
+  if (!(schema instanceof z.ZodObject) || typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const shape = schema.shape as Record<string, unknown>;
+  for (const [key, v] of Object.entries(value)) {
+    if (!(key in shape)) return `${path}${key}`;
+    const nested = unknownField(shape[key], v, `${path}${key}.`);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
 /** The procedure builder for a product's routes: AppErrors become oRPC errors so the response carries the right status and body. */
 export function procedureBase<E extends BaseEngine>() {
-  return os.$context<HttpContext<E>>().use(async ({ next }) => {
+  return os.$context<HttpContext<E>>().use(async ({ next, procedure, context }, input) => {
     try {
+      if (context.engine.config.strictRequests) {
+        const unknown = unknownField(procedure["~orpc"].inputSchema, input);
+        if (unknown)
+          throw badRequest(`Unrecognized key in body: "${unknown}" (SEX_STRICT_REQUESTS is on); see /docs for the accepted fields`);
+      }
       return await next();
     } catch (err) {
       if (err instanceof ORPCError) throw err;

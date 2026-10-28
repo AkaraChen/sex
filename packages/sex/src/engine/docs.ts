@@ -8,7 +8,7 @@ import type { ConvertEngine } from "here-docs";
 import pLimit from "p-limit";
 import type { Config } from "../config.ts";
 
-type HereDocs = typeof import("here-docs");
+export type HereDocs = typeof import("here-docs");
 
 /**
  * here-docs and its native engines embedded in the compiled binary by `scripts/build.ts`: node_modules-relative path ->
@@ -65,7 +65,11 @@ export class DocsConverter implements ScrapeDocs {
   /** light-ocr runs on one worker thread per engine, so more than a couple of conversions only pile up pages and memory. */
   private readonly limit: ReturnType<typeof pLimit>;
 
-  constructor(config: Config) {
+  /** `load` is where here-docs comes from; tests pass a controllable stand-in. */
+  constructor(
+    config: Config,
+    private readonly load: () => Promise<HereDocs> = loadHereDocs,
+  ) {
     this.enabled = config.docs;
     this.limit = pLimit(config.docsConcurrency);
   }
@@ -144,7 +148,7 @@ export class DocsConverter implements ScrapeDocs {
       const t0 = performance.now();
       let mod: HereDocs;
       try {
-        mod = await loadHereDocs();
+        mod = await this.load();
       } catch (err) {
         throw new AppError("DOCS_UNAVAILABLE", `SEX_DOCS is on but here-docs could not be loaded: ${(err as Error).message}`);
       }

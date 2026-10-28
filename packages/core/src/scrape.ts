@@ -3,9 +3,10 @@ import type { LimitFunction } from "p-limit";
 import { type BrowserScrapeResult, GUARD_MAX_CHARS, type ScrapeBrowser, type ScrapeDocs, type ScrapeLlm } from "./capabilities.ts";
 import type { CoreConfig } from "./config.ts";
 import { Deadline } from "./deadline.ts";
-import { AppError, browserRequired, llmRequired, toAppError, unsupported } from "./errors.ts";
+import { AppError, badRequest, browserRequired, llmRequired, toAppError, unsupported } from "./errors.ts";
 import type { ExtractPool } from "./extract-pool.ts";
 import { log } from "./log.ts";
+import { markdownToHtml } from "./markdown-html.ts";
 import { assertPublicUrl, decodeBody, MARKUP_TYPE, parseHttpUrl, safeFetch } from "./net.ts";
 import type { PageExtractResult } from "./page.ts";
 import { fileKindOf, rewriteUrl } from "./rewrite.ts";
@@ -33,6 +34,8 @@ export interface NormalizedFormats {
   markdown: boolean;
   html: boolean;
   rawHtml: boolean;
+  /** The file's bytes as base64; the only format of its request. */
+  rawBase64: boolean;
   links: boolean;
   images: boolean;
   summary: boolean;
@@ -47,6 +50,7 @@ export interface NormalizedFormats {
 const UNSUPPORTED_FORMATS = new Set([
   "screenshot",
   "screenshot@fullPage",
+  "deterministicJson",
   "changeTracking",
   "branding",
   "product",
@@ -60,17 +64,20 @@ export function normalizeFormats(formats: FormatOption[] | undefined): Normalize
     markdown: false,
     html: false,
     rawHtml: false,
+    rawBase64: false,
     links: false,
     images: false,
     summary: false,
   };
-  for (const f of formats?.length ? formats : ["markdown" as const]) {
+  const list = formats?.length ? formats : ["markdown" as const];
+  for (const f of list) {
     const type = typeof f === "string" ? f : f.type;
     if (UNSUPPORTED_FORMATS.has(type)) throw unsupported(`The "${type}" format`);
     switch (type) {
       case "markdown":
       case "html":
       case "rawHtml":
+      case "rawBase64":
       case "links":
       case "images":
       case "summary":
@@ -98,6 +105,7 @@ export function normalizeFormats(formats: FormatOption[] | undefined): Normalize
       }
     }
   }
+  if (out.rawBase64 && list.length > 1) throw badRequest("The rawBase64 format cannot be combined with other formats");
   return out;
 }
 
@@ -112,6 +120,7 @@ export function needsLlm(f: NormalizedFormats): string | undefined {
 /** Validates options that need a browser or LLM so jobs can fail before doing any work. */
 export function assertScrapeCapabilities(ctx: ScrapeContext, options: ScrapeOptions | undefined): NormalizedFormats {
   const formats = normalizeFormats(options?.formats);
+  if (options) assertSupportedOptions(options, formats);
   const unsupportedAction = options?.actions?.find((a) => a.type === "screenshot" || a.type === "pdf");
   if (unsupportedAction) throw unsupported(`The "${unsupportedAction.type}" action`);
   if (!ctx.browser?.enabled) {
@@ -121,6 +130,48 @@ export function assertScrapeCapabilities(ctx: ScrapeContext, options: ScrapeOpti
   if (llmFeature && !ctx.llm?.enabled) throw llmRequired(llmFeature, ctx.missingHints?.llm);
   if (formats.json?.schema) ctx.llm?.checkSchema(formats.json.schema);
   return formats;
+}
+
+/** Options that ask for something this server cannot do: refused instead of silently dropped. */
+function assertSupportedOptions(options: ScrapeOptions, formats: NormalizedFormats): void {
+  if (options.redactPII) throw unsupported("redactPII");
+  if (options.zeroDataRetention) throw unsupported("zeroDataRetention");
+  if (options.onlyCleanContent) throw unsupported("onlyCleanContent");
+  // Both ask for stored data only; nothing is stored, and a live fetch would break what the caller asked for.
+  if (options.lockdown || options.minAge !== undefined) {
+    throw new AppError(
+      "SCRAPE_NO_CACHED_DATA",
+      `No cached data is available: ${options.lockdown ? "lockdown" : "minAge"} only reads from a cache, and this server has none.`,
+    );
+  }
+  if (formats.rawBase64) {
+    if (options.checkPromptInjection)
+      throw badRequest("checkPromptInjection scans page markdown and cannot be used with the rawBase64 format");
+    if (options.actions?.length) throw badRequest("actions need a browser render and cannot be used with the rawBase64 format");
+  }
+  if (options.fastMode && options.actions?.length) throw badRequest("fastMode skips the browser, which actions need");
+}
+
+/** Options that are accepted but have no effect; Firecrawl's wording for a scrape that may be missing something. */
+function ignoredOptionWarnings(options: ScrapeOptions): string[] {
+  const partial = "your scrape may be partial";
+  const out: string[] = [];
+  if (options.proxy === "stealth" || options.proxy === "enhanced") {
+    out.push(`proxy "${options.proxy}" is not available; the page was fetched directly -- ${partial}`);
+  }
+  if (options.location?.country) out.push(`location.country is not used for geo-targeting -- ${partial}`);
+  const jsonModel = options.formats?.some((f) => typeof f === "object" && f.type === "json" && "model" in f && f.model);
+  if (jsonModel) out.push("The json format's model is ignored; the model is the server's SEX_LLM_MODEL");
+  const unused = new Set<string>();
+  for (const p of options.parsers ?? []) {
+    if (typeof p === "string" || p.type !== "pdf") continue;
+    for (const key of ["mode", "pages", "pageMarkdown", "blocks", "pageMarkers", "refresh"] as const) {
+      const v = p[key];
+      if (v !== undefined && v !== false && v !== "auto") unused.add(key);
+    }
+  }
+  if (unused.size) out.push(`The pdf parser options ${[...unused].join(", ")} are not supported and were ignored`);
+  return out;
 }
 
 export interface ScrapeInternalOptions {
@@ -205,7 +256,8 @@ async function scrapeInner(
   internal: ScrapeInternalOptions,
 ): Promise<ScrapeOutcome> {
   const { config } = ctx;
-  const browser = ctx.browser?.enabled ? ctx.browser : undefined;
+  // fastMode: no rendering, only the HTTP fetch.
+  const browser = ctx.browser?.enabled && !options.fastMode ? ctx.browser : undefined;
   const docs = ctx.docs?.enabled ? ctx.docs : undefined;
   const onlyMainContent = options.onlyMainContent ?? true;
   const headers: Record<string, string> = { ...(options.headers ?? {}) };
@@ -222,7 +274,30 @@ async function scrapeInner(
     wantImages: formats.images,
     attributes: formats.attributes,
   };
-  const warnings: string[] = [];
+  const warnings: string[] = ignoredOptionWarnings(options);
+
+  const fetchBody = () =>
+    safeFetch(url, {
+      headers,
+      deadline,
+      allowPrivateNetwork: config.allowPrivateNetwork,
+      maxBodyBytes: config.maxBodyBytes,
+      skipTlsVerification: options.skipTlsVerification,
+      userAgent: options.mobile
+        ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+        : config.userAgent,
+    });
+
+  // The file as it is, whatever it is: never rendered, so the browser is not involved.
+  if (formats.rawBase64) {
+    const res = await fetchBody();
+    const document: Document = {
+      rawBase64: Buffer.from(res.body).toString("base64"),
+      metadata: responseMetadata(sourceUrl, res.url, res.status, res.contentType),
+    };
+    if (warnings.length) document.warning = warnings.join("; ");
+    return { document };
+  }
 
   const parsers = fileParsers(options.parsers);
   let browserResult: BrowserScrapeResult | undefined;
@@ -268,32 +343,43 @@ async function scrapeInner(
   }
 
   const fetchPage = async (warns: string[]): Promise<FetchedPage> => {
-    const res = await safeFetch(url, {
-      headers,
-      deadline,
-      allowPrivateNetwork: config.allowPrivateNetwork,
-      maxBodyBytes: config.maxBodyBytes,
-      skipTlsVerification: options.skipTlsVerification,
-      userAgent: options.mobile
-        ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
-        : config.userAgent,
-    });
+    const res = await fetchBody();
     const out: FetchedPage = { url: res.url, status: res.status, contentType: res.contentType, rawHtml: "" };
+    /** A converted document's `html` and `rawHtml` are its Markdown rendered; only worked out when asked for. */
+    const setMarkdown = (markdown: string) => {
+      out.plainMarkdown = markdown;
+      if (formats.html || formats.rawHtml) out.rawHtml = markdownToHtml(markdown);
+    };
     const isPdf = /application\/pdf/i.test(out.contentType) || startsWith(res.body, "%PDF-");
     if (isPdf) {
-      if (!parsers.pdf) throw new AppError("UNSUPPORTED_FILE", "PDF parsing is disabled by the parsers option");
+      if (!parsers.pdf) {
+        // Like Firecrawl: with the parser off the file itself comes back, base64 in markdown and html.
+        const base64 = Buffer.from(res.body).toString("base64");
+        out.plainMarkdown = base64;
+        out.rawHtml = base64;
+        out.contentType = "application/pdf";
+        warns.push("PDF parsing is disabled by the parsers option; markdown and html hold the file as base64");
+        return out;
+      }
       if (docs) {
         const doc = await convertDocument(docs, res.body, out.url, parsers.maxPages, deadline, warns);
-        out.plainMarkdown = doc.markdown;
-        out.pdfMeta = { numPages: doc.numPages };
+        setMarkdown(doc.markdown);
+        // `numPages` is what was converted, `totalPages` what the file has.
+        const converted =
+          doc.pagesConverted ?? (doc.numPages === undefined ? undefined : Math.min(doc.numPages, parsers.maxPages ?? doc.numPages));
+        out.pdfMeta = { numPages: converted, totalPages: doc.numPages };
       } else {
         const pdf = await ctx.extractPool.pdf(res.body, parsers.maxPages, deadline);
-        out.plainMarkdown = pdf.markdown;
-        out.pdfMeta = { title: pdf.title, numPages: pdf.numPages };
+        setMarkdown(pdf.markdown);
+        out.pdfMeta = { title: pdf.title, numPages: pdf.numPages, totalPages: pdf.totalPages };
+        if (pdf.numPages < pdf.totalPages) warns.push(`Extracted the first ${pdf.numPages} of ${pdf.totalPages} pages (parsers maxPages)`);
       }
       out.contentType ||= "application/pdf";
     } else if (!out.contentType && docs && isConvertibleByExtension(out.url, parsers.image)) {
-      out.plainMarkdown = (await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown;
+      setMarkdown((await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown);
+    } else if (docs && /^text\/csv/i.test(out.contentType)) {
+      // The URL need not say it is CSV (a Google Sheets export does not), so the content type becomes the file name.
+      setMarkdown((await convertDocument(docs, res.body, out.url, undefined, deadline, warns, "data.csv")).markdown);
     } else if (!out.contentType || MARKUP_TYPE.test(out.contentType)) {
       out.rawHtml = decodeBody(res.body, out.contentType);
       out.extracted = await ctx.extractPool.html(out.rawHtml, { ...extractOpts, url: out.url }, deadline);
@@ -303,7 +389,7 @@ async function scrapeInner(
       out.rawHtml = text;
     } else if (docs && (parsers.image || !/^image\//i.test(out.contentType))) {
       // Office documents, EPUB, RTF and (with the "image" parser) raster images; here-docs detects the format from the bytes.
-      out.plainMarkdown = (await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown;
+      setMarkdown((await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown);
     } else {
       throw new AppError("UNSUPPORTED_FILE", `Unsupported content type: ${out.contentType}`);
     }
@@ -377,15 +463,12 @@ async function scrapeInner(
     if (d.wordCount) metadata.wordCount = d.wordCount;
   }
   if (pdfMeta?.numPages) metadata.numPages = pdfMeta.numPages;
-  Object.assign(metadata, {
-    sourceURL: sourceUrl,
-    url: finalUrl,
-    statusCode: status,
-    contentType: contentType.split(";")[0]?.trim() || undefined,
-    scrapeId: randomUUID(),
-    proxyUsed: "basic",
-    cacheState: "miss",
-  });
+  if (pdfMeta?.totalPages) metadata.totalPages = pdfMeta.totalPages;
+  Object.assign(metadata, responseMetadata(sourceUrl, finalUrl, status, contentType));
+  // Without a browser (none configured, fastMode, or it failed) only the User-Agent says "mobile".
+  if (options.mobile && (page || !browserResult)) {
+    warnings.push("mobile only changes the User-Agent without a browser, and no mobile viewport is used -- your scrape may be partial");
+  }
 
   const doc: Document = { metadata };
   if (formats.markdown) doc.markdown = markdown;
@@ -449,6 +532,19 @@ async function scrapeInner(
   return { document: doc, links, linkTitles: extracted?.linkTitles };
 }
 
+/** The metadata every document has, whatever produced it. */
+function responseMetadata(sourceUrl: string, finalUrl: string, status: number, contentType: string) {
+  return {
+    sourceURL: sourceUrl,
+    url: finalUrl,
+    statusCode: status,
+    contentType: contentType.split(";")[0]?.trim() || undefined,
+    scrapeId: randomUUID(),
+    proxyUsed: "basic",
+    cacheState: "miss",
+  };
+}
+
 /** What a plain HTTP fetch of the page yielded. */
 interface FetchedPage {
   url: string;
@@ -457,7 +553,8 @@ interface FetchedPage {
   rawHtml: string;
   extracted?: PageExtractResult;
   plainMarkdown?: string;
-  pdfMeta?: { title?: string; numPages?: number };
+  /** `numPages`: pages extracted; `totalPages`: pages in the file. */
+  pdfMeta?: { title?: string; numPages?: number; totalPages?: number };
 }
 
 /** The least time a fallback HTTP fetch is started with; with less left the browser's own answer (or error) stands. */
@@ -491,11 +588,12 @@ function fileParsers(parsers: ScrapeOptions["parsers"]): { pdf: boolean; image: 
   if (parsers === undefined) return { pdf: true, image: true };
   const out: { pdf: boolean; image: boolean; maxPages?: number } = { pdf: false, image: false };
   for (const p of parsers) {
-    const type = typeof p === "string" ? p : p.type;
-    if (type === "image") out.image = true;
-    if (type !== "pdf") continue;
-    out.pdf = true;
-    if (typeof p !== "string" && p.maxPages !== undefined) out.maxPages = p.maxPages;
+    if (p === "image" || (typeof p === "object" && p.type === "image")) out.image = true;
+    if (p === "pdf") out.pdf = true;
+    if (typeof p === "object" && p.type === "pdf") {
+      out.pdf = true;
+      if (p.maxPages !== undefined) out.maxPages = p.maxPages;
+    }
   }
   return out;
 }
@@ -507,8 +605,9 @@ async function convertDocument(
   maxPages: number | undefined,
   deadline: Deadline,
   warnings: string[],
+  filenameHint?: string,
 ) {
-  const filename = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "") || undefined;
+  const filename = filenameHint ?? (decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "") || undefined);
   const doc = await docs.convert(body, { filename, maxPages, deadline });
   for (const w of doc.warnings) warnings.push(w.message);
   // Only when `maxPages` was what stopped the conversion; a timeout's partial result carries its own warning.
