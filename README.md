@@ -127,6 +127,17 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 - Lightpanda 1.0.2 已实测：支持带 headers 的 `Fetch.continueRequest` 和 `Network.setCookies`。它对 request interception 里暂停的请求会把 `Cookie` 头少报一个字符，所以 sex 不会把它传回浏览器，由 cookie jar 负责发送。
 - `X-Api-Key` 这类自定义的鉴权头不在上面的名单里，仍会发给页面的所有请求；需要限定范围的话请用 `Authorization`。
 
+**广告与追踪器拦截（`blockAds`）**：只作用于浏览器路径，默认开启（和 Firecrawl 一致），请求里传 `blockAds: false` 关闭。
+
+- 数据：EasyList 和 EasyPrivacy 里的域名规则，也就是 `||domain^`（可带 `$third-party`）和例外规则 `@@||domain^`，约 9 万条。带路径、通配符、其它选项的规则和页面元素隐藏规则不用。
+- 匹配：按域名的 label 从后往前做后缀匹配（`ads.example.com` 命中 `cdn.ads.example.com`，不命中 `badads.example.com`），不是子串匹配；例外规则优先于拦截规则。`$third-party` 规则只在请求离开目标页所在的可注册域名时生效（没有 public suffix list，用“两段或 `co.uk` 式三段”近似）。
+- 范围：子资源和 iframe 被拦截时直接中止；目标页本身的导航（包括重定向）永远不拦。浏览器不支持 request interception（部分 `--cdp-url` 浏览器）且没有别的策略需要它时，静默不拦截，不报错。
+- 数据怎么来：`packages/sex/scripts/adblock.ts` 固定了 EasyList 仓库的一个提交，按它的模板拉取各个子列表，提取域名后得到一个纯文本表，并固定该表的 SHA-256。`bun run build` 把它 zstd 压缩（约 600 KB）嵌入 `dist/sex`；第一次用到浏览器时解压并建 `Set`（约 30 ms，常驻内存增加约 10 MiB），之后每次查询不到 1 µs。从源码运行时，第一次用到会下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`；下载失败只打一条警告，不拦截，不影响抓取。升级规则：改 `EASYLIST_COMMIT`，运行 `bun packages/sex/scripts/adblock.ts` 取新 hash 填进 `ADBLOCK_TABLE_SHA256`。
+- 开销：拦截要让浏览器把每个请求交给 sex 决定，这一步（CDP 往返）才是成本，查表本身可以忽略。`serve` 默认没有开 `--allow-private-network`，内网保护本来就要拦截每个请求，`blockAds` 只多一次查表；开了 `--allow-private-network`（`search` / `fetch` 默认就开）且没有其它策略时，`blockAds` 会把拦截打开。在 Lightpanda 上，一个有 50 个子资源且没有一个命中广告表的页面，实测增加约 2–5%（约 80 µs / 请求）；真实的广告多的新闻页面里，被拦掉 4–13 个请求，页面反而更快，正文不变。复测：`bun packages/sex/scripts/bench-adblock.ts`。
+- **`SEX_BLOCK_MEDIA`**（`--block-media`）：另外拦截图片和音视频请求（按资源类型，不是扩展名），默认关。文本抓取不需要这些字节；`screenshot` 本来就不支持。
+
+**EasyList 的出处与许可**：广告域名表来自 [EasyList](https://easylist.to/) 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0。sex 只取其中的域名，派生出的域名表随 `dist/sex` 一起分发；具体的提交和校验和见 `packages/sex/scripts/adblock.ts`。
+
 ### 配置
 
 优先级：命令行 flag > `SEX_*` 环境变量 > 默认值。规则：
@@ -145,6 +156,7 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 | `SEX_LIGHTPANDA` | `--lightpanda` | `false` | 启动本地 Lightpanda 子进程；compose 里已设为 `1` |
 | `SEX_LIGHTPANDA_PATH`（回退 `LIGHTPANDA_EXECUTABLE_PATH`） | `--lightpanda-path` | 内置的二进制，没有时从 PATH 查找 | Lightpanda 可执行文件 |
 | `SEX_CDP_URL` | `--cdp-url` | 无 | 已有 CDP 浏览器的地址，如 `ws://127.0.0.1:9222`；和 `SEX_LIGHTPANDA` 同时设置时以它为准 |
+| `SEX_BLOCK_MEDIA` | `--block-media` | `false` | 浏览器路径额外拦截图片和音视频请求；广告拦截（`blockAds`）见[浏览器](#浏览器) |
 | `SEX_DOCS` | `--docs` | `false` | 用 here-docs 转换 PDF / Office 文档 / 图片（结构化 + 本地 OCR），见[文档转换](#文档转换) |
 | `SEX_LLM_MODEL` | `--llm-model` | 无（LLM 关闭） | 设置后开启 LLM 功能 |
 | `SEX_LLM_BASE_URL`（回退 `OPENAI_BASE_URL`） | `--llm-base-url` | `https://api.openai.com/v1` | OpenAI 兼容接口 |
@@ -207,8 +219,9 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 **和 Firecrawl 的差异**
 
 - 不鉴权，`Authorization` 头会被忽略。
+- `blockAds` 默认 true 且真的生效，但只在浏览器路径上，用 EasyList / EasyPrivacy 的域名表按 label 匹配（Firecrawl 的 playwright-service 是 13 个域名的子串匹配），见[浏览器](#浏览器)。
 - 不支持 `screenshot`、`changeTracking`、`branding`、`product`、`menu`、`audio`、`video` 这几种格式，以及 `screenshot` / `pdf` 这两种 action，会返回 `501 NOT_SUPPORTED`。
-- `maxAge`、`proxy`、`blockAds`、`storeInCache`、搜索的 `location` / `country` / `ignoreInvalidURLs`、extract 的 `allowExternalLinks` 等参数会接受但忽略，没有缓存也没有代理池。
+- `maxAge`、`proxy`、`storeInCache`、搜索的 `location` / `country` / `ignoreInvalidURLs`、extract 的 `allowExternalLinks` 等参数会接受但忽略，没有缓存也没有代理池。
 - `parsers` 支持 `"pdf"`（含 `maxPages`）和 `"image"`；PDF parser 的 `mode`、`pages`（`document.pages`）和 `blocks` 会接受但忽略。开了 `--docs` 时 PDF 的 `metadata.title` 不再取自 PDF 元数据（here-docs 不提供），标题以正文里的标题为准。
 - 搜索：SearXNG 请求遇到网络错误或 5xx 时，约 400 ms 后重试 1 次（在整体 deadline 内）；结果为空且 SearXNG 报告了 `unresponsive_engines`（如 Google 被 captcha）时，引擎和原因写进 `warning`。不传 `timeout` 时整个搜索（含 scrape）的 deadline 是 `max(SEX_TIMEOUT × 2, 60000)` ms。`includeDomains` 会去掉首尾空白、转小写并校验主机名（不合法返回 `400`），按域名并发的 SearXNG 查询在整个进程内共享 4 个并发。没有搜索结果缓存。
 - `links` / `images` 格式取自整个页面（含导航、页脚），不受 `onlyMainContent` 影响，这一点与 Firecrawl 只取主内容不同。`links` 去掉 `#fragment` 后去重、丢掉纯 `#fragment` 链接、保留 `mailto:`；`images` 包含 `srcset` 的全部候选、`<picture>` 的 `source`、`video[poster]` 以及 `og:image` / `og:image:secure_url` / `twitter:image`。`metadata` 里带映射名的 meta 同时有映射名（`ogTitle`）和原名（`og:title`）；`favicon` 只在页面声明时返回。

@@ -33,6 +33,8 @@ export interface BrowserScrapeOptions {
   requestGuard?: (url: string) => Promise<boolean>;
   /** Accept invalid TLS certificates (Chrome only; CDP Security.setIgnoreCertificateErrors). */
   skipTlsVerification?: boolean;
+  /** Abort requests to ad and tracker domains (EasyList / EasyPrivacy). The browser may not support it. */
+  blockAds?: boolean;
 }
 
 export interface BrowserScrapeResult {
@@ -42,6 +44,8 @@ export interface BrowserScrapeResult {
   /** Set when the response is not HTML; the caller should re-fetch over plain HTTP. */
   nonHtml?: boolean;
   rawHtml: string;
+  /** Requests aborted as ads or trackers. */
+  adsBlocked?: number;
   extracted?: PageExtractResult;
   actions?: {
     screenshots: string[];

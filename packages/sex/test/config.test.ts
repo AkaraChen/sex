@@ -117,6 +117,13 @@ test("integer bounds and boolean words are enforced", () => {
   expect(resolveConfig({}, undefined, { SEX_LIGHTPANDA: "Off" }).lightpanda).toBe(false);
 });
 
+test("SEX_BLOCK_MEDIA is off by default; the flag wins over the env", () => {
+  expect(resolveConfig({}, undefined, {}).blockMedia).toBe(false);
+  expect(resolveConfig({}, undefined, { SEX_BLOCK_MEDIA: "1" }).blockMedia).toBe(true);
+  expect(resolveConfig({ blockMedia: false }, undefined, { SEX_BLOCK_MEDIA: "1" }).blockMedia).toBe(false);
+  expect(configError(() => resolveConfig({}, undefined, { SEX_BLOCK_MEDIA: "maybe" })).message).toContain("SEX_BLOCK_MEDIA");
+});
+
 test("SEX_DOCS is off by default; the flag wins over the env", () => {
   expect(resolveConfig({}, undefined, {}).docs).toBe(false);
   expect(resolveConfig({}, undefined, { SEX_DOCS: "1" }).docs).toBe(true);

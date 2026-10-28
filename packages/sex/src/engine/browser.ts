@@ -14,6 +14,7 @@ import pLimit from "p-limit";
 import puppeteer, { type Page } from "puppeteer-core";
 import type { Config } from "../config.ts";
 import type { Action } from "../schemas.ts";
+import { type AdBlockList, loadAdBlockList } from "./adblock.ts";
 import { applyRequestPolicies } from "./browser-policy.ts";
 
 const MOBILE_UA =
@@ -140,7 +141,11 @@ export class BrowserPool implements ScrapeBrowser {
   private cooldownUntil = 0;
   private lastStartError = "";
 
-  constructor(private readonly config: Config) {
+  /** `adBlockList` is where the ad list comes from; tests and the benchmark swap it. */
+  constructor(
+    private readonly config: Config,
+    private readonly adBlockList: () => Promise<AdBlockList> = loadAdBlockList,
+  ) {
     this.limit = pLimit(config.concurrency);
   }
 
@@ -272,7 +277,8 @@ export class BrowserPool implements ScrapeBrowser {
 
   /** Eagerly start the browser so the first request does not pay for it. */
   async warmup(): Promise<void> {
-    if (this.enabled) await this.getEndpoint();
+    if (!this.enabled) return;
+    await Promise.all([this.getEndpoint(), this.adBlockList()]);
   }
 
   /**
@@ -332,10 +338,12 @@ export class BrowserPool implements ScrapeBrowser {
       await page.setViewport({ ...viewport, isMobile: !!opts.mobile }).catch(() => {});
 
       // Headers, cookies and request interception; see browser-policy.ts.
-      const { blockedNavigations: blockedDocs } = await applyRequestPolicies(page, {
+      const { blockedNavigations: blockedDocs, adsBlocked } = await applyRequestPolicies(page, {
         url: opts.url,
         headers: opts.headers,
         requestGuard: opts.requestGuard,
+        adBlockList: opts.blockAds ? await this.adBlockList() : undefined,
+        blockMedia: this.config.blockMedia,
       });
 
       if (opts.skipTlsVerification) {
@@ -363,7 +371,7 @@ export class BrowserPool implements ScrapeBrowser {
       }
       if (aborted) return { url: opts.url, status: 200, contentType: "", nonHtml: true, rawHtml: "" };
       const contentType = response?.headers()["content-type"] ?? "text/html";
-      const base = { url: page.url() || opts.url, status: response?.status() ?? 200, contentType };
+      const base = { url: page.url() || opts.url, status: response?.status() ?? 200, contentType, adsBlocked: adsBlocked() };
       if (!MARKUP_TYPE.test(contentType)) return { ...base, nonHtml: true, rawHtml: "" };
 
       if (opts.waitFor) await deadline.sleep(opts.waitFor, "while waiting (waitFor)");

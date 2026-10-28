@@ -237,6 +237,14 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
       expect(bHits).toEqual([]);
     });
 
+    test("work next to ad blocking: nothing on the page is an ad, so everything is loaded", async () => {
+      const result = await scrape("/creds", { blockAds: true });
+      expect(result.rawHtml).toContain("Credentials page");
+      expect(result.adsBlocked).toBe(0);
+      expect(aHeaders["/same.js"]?.get("authorization")).toBe("Bearer secret-token");
+      expect(bHeaders["/cdn.js"]).toBeDefined();
+    });
+
     test("the cookie arrives intact (it lives in the cookie jar, not in a request header)", async () => {
       await scrape("/page", { headers: { Cookie: "token=a=b==; short=x" } });
       expect(aHeaders["/page"]?.get("cookie")).toBe("token=a=b==; short=x");
