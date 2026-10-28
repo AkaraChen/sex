@@ -3,7 +3,7 @@ import { log } from "../log.ts";
 import type { MapLink, MapRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
-import { fetchRobots } from "./robots.ts";
+import { fetchRobots, type Robots } from "./robots.ts";
 import { scrapeUrl } from "./scrape.ts";
 import { clean, searxng } from "./search.ts";
 
@@ -32,9 +32,24 @@ const decodeXml = (raw: string) => {
     .trim();
 };
 
+export interface SitemapOptions {
+  /** Only URLs it accepts count toward `max`, so filtering happens before the limit instead of after it. */
+  accept?: (url: string) => boolean;
+  /** Directory the crawl stays in: its `sitemap.xml` is tried too. */
+  scopePath?: string;
+  /** Robots already fetched by the caller. */
+  robots?: Robots;
+}
+
 /** Collects page URLs from robots.txt sitemaps and /sitemap.xml, following sitemap indexes. */
-export async function sitemapUrls(engine: Engine, origin: string, max: number, signal?: AbortSignal): Promise<string[]> {
-  const robots = await fetchRobots(engine, origin, "sex", signal);
+export async function sitemapUrls(
+  engine: Engine,
+  origin: string,
+  max: number,
+  signal?: AbortSignal,
+  opts: SitemapOptions = {},
+): Promise<string[]> {
+  const robots = opts.robots ?? (await fetchRobots(engine, origin, "sex", signal));
   // Sitemap: lines may be relative; resolve them against the site's origin.
   const declared = robots.sitemaps.flatMap((sm) => {
     try {
@@ -43,7 +58,8 @@ export async function sitemapUrls(engine: Engine, origin: string, max: number, s
       return [];
     }
   });
-  const queue = Array.from(new Set([...declared, `${origin}/sitemap.xml`]));
+  const scoped = opts.scopePath && opts.scopePath !== "/" ? [`${origin}${opts.scopePath}sitemap.xml`] : [];
+  const queue = Array.from(new Set([...declared, `${origin}/sitemap.xml`, ...scoped]));
   const visited = new Set<string>();
   const urls = new Set<string>();
   while (queue.length && visited.size < MAX_SITEMAPS && urls.size < max) {
@@ -68,7 +84,7 @@ export async function sitemapUrls(engine: Engine, origin: string, max: number, s
         const loc = decodeXml(m[1] ?? "");
         if (!loc) continue;
         if (isIndex) queue.push(loc);
-        else if (urls.size < max) urls.add(loc);
+        else if (urls.size < max && (!opts.accept || opts.accept(loc))) urls.add(loc);
       }
     } catch (err) {
       log.debug("sitemap fetch failed", { sitemap: sm, error: err instanceof Error ? err.message : String(err) });
@@ -112,7 +128,7 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   };
 
   const titles = new Map<string, { title?: string; description?: string }>();
-  const fromSitemap = mode === "skip" ? Promise.resolve([]) : sitemapUrls(engine, start.origin, limit * 2, sig);
+  const fromSitemap = mode === "skip" ? Promise.resolve([]) : sitemapUrls(engine, start.origin, limit, sig, { accept: inScope });
   const fromPage =
     mode === "only"
       ? Promise.resolve([] as string[])

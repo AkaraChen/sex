@@ -27,6 +27,11 @@ const pages: Record<string, () => Response> = {
   "/r/": () => html("Redirects", `${link("/r/out")} ${link("/r/dup")} ${link("/r/block")} ${link("/r/target")}`),
   "/r/target": () => html("Target", ""),
   "/deep/page": () => html("Deep", ""),
+  "/files/": () =>
+    html("Files", `${link("/files/a.zip")} ${link("/files/b.png")} ${link("/files/c.mp4")} ${link("/files/d.pdf")} ${link("/files/page")}`),
+  "/files/page": () => html("File page", ""),
+  "/scoped/": () => html("Scoped", ""),
+  "/scoped/a": () => html("Scoped A", ""),
 };
 
 describe("crawl semantics", () => {
@@ -48,6 +53,17 @@ describe("crawl semantics", () => {
             headers: { "content-type": "application/xml" },
           });
         }
+        if (pathname === "/scoped/sitemap.xml") {
+          const locs = [1, 2, 3, 4, 5].map((n) => `${baseUrl}/o${n}`).concat(`${baseUrl}/scoped/a`);
+          return new Response(`<urlset>${locs.map((l) => `<url><loc>${l}</loc></url>`).join("")}</urlset>`, {
+            headers: { "content-type": "application/xml" },
+          });
+        }
+        if (pathname === "/ext/") {
+          return html("Ext", link(`http://localhost:${site.port}/ext/other`) + link(`http://localhost:${site.port}/`));
+        }
+        if (pathname === "/ext/other") return html("Other", link(`http://localhost:${site.port}/ext/deeper`) + link(`${baseUrl}/ext/back`));
+        if (pathname === "/ext/deeper" || pathname === "/ext/back") return html(pathname, "");
         if (pathname === "/r/out") return Response.redirect(`http://localhost:${site.port}/docs/intro`, 302);
         if (pathname === "/r/dup") return Response.redirect(`${baseUrl}/r/target`, 302);
         if (pathname === "/r/block") return Response.redirect(`${baseUrl}/private/x`, 302);
@@ -138,5 +154,34 @@ describe("crawl semantics", () => {
     expect(
       (await engine.jobs.store.errors(job.id)).some((e) => e.url === `${baseUrl}/r/out` && e.error.includes("outside the crawl scope")),
     ).toBe(true);
+  });
+
+  test("external links are followed one hop only, and never to an external home page", async () => {
+    const job = await finished(engine, await engine.crawl({ url: `${baseUrl}/ext/`, allowExternalLinks: true, sitemap: "skip" }));
+    expect(await sourceUrls(engine, job.id)).toEqual([`${baseUrl}/ext/`, `${baseUrl}/ext/back`, `http://localhost:${site.port}/ext/other`]);
+  });
+
+  test("links to archives, media and images are skipped, documents are kept", async () => {
+    const job = await finished(engine, await engine.crawl({ url: `${baseUrl}/files/`, sitemap: "skip" }));
+    const pagesCrawled = (await sourceUrls(engine, job.id)).concat((await engine.jobs.store.errors(job.id)).map((e) => e.url));
+    expect(pagesCrawled.some((u) => /\.(zip|png|mp4)$/.test(u))).toBe(false);
+    expect(pagesCrawled).toContain(`${baseUrl}/files/page`);
+    expect(pagesCrawled.some((u) => u.endsWith("/files/d.pdf"))).toBe(true);
+  });
+
+  test("sitemap URLs are filtered before the limit is applied and the scope directory's sitemap is read", async () => {
+    const job = await finished(engine, await engine.crawl({ url: `${baseUrl}/scoped/`, limit: 2 }));
+    expect(await sourceUrls(engine, job.id)).toEqual([`${baseUrl}/scoped/`, `${baseUrl}/scoped/a`]);
+  });
+
+  test("risky include/exclude regexes are rejected with 400", async () => {
+    await expect(engine.crawl({ url: `${baseUrl}/`, includePaths: ["^(a+)+$"] })).rejects.toMatchObject({ status: 400 });
+    await expect(engine.crawl({ url: `${baseUrl}/`, excludePaths: ["(a|a)*b"] })).rejects.toMatchObject({ status: 400 });
+  });
+
+  test("prompt-derived risky regexes are dropped", async () => {
+    llmReply = JSON.stringify({ includePaths: ["^(a+)+$", "^/blog"] });
+    const job = await llmEngine.crawl({ url: `${baseUrl}/`, prompt: "x" });
+    expect((job.options as Record<string, unknown>).includePaths).toEqual(["^/blog"]);
   });
 });
