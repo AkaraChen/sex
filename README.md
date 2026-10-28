@@ -174,6 +174,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - 不支持 `screenshot`、`changeTracking`、`branding`、`product`、`menu`、`audio`、`video` 这几种格式，以及 `screenshot` / `pdf` 这两种 action，会返回 `501 NOT_SUPPORTED`。
 - `maxAge`、`proxy`、`blockAds`、`storeInCache`、搜索的 `location` / `country` / `ignoreInvalidURLs`、extract 的 `allowExternalLinks` 等参数会接受但忽略，没有缓存也没有代理池。
 - `parsers` 支持 `"pdf"`（含 `maxPages`）和 `"image"`；PDF parser 的 `mode`、`pages`（`document.pages`）和 `blocks` 会接受但忽略。开了 `--docs` 时 PDF 的 `metadata.title` 不再取自 PDF 元数据（here-docs 不提供），标题以正文里的标题为准。
+- 搜索：SearXNG 请求遇到网络错误或 5xx 时，约 400 ms 后重试 1 次（在整体 deadline 内）；结果为空且 SearXNG 报告了 `unresponsive_engines`（如 Google 被 captcha）时，引擎和原因写进 `warning`。不传 `timeout` 时整个搜索（含 scrape）的 deadline 是 `max(SEX_TIMEOUT × 2, 60000)` ms。`includeDomains` 会去掉首尾空白、转小写并校验主机名（不合法返回 `400`），按域名并发的 SearXNG 查询在整个进程内共享 4 个并发。没有搜索结果缓存。
 - crawl 的 `delay` 通过给每个页面任务分配错开的执行时间来实现；`maxConcurrency` 不按单个任务限制，并发由 `SEX_CONCURRENCY` 决定。
 - crawl 遵守 robots.txt（RFC 9309）：robots.txt 返回 5xx 时视为全部禁止，返回 4xx 时视为全部允许。
 - 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
