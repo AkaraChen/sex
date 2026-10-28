@@ -114,6 +114,7 @@ export async function fetchRobots(engine: Engine, origin: string, userAgent: str
     const res = await safeFetch(`${origin}/robots.txt`, {
       deadline: deadline.slice(10_000),
       allowPrivateNetwork: engine.config.allowPrivateNetwork,
+      proxy: engine.config.proxyUrl,
       userAgent: engine.config.userAgent,
       maxBodyBytes: engine.config.maxBodyBytes,
     });

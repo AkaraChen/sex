@@ -65,6 +65,7 @@ describe("safeFetch redirect handling", () => {
   test("cross-origin redirect drops authorization, cookie and proxy-authorization but keeps other headers", async () => {
     await safeFetch(`${front.origin}/cross`, {
       allowPrivateNetwork: true,
+      proxy: undefined,
       deadline: Deadline.start(5_000),
       userAgent: "test",
       headers: { ...credentials, "proxy-authorization": "p" },
@@ -81,6 +82,7 @@ describe("safeFetch redirect handling", () => {
   test("same-origin redirect keeps authorization and cookie", async () => {
     await safeFetch(`${front.origin}/same`, {
       allowPrivateNetwork: true,
+      proxy: undefined,
       deadline: Deadline.start(5_000),
       userAgent: "test",
       headers: credentials,
@@ -94,6 +96,7 @@ describe("safeFetch redirect handling", () => {
   test("303 turns a POST into a bodiless GET on the next hop", async () => {
     await safeFetch(`${front.origin}/post-303`, {
       allowPrivateNetwork: true,
+      proxy: undefined,
       deadline: Deadline.start(5_000),
       userAgent: "test",
       method: "POST",
@@ -107,6 +110,7 @@ describe("safeFetch redirect handling", () => {
   test("307 keeps the POST method and body on the next hop", async () => {
     await safeFetch(`${front.origin}/post-307`, {
       allowPrivateNetwork: true,
+      proxy: undefined,
       deadline: Deadline.start(5_000),
       userAgent: "test",
       method: "POST",

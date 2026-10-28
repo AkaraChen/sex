@@ -343,6 +343,7 @@ async function scrapeInner(
       headers,
       deadline,
       allowPrivateNetwork: config.allowPrivateNetwork,
+      proxy: config.proxyUrl,
       maxBodyBytes: config.maxBodyBytes,
       skipTlsVerification: options.skipTlsVerification,
       userAgent: options.mobile
@@ -386,7 +387,7 @@ async function scrapeInner(
           ? undefined
           : async (u) => {
               try {
-                await assertPublicUrl(new URL(u), false);
+                await assertPublicUrl(new URL(u), false, !!config.proxyUrl);
                 return true;
               } catch {
                 return false;

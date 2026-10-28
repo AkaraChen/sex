@@ -13,6 +13,11 @@ export interface FetchOptions {
   /** Bounds the whole fetch (redirects and body included). Pass `deadline.slice(ms)` for a step budget of its own. */
   deadline: Deadline;
   allowPrivateNetwork: boolean;
+  /**
+   * Outbound proxy (`config.proxyUrl`). Required so a call site cannot forget it: pass `undefined` for a direct connection.
+   * With a proxy the proxy resolves the host name, so the request cannot be pinned to the validated address; see `safeFetch`.
+   */
+  proxy: string | undefined;
   skipTlsVerification?: boolean;
   userAgent: string;
   method?: "GET" | "POST" | "HEAD";
@@ -66,9 +71,10 @@ export function isPrivateIp(ip: string): boolean {
 /**
  * Resolves the URL's host and rejects it if any address is loopback/private/link-local (unless allowed). Returns the
  * validated addresses of a DNS name so the caller can connect to exactly those; empty for IP literals, or when private
- * networks are allowed or the name does not resolve.
+ * networks are allowed or the name does not resolve. With `requireResolvable` (a proxy will resolve the name on its own)
+ * a name that does not resolve here is refused: a name only the proxy's resolver knows could be an internal one.
  */
-export async function resolvePublicAddresses(url: URL, allowPrivateNetwork: boolean): Promise<string[]> {
+export async function resolvePublicAddresses(url: URL, allowPrivateNetwork: boolean, requireResolvable = false): Promise<string[]> {
   if (allowPrivateNetwork) return [];
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (host === "localhost" || host.endsWith(".localhost")) {
@@ -82,12 +88,18 @@ export async function resolvePublicAddresses(url: URL, allowPrivateNetwork: bool
       `Refusing to fetch private address: ${url.href} (start with --allow-private-network to permit)`,
     );
   }
+  if (requireResolvable && !addresses.length) {
+    throw new AppError(
+      "SCRAPE_DNS_RESOLUTION_ERROR",
+      `Could not resolve the host name of ${url.href} to check it before sending it through the proxy. Check that the domain exists.`,
+    );
+  }
   return literal ? [] : addresses;
 }
 
 /** Rejects URLs that point at loopback/private/link-local hosts unless allowed. */
-export async function assertPublicUrl(url: URL, allowPrivateNetwork: boolean): Promise<void> {
-  await resolvePublicAddresses(url, allowPrivateNetwork);
+export async function assertPublicUrl(url: URL, allowPrivateNetwork: boolean, requireResolvable = false): Promise<void> {
+  await resolvePublicAddresses(url, allowPrivateNetwork, requireResolvable);
 }
 
 /**
@@ -125,7 +137,14 @@ async function readLimited(res: Response, signal: AbortSignal, maxBytes: number)
   return out;
 }
 
-/** fetch() with SSRF checks on every redirect hop, a deadline and a body size cap. */
+/**
+ * fetch() with SSRF checks on every redirect hop, a deadline and a body size cap.
+ *
+ * Without a proxy each hop connects to the address that was validated (`pinToAddress`). With `opts.proxy` the proxy
+ * connects and resolves the host name itself, so the request cannot be pinned: the host is still resolved and checked here
+ * before every hop (a name that does not resolve here is refused), which stops a URL that points at a private address but
+ * not a DNS answer that changes between this check and the proxy's own lookup (rebinding). Closing that gap is the proxy's job.
+ */
 export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<FetchedResponse> {
   const { signal } = opts.deadline;
   let url = parseHttpUrl(rawUrl);
@@ -137,12 +156,15 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
     "accept-language": "en-US,en;q=0.9",
     ...lowerKeys(opts.headers ?? {}),
   };
+  // Headers the caller sets must not reach (or authenticate to) the proxy; the proxy's own credentials come from its URL.
+  if (opts.proxy) for (const name of ["proxy-authorization", "proxy-connection"]) delete headers[name];
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      const addresses = await resolvePublicAddresses(url, opts.allowPrivateNetwork);
+      const addresses = await resolvePublicAddresses(url, opts.allowPrivateNetwork, !!opts.proxy);
       // Connect to the validated addresses themselves (first one that connects wins), not to a fresh DNS answer.
-      // Without a lookup result (IP literal, private networks allowed) the URL is fetched as is.
-      const targets = addresses.length ? addresses.slice(0, MAX_PINNED_ADDRESSES) : [undefined];
+      // Without a lookup result (IP literal, private networks allowed) the URL is fetched as is, and so is every URL
+      // behind a proxy, which does its own lookup.
+      const targets = addresses.length && !opts.proxy ? addresses.slice(0, MAX_PINNED_ADDRESSES) : [undefined];
       let res: Response | undefined;
       let connectError: unknown;
       for (const address of targets) {
@@ -154,6 +176,7 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
             headers: pin ? { host: pin.host, ...headers } : headers,
             redirect: "manual",
             signal,
+            ...(opts.proxy ? { proxy: opts.proxy } : {}),
             // Bun-specific TLS options; ignored by other runtimes.
             ...(opts.skipTlsVerification || pin?.serverName
               ? {

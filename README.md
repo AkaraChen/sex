@@ -47,7 +47,7 @@ docker build --target lite -t sex-lite .
 
 - 能力：搜索（可带 `scrapeOptions`）；抓取支持 `markdown` / `html` / `rawHtml` / `rawBase64` / `links` / `images` / `attributes` 格式，HTML 用 Defuddle 提取，PDF 用 unpdf 抽纯文本。
 - 需要浏览器的选项（`actions`）和 LLM 格式（`json`、`summary` 等）返回 `501`，提示改用 sex；其它路由（如 `/v2/crawl`）是 `404`。
-- 配置：只认下表里 SearXNG、抓取、HTTP 相关的那些变量（`PORT`、`HOST`、`SEX_SEARXNG_*`、`SEX_ALLOW_PRIVATE_NETWORK`、`SEX_USER_AGENT`、`SEX_CONCURRENCY`、`SEX_TIMEOUT`、`SEX_MAX_BODY_BYTES`、`SEX_EXTRACT_WORKERS`、`SEX_LOG_LEVEL`、`SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`、`SEX_STRICT_REQUESTS`），含义相同。
+- 配置：只认下表里 SearXNG、抓取、HTTP 相关的那些变量（`PORT`、`HOST`、`SEX_SEARXNG_*`、`SEX_ALLOW_PRIVATE_NETWORK`、`SEX_PROXY_URL`、`SEX_USER_AGENT`、`SEX_CONCURRENCY`、`SEX_TIMEOUT`、`SEX_MAX_BODY_BYTES`、`SEX_EXTRACT_WORKERS`、`SEX_LOG_LEVEL`、`SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`、`SEX_STRICT_REQUESTS`），含义相同。
 
 需要 LLM 功能时，先 `cp .env.example .env`，取消注释并填写 `SEX_LLM_MODEL`、`SEX_LLM_API_KEY` 等。
 
@@ -118,7 +118,9 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 
 **子进程的回收**：`SIGINT` / `SIGTERM` 时 sex 会先关掉子进程再退出，但 `SIGKILL` 无法被捕获。所以在 Linux 上，sex 用 `setpriv --pdeathsig TERM -- lightpanda serve ...` 启动子进程（`setpriv` 属于 util-linux ≥ 2.33，Debian / Ubuntu 和 Docker 镜像里都有）：sex 被 `kill -9` 后，内核会给子进程发 `SIGTERM`，不会留下孤儿。macOS 没有对应机制（pdeathsig 是 Linux 特有的），Linux 上没有 `setpriv` 时也一样，sex 只能直接 spawn，此时 `kill -9` sex 会留下孤儿 Lightpanda 进程，需要自己清理。`lightpanda started` 日志里的 `spawn=setpriv` / `spawn=direct` 标明了实际用的是哪种方式。
 
-**内网保护**：`--allow-private-network` 关闭时（`serve` 默认），子进程会带上 `--block-private-networks`，Lightpanda 在 DNS 解析后再拦一次内网地址，作为 request interception 之外的第二道防线。`--cdp-url` 接外部浏览器时没有这一层，只有 request interception。
+**内网保护**：`--allow-private-network` 关闭时（`serve` 默认），子进程会带上 `--block-private-networks`，Lightpanda 在 DNS 解析后再拦一次内网地址，作为 request interception 之外的第二道防线。`--cdp-url` 接外部浏览器时没有这一层，只有 request interception；设置了 `SEX_PROXY_URL` 时的取舍见[出站代理](#出站代理)。
+
+**出站代理**：见[出站代理](#出站代理)。`--lightpanda` 时代理写在子进程的 `--http-proxy` 参数里，`--cdp-url` 时每个 browser context 用 `createBrowserContext({ proxyServer })`，代理的用户名密码从 URL 里取出，由 `page.authenticate` 回答 407。
 
 **请求头与凭据**：请求里的 `headers` 在浏览器路径上的处理和 HTTP 路径一致，凭据只发给目标页所在的 origin（协议 + 主机 + 端口）：
 
@@ -139,6 +141,18 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 - **`SEX_BLOCK_MEDIA`**（`--block-media`）：另外拦截图片和音视频请求（按资源类型，不是扩展名），默认关。文本抓取不需要这些字节；`screenshot` 本来就不支持。
 
 **EasyList 的出处与许可**：广告域名表来自 [EasyList](https://easylist.to/) 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0。sex 只取其中的域名，派生出的域名表随 `dist/sex` 一起分发；具体的提交和校验和见 `packages/sex/scripts/adblock.ts`。
+
+### 出站代理
+
+设置 `SEX_PROXY_URL`（`http://` 或 `https://`，可带 `user:pass@`）后，抓取用户给的 URL 都经过这个代理：HTTP 路径用 Bun `fetch` 自带的 `proxy` 选项，浏览器按[浏览器](#浏览器)一节的方式配置。凭据只从环境变量读，没有命令行参数，避免出现在进程列表里；`--lightpanda` 时 Lightpanda 只能从命令行参数拿代理，凭据会出现在它的命令行上（sex 的日志里已遮蔽）。
+
+SSRF 防护在代理之前仍然生效：
+
+- 每次请求（包括每一跳重定向）发出前，sex 先在本机解析并检查目标，内网、回环、link-local 地址照旧拒绝（`PRIVATE_NETWORK_BLOCKED`），被拒的请求不会到达代理。浏览器里每个 origin 也照旧过 request interception。
+- 本机解析不出来的域名在走代理时直接拒绝（`SCRAPE_DNS_RESOLUTION_ERROR`），否则只有代理的 DNS 才认识的内部域名会绕过检查。代价是只能靠代理解析的域名抓不了。
+- 请求里的 `Proxy-Authorization` 头在走代理时被丢弃，不能借此改变代理的身份。
+
+**残留风险**：走代理时由代理解析域名，连接无法固定到 sex 检查过的 IP（`pinToAddress` 只在直连时有效）。DNS rebinding（sex 检查时返回公网 IP，代理查询时返回内网 IP）在 sex 这一侧防不住，需要代理自己拒绝内网目标，例如 squid 的 ACL，或带 SSRF 防护的代理；sex 的检查是对它的补充，不是替代。`--cdp-url` 的外部浏览器同理，而且它的 service worker、WebSocket 等不经过 request interception 的网络路径也只能靠网络层（代理或防火墙）限制。
 
 ### 配置
 
@@ -167,6 +181,7 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 | `SEX_LLM_TIMEOUT` | — | `120000`（毫秒，最小 1000） | 单次 LLM 调用的超时，包括遇到限流时的等待和重试 |
 | `SEX_LLM_MAX_INPUT_CHARS` | — | `200000`（最小 1000） | 单次 LLM 调用最多发送的页面字符数 |
 | `SEX_ALLOW_PRIVATE_NETWORK` | `--allow-private-network` | `search`/`fetch`：`true`；`serve`：`false` | 是否允许抓取回环、内网、link-local 地址 |
+| `SEX_PROXY_URL` | —（只读环境变量，凭据不进进程列表） | 无 | 出站 HTTP(S) 代理，如 `http://user:pass@proxy:3128`。用户给的 URL 的所有抓取（HTTP 路径、浏览器、robots.txt、sitemap、webhook）都走它；SearXNG、LLM、S3 不走。安全影响见[出站代理](#出站代理) |
 | `SEX_USER_AGENT` | `--user-agent` | Chrome 桌面 UA | 页面抓取使用的 User-Agent |
 | `SEX_CONCURRENCY` | `--concurrency` | `8` | 单进程内同时进行的页面抓取数 |
 | `SEX_TIMEOUT` | `--timeout` | `30000`（毫秒，最小 1） | 单页默认超时（请求用到 LLM（LLM 格式或 `checkPromptInjection`）且没传 `timeout` 时至少 60000）|
@@ -313,6 +328,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - 不支持 SDK 的 `watcher()`（WebSocket 推送任务进度），只能轮询。
 - 出于 SSRF 防护，`serve` 默认拒绝抓取内网和回环地址，可以用 `--allow-private-network` 放开。`search` 和 `fetch` 这两个 CLI 命令默认允许。
   - 域名解析后，连接只使用已经通过检查的 IP，因此 DNS rebinding 无法在检查后把请求转到内网。每次重定向都会重新检查。
+  - 配了 `SEX_PROXY_URL` 时由代理解析域名，无法固定 IP，见[出站代理](#出站代理)。
   - 浏览器模式下，页面发出的子请求同样经过检查（request interception），指向内网的请求会被拦截。Lightpanda 子进程还会带上 `--block-private-networks` 作为第二道防线（见[浏览器](#浏览器)）。
   - 绑定到非回环地址时（如 Docker 里的 `--host 0.0.0.0`），默认不做 Host 检查，需要自己设置 `SEX_ALLOWED_HOSTS`。
 - 跨域和 Host 检查：

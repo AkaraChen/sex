@@ -261,6 +261,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: s
       const robotsTxt = await safeFetch(`${start.origin}/robots.txt`, {
         deadline: Deadline.start(10_000),
         allowPrivateNetwork: engine.config.allowPrivateNetwork,
+        proxy: engine.config.proxyUrl,
         userAgent: engine.config.userAgent,
         maxBodyBytes: engine.config.maxBodyBytes,
       })
