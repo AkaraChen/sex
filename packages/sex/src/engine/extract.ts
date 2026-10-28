@@ -102,21 +102,15 @@ export async function handleExtract(engine: Engine, job: JobRecord, taskId?: str
   }
 }
 
+/** Pages mapped for a `/*` URL before the small model picks the relevant ones. */
+const WILDCARD_CANDIDATES = 200;
+
 async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, urls: string[], signal: AbortSignal) {
   const targets = new Set<string>();
+  const warnings: string[] = [];
   for (const u of urls) {
     if (u.endsWith("/*")) {
-      const { links } = await mapSite(
-        engine,
-        {
-          url: u.slice(0, -1),
-          limit: req.limit ?? engine.config.extractWildcardPages,
-          search: req.prompt,
-          includeSubdomains: req.includeSubdomains,
-        },
-        signal,
-      );
-      for (const l of links) targets.add(l.url);
+      for (const url of await expandWildcard(engine, u.slice(0, -1), req, signal, warnings)) targets.add(url);
     } else targets.add(u);
   }
   if (req.prompt && (req.enableWebSearch || !urls.length)) {
@@ -136,7 +130,6 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
   };
   const limit = pLimit(engine.config.concurrency);
   const options = { ...req.scrapeOptions, formats: ["markdown" as const] };
-  const warnings: string[] = [];
   const pages = await Promise.all(
     [...targets].map((url) =>
       limit(async () => {
@@ -169,6 +162,46 @@ async function runExtract(engine: Engine, jobId: string, req: ExtractRequest, ur
     total: ok.length,
     completed: ok.length,
   };
+}
+
+/**
+ * The pages behind a `/*` URL: the site is mapped (the request's prompt, if any, ranks the candidates by keyword
+ * count first), and with a prompt one small-model call picks the relevant `limit` out of the `WILDCARD_CANDIDATES`
+ * best. A model that fails or picks nothing leaves the map's own first `limit`, which `warnings` says.
+ */
+async function expandWildcard(
+  engine: Engine,
+  base: string,
+  req: ExtractRequest,
+  signal: AbortSignal,
+  warnings: string[],
+): Promise<string[]> {
+  const limit = req.limit ?? engine.config.extractWildcardPages;
+  const { links } = await mapSite(
+    engine,
+    {
+      url: base,
+      limit: req.prompt ? Math.max(limit, WILDCARD_CANDIDATES) : limit,
+      search: req.prompt,
+      includeSubdomains: req.includeSubdomains,
+    },
+    signal,
+  );
+  if (!req.prompt || links.length <= 1) return links.slice(0, limit).map((l) => l.url);
+  try {
+    const picked = await engine.llm.selectLinks(links, req.prompt, limit, Deadline.unbounded(signal));
+    if (picked.length) return picked.map((l) => l.url);
+    warnings.push(
+      `${base}*: no page looked relevant to the prompt, so the first ${Math.min(limit, links.length)} pages of the site map were used`,
+    );
+  } catch (err) {
+    if (signal.aborted) throw err;
+    log.warn("could not select the relevant pages of a /* URL; using the site map order", { error: toAppError(err).message });
+    warnings.push(
+      `${base}*: choosing relevant pages with the LLM failed (${toAppError(err).message}), so the first ${Math.min(limit, links.length)} pages of the site map were used`,
+    );
+  }
+  return links.slice(0, limit).map((l) => l.url);
 }
 
 interface Page {

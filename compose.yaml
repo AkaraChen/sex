@@ -16,6 +16,7 @@ services:
       # The image ships Lightpanda; sex runs it as a child process, so there is no browser service.
       SEX_LIGHTPANDA: "1"
       SEX_LLM_MODEL: ${SEX_LLM_MODEL:-}
+      SEX_LLM_SMALL_MODEL: ${SEX_LLM_SMALL_MODEL:-}
       SEX_LLM_BASE_URL: ${SEX_LLM_BASE_URL:-}
       SEX_LLM_API_KEY: ${SEX_LLM_API_KEY:-}
       # here-docs (structured PDF/office, local OCR) is in the image too, but CPU-heavy: opt in with SEX_DOCS=1 in .env.

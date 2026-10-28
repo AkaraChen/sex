@@ -34,7 +34,8 @@ export interface Config extends CoreConfig {
   docs: boolean;
   /** Documents converted by here-docs at the same time; the rest wait (inside their deadline). */
   docsConcurrency: number;
-  llm?: { baseUrl: string; apiKey?: string; model: string };
+  /** `smallModel` (same endpoint and key) serves the auxiliary calls: extract planning, schema generation, crawl prompts, `/*` rerank. */
+  llm?: { baseUrl: string; apiKey?: string; model: string; smallModel?: string };
   /** Deadline for a single LLM request in ms. */
   llmTimeout: number;
   /** Directory for the job database and task queue (SQLite); jobs are kept in memory when unset. */
@@ -64,6 +65,7 @@ export interface ConfigOverrides extends CoreConfigOverrides {
   llmBaseUrl?: string;
   llmApiKey?: string;
   llmModel?: string;
+  llmSmallModel?: string;
   llmTimeout?: number;
   dataDir?: string;
   documentsUrl?: string;
@@ -153,6 +155,13 @@ export function resolveConfig(
   });
 
   const llmModel = str(o.llmModel) ?? str(env.SEX_LLM_MODEL);
+  const llmSmallModel = str(o.llmSmallModel) ?? str(env.SEX_LLM_SMALL_MODEL);
+  if (llmSmallModel && !llmModel) {
+    throw new AppError(
+      "CONFIG_INVALID",
+      "SEX_LLM_SMALL_MODEL needs SEX_LLM_MODEL: the small model is used next to the main one, not instead of it.",
+    );
+  }
   return {
     ...coreConfigFrom(v, o, defaults, env),
     cdpUrl: str(o.cdpUrl) ?? str(env.SEX_CDP_URL),
@@ -166,6 +175,7 @@ export function resolveConfig(
           baseUrl: (v.llmBaseUrl ?? DEFAULT_LLM_BASE_URL).replace(/\/+$/, ""),
           apiKey: str(o.llmApiKey) ?? str(env.SEX_LLM_API_KEY) ?? str(env.OPENAI_API_KEY),
           model: llmModel,
+          smallModel: llmSmallModel,
         }
       : undefined,
     llmTimeout: v.llmTimeout ?? 120_000,

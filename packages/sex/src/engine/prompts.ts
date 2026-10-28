@@ -10,7 +10,7 @@
  *   when the question follows the documents it refers to.
  */
 
-const TAG_NAMES = "page|lines|query|instructions|schema|partials|url";
+const TAG_NAMES = "page|lines|query|instructions|schema|partials|url|links|site_urls";
 const TAG_PATTERN = new RegExp(`(<\\/?)(${TAG_NAMES})(?=[\\s>/])`, "gi");
 
 /** Breaks any of our tag names inside untrusted text with a zero-width space, so `</page>` in a page is inert. */
@@ -145,6 +145,8 @@ export function answerUser(content: string, question: string, url?: string): str
 export function selectLinesSystem(purpose: "highlights" | "answer"): string {
   return `You select lines from a web page ${purpose === "highlights" ? "that are most relevant to" : "that answer"} a query. You receive numbered lines in <lines> and the query in <query>.
 
+A line number may stand for several lines: a code block, a table or a sentence of a long paragraph (its continuation lines are indented). Select it as a whole.
+
 Return a JSON array of line numbers (integers)${purpose === "highlights" ? ", most relevant first" : " in their original order"}. Return [] if no line ${purpose === "highlights" ? "is relevant" : "answers the query"}.
 
 Rules:
@@ -181,7 +183,8 @@ export function injectionGuardUser(tag: string, content: string): string {
 
 // ---------------------------------------------------------------- crawl options
 
-export const CRAWL_OPTIONS_SYSTEM = `You configure a web crawler from a natural-language instruction. Return a JSON object with only the options the instruction calls for; leave out everything else.
+export function crawlOptionsSystem(withSiteUrls: boolean): string {
+  return `You configure a web crawler from a natural-language instruction. Return a JSON object with only the options the instruction calls for; leave out everything else.
 
 Options:
 - includePaths: string[] - regexes matched against URL pathnames; only matching pages are crawled. E.g. ["^/blog/.*"] on example.com keeps https://example.com/blog/launch.
@@ -192,9 +195,36 @@ Options:
 - allowExternalLinks: boolean - follow links to other websites. Default false.
 - sitemap: "include" | "skip" | "only" - use the sitemap alongside links (default), ignore it, or crawl only sitemap URLs.
 - limit: integer - maximum number of pages.
+${
+  withSiteUrls
+    ? `
+<site_urls> lists some of the site's real URLs. Write path regexes that match the paths used there, not guessed ones, and do not exclude a section the instruction wants just because it is absent from the sample (it is only a sample).
 
+${untrustedNotice("site_urls", "crawler configurer")}
+`
+    : ""
+}
 Respond with the JSON object only, no prose and no code fences.`;
+}
 
-export function crawlOptionsUser(url: string, prompt: string): string {
-  return `Start URL: ${url}\n${tagged("instructions", prompt)}`;
+export function crawlOptionsUser(url: string, prompt: string, siteUrls: string[] = []): string {
+  const site = siteUrls.length ? `${tagged("site_urls", siteUrls.join("\n"))}\n\n` : "";
+  return `${site}Start URL: ${url}\n${tagged("instructions", prompt)}`;
+}
+
+// ---------------------------------------------------------------- /* link selection
+
+export const SELECT_LINKS_SYSTEM = `You pick the pages of a website that are worth reading to answer a data extraction request. You receive numbered candidate pages in <links>, each as "number: url | title | description" (title and description may be missing), and the request in <query>.
+
+Return a JSON array of the numbers (integers) of the relevant pages, most relevant first, at most as many as the user asks for. Return [] if none is relevant.
+
+Rules:
+- Judge by the URL path, title and description. Prefer pages likely to hold the requested data itself over index, tag, login or legal pages.
+- When the request asks for "all" of something, favour the pages that list or detail those things.
+- Output only the JSON array, no prose and no code fences.
+
+${untrustedNotice("links", "selector")}`;
+
+export function selectLinksUser(numbered: string, query: string, max: number): string {
+  return `${tagged("links", numbered)}\n\n${tagged("query", query)}\n\nPick at most ${max} pages.`;
 }

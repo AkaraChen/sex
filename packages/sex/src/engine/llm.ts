@@ -8,6 +8,7 @@ import { type CollectResult, chat, generateText, HttpError, type JSONSchema7, ty
 import type { Config } from "../config.ts";
 import { compileJsonSchema, describeSchemaErrors } from "./json-schema.ts";
 import * as P from "./prompts.ts";
+import { splitSegments } from "./segments.ts";
 
 /** Retries after a 429 (or a 503 that says when to come back); xsai itself never retries. */
 const MAX_RATE_LIMIT_RETRIES = 2;
@@ -40,6 +41,13 @@ export interface ExtractJsonOptions {
   url?: string;
 }
 
+/** A page the `/*` of an extract URL found, as the model sees it. */
+export interface LinkCandidate {
+  url: string;
+  title?: string;
+  description?: string;
+}
+
 export interface ExtractPlan {
   isMultiEntity: boolean;
   multiEntityKeys: string[];
@@ -65,7 +73,8 @@ const GUARD_SCHEMA: Schema = {
 
 /** Client for any OpenAI-compatible /chat/completions endpoint, built on xsai. */
 export class Llm implements ScrapeLlm {
-  private model?: LanguageModel;
+  /** One client per model name, so the small and the main model are each built once. */
+  private readonly models = new Map<string, LanguageModel>();
 
   constructor(private readonly config: Config) {}
 
@@ -108,10 +117,16 @@ export class Llm implements ScrapeLlm {
     input: string | Message[],
     outputFormat: Schema | undefined,
     deadline: Deadline,
+    small = false,
   ): Promise<string> {
     const llm = this.require(what);
-    this.model ??= chat({ baseURL: llm.baseUrl, apiKey: llm.apiKey, model: llm.model });
-    const model = this.model;
+    // Auxiliary calls use the small model where one is set; the endpoint and key are the main model's.
+    const name = (small && llm.smallModel) || llm.model;
+    let model = this.models.get(name);
+    if (!model) {
+      model = chat({ baseURL: llm.baseUrl, apiKey: llm.apiKey, model: name });
+      this.models.set(name, model);
+    }
     const call = deadline.slice(this.config.llmTimeout, { expiredCode: "TIMEOUT" });
     let result: CollectResult;
     try {
@@ -137,20 +152,20 @@ export class Llm implements ScrapeLlm {
     what: string,
     system: string,
     user: string,
-    opts: { outputFormat?: Schema; check?: Check; deadline: Deadline },
+    opts: { outputFormat?: Schema; check?: Check; deadline: Deadline; small?: boolean },
   ): Promise<unknown> {
     const messages: Message[] = [{ role: "user", content: user }];
     let outputFormat = opts.outputFormat;
     for (let attempt = 0; ; attempt++) {
       let raw: string;
       try {
-        raw = await this.complete(what, system, messages, outputFormat, opts.deadline);
+        raw = await this.complete(what, system, messages, outputFormat, opts.deadline, opts.small);
       } catch (err) {
         // Some OpenAI-compatible servers reject json_schema; the prompt asks for JSON anyway.
         if (!outputFormat || !(err instanceof AppError) || (err.details as { status?: number })?.status !== 400) throw err;
         log.debug("json_schema response_format rejected, retrying without it");
         outputFormat = undefined;
-        raw = await this.complete(what, system, messages, undefined, opts.deadline);
+        raw = await this.complete(what, system, messages, undefined, opts.deadline, opts.small);
       }
       const parsed = parseJsonLoose(raw);
       const problems = parsed.ok ? opts.check?.(parsed.value) : [`not valid JSON (${parsed.error})`];
@@ -201,20 +216,17 @@ export class Llm implements ScrapeLlm {
   }
 
   /**
-   * Quotes the page lines relevant to `query`. The model only picks line numbers and the lines are
-   * copied from the page, so every quote is verbatim. Highlights come most relevant first; direct
+   * Quotes the page lines relevant to `query`. The model only picks numbers and the text is copied from the
+   * page, so every quote is verbatim; a number is a line, a whole code block or table, or one sentence of a long paragraph (see `splitSegments`). Highlights come most relevant first; direct
    * quote answers keep page order.
    */
   async selectLines(content: string, query: string, purpose: "highlights" | "answer", deadline: Deadline, url?: string): Promise<string> {
-    const lines = content
-      .split("\n")
-      .map((l) => l.trimEnd())
-      .filter((l) => l.trim());
-    // Keep whole lines within the budget (numbering adds a few characters per line).
+    const units = splitSegments(content);
+    // Keep whole units within the budget. A unit of several lines (code block, table) continues indented under its number.
     const numbered: string[] = [];
     let size = 0;
-    for (const [i, line] of lines.entries()) {
-      const entry = `${i}: ${line}`;
+    for (const [i, unit] of units.entries()) {
+      const entry = `${i}: ${unit.replaceAll("\n", "\n  ")}`;
       if (numbered.length && size + entry.length + 1 > this.maxInputChars) break;
       numbered.push(entry);
       size += entry.length + 1;
@@ -226,7 +238,7 @@ export class Llm implements ScrapeLlm {
     });
     let picked = [...new Set(lineIndices(value) ?? [])].filter((i) => i >= 0 && i < numbered.length);
     if (purpose === "answer") picked = picked.sort((a, b) => a - b);
-    return picked.map((i) => lines[i]).join("\n");
+    return picked.map((i) => units[i]).join("\n");
   }
 
   /**
@@ -279,6 +291,7 @@ export class Llm implements ScrapeLlm {
     const v = (await this.completeJson("Extract", P.ANALYZE_EXTRACT_SYSTEM, P.analyzeExtractUser(schema, prompt, urls), {
       outputFormat: PLAN_SCHEMA,
       deadline,
+      small: true,
       check: (v) => {
         const p = v as Partial<ExtractPlan>;
         if (typeof p?.isMultiEntity !== "boolean" || !Array.isArray(p.multiEntityKeys)) return ["expected the plan object"];
@@ -293,6 +306,7 @@ export class Llm implements ScrapeLlm {
   async generateSchema(prompt: string, deadline: Deadline): Promise<Schema> {
     return (await this.completeJson("Extract", P.GENERATE_SCHEMA_SYSTEM, P.generateSchemaUser(prompt), {
       deadline,
+      small: true,
       check: (v) => {
         if (!v || typeof v !== "object" || Array.isArray(v)) return ["expected a JSON Schema object"];
         try {
@@ -305,12 +319,37 @@ export class Llm implements ScrapeLlm {
     })) as Schema;
   }
 
-  /** Turns a natural-language crawl instruction into (unvalidated) crawl options. */
-  async crawlOptions(url: string, prompt: string, deadline: Deadline): Promise<Record<string, unknown>> {
-    return (await this.completeJson("Crawl prompts", P.CRAWL_OPTIONS_SYSTEM, P.crawlOptionsUser(url, prompt), {
+  /** Turns a natural-language crawl instruction into (unvalidated) crawl options; `siteUrls` is a sample of the site's pages. */
+  async crawlOptions(url: string, prompt: string, deadline: Deadline, siteUrls: string[] = []): Promise<Record<string, unknown>> {
+    return (await this.completeJson("Crawl prompts", P.crawlOptionsSystem(siteUrls.length > 0), P.crawlOptionsUser(url, prompt, siteUrls), {
       deadline,
+      small: true,
       check: (v) => (v && typeof v === "object" && !Array.isArray(v) ? undefined : ["expected a JSON object"]),
     })) as Record<string, unknown>;
+  }
+
+  /**
+   * Picks the candidates that are relevant to `query`, most relevant first, at most `max`. The model returns
+   * numbers, so the result is always a subset of `candidates`.
+   */
+  async selectLinks(candidates: LinkCandidate[], query: string, max: number, deadline: Deadline): Promise<LinkCandidate[]> {
+    const numbered: string[] = [];
+    let size = 0;
+    for (const [i, c] of candidates.entries()) {
+      // One line per page: a title cannot start a line of its own and pass for another page.
+      const oneLine = (text: string | undefined, cap: number) => (text ?? "").replace(/\s+/g, " ").trim().slice(0, cap);
+      const entry = `${i}: ${[c.url, oneLine(c.title, 120), oneLine(c.description, 200)].filter(Boolean).join(" | ")}`;
+      if (numbered.length && size + entry.length + 1 > this.maxInputChars) break;
+      numbered.push(entry);
+      size += entry.length + 1;
+    }
+    const value = await this.completeJson("Extract", P.SELECT_LINKS_SYSTEM, P.selectLinksUser(numbered.join("\n"), query, max), {
+      deadline,
+      small: true,
+      check: (v) => (lineIndices(v) ? undefined : ["expected a JSON array of page numbers"]),
+    });
+    const picked = [...new Set(lineIndices(value) ?? [])].filter((i) => i >= 0 && i < numbered.length);
+    return picked.slice(0, max).map((i) => candidates[i] as LinkCandidate);
   }
 }
 
@@ -382,7 +421,7 @@ function toLlmError(err: unknown, baseUrl: string): AppError {
     if (err.status >= 400 && err.status < 500 && err.status !== 408) {
       return new AppError(
         "LLM_REQUEST_REJECTED",
-        `The LLM endpoint rejected the request (${err.status})${suffix}: ${err.body.slice(0, 500)}. Check SEX_LLM_MODEL, SEX_LLM_BASE_URL and SEX_LLM_API_KEY.`,
+        `The LLM endpoint rejected the request (${err.status})${suffix}: ${err.body.slice(0, 500)}. Check SEX_LLM_MODEL (and SEX_LLM_SMALL_MODEL), SEX_LLM_BASE_URL and SEX_LLM_API_KEY.`,
         { status: err.status, requestId: id },
       );
     }

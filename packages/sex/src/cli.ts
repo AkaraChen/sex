@@ -30,6 +30,11 @@ const commonArgs = {
   "cdp-url": { type: "string", description: "Use an existing CDP browser, e.g. ws://127.0.0.1:9222 (env SEX_CDP_URL)" },
   docs: { type: "boolean", description: "Convert PDFs, office documents and images with here-docs: structure + local OCR (env SEX_DOCS)" },
   "llm-model": { type: "string", description: "Enable LLM features with this model (env SEX_LLM_MODEL)" },
+  "llm-small-model": {
+    type: "string",
+    description:
+      "Cheaper model for extract planning, schema, crawl prompt and /* page selection calls (env SEX_LLM_SMALL_MODEL, default: the main model)",
+  },
   "llm-base-url": { type: "string", description: "OpenAI-compatible base URL (env SEX_LLM_BASE_URL, default https://api.openai.com/v1)" },
   "llm-api-key": { type: "string", description: "LLM API key (env SEX_LLM_API_KEY or OPENAI_API_KEY)" },
 } as const;
@@ -62,6 +67,7 @@ const engineFrom = (args: Partial<ArgValues<typeof serverArgs>>, defaults: { all
             blockMedia: args["block-media"],
             docs: args.docs,
             llmModel: args["llm-model"],
+            llmSmallModel: args["llm-small-model"],
             llmBaseUrl: args["llm-base-url"],
             llmApiKey: args["llm-api-key"],
             dataDir: args["data-dir"],

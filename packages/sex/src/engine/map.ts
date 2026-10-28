@@ -108,7 +108,13 @@ export function normalizeUrl(raw: string, ignoreQuery: boolean): string | undefi
   }
 }
 
-export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSignal): Promise<MapResult> {
+/** What only sex's own callers can ask of a map (the request schema is Firecrawl's). */
+export interface MapInternals {
+  /** Leave out the SearXNG `site:` search: it costs a request (and may start SearXNG) and only matters for finding pages by topic. */
+  skipSearch?: boolean;
+}
+
+export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSignal, internals: MapInternals = {}): Promise<MapResult> {
   let start = parseHttpUrl(req.url.trim());
   await assertPublicUrl(start, engine.config.allowPrivateNetwork);
   const includes = compilePatterns(req.includePaths, "includePaths");
@@ -173,7 +179,7 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
             return [] as string[];
           });
   const fromSearch =
-    mode === "only"
+    mode === "only" || internals.skipSearch
       ? Promise.resolve([] as string[])
       : Promise.all(
           [1, 2].map((page) =>
