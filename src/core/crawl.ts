@@ -161,13 +161,6 @@ export async function startCrawl(engine: Engine, input: CrawlRequest, defaults: 
   } as CrawlRequest;
   compile(req.includePaths, "includePaths");
   compile(req.excludePaths, "excludePaths");
-  // Pages are spaced `delay` seconds apart, so a crawl takes about delay x limit; it must finish before its job expires.
-  const durationMs = (req.delay ?? 0) * 1000 * (req.limit ?? 10_000);
-  if (durationMs > engine.config.jobTtlMs) {
-    throw badRequest(
-      `delay (${req.delay}s) x limit (${req.limit ?? 10_000} pages) would take longer than the job lifetime of ${Math.round(engine.config.jobTtlMs / 1000)}s; lower the delay or set a smaller limit`,
-    );
-  }
 
   const { store, queue } = engine.jobs;
   const job = await store.create({ kind: "crawl", url: start.href, options: req as unknown as Record<string, unknown> });
