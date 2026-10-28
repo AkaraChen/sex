@@ -71,7 +71,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*`、`SEX_DOCS` 和 `SEX_SEARXNG_URL`。�
 
 - 二进制：默认用 `@searxng-js/<平台>` 包里的（`bun install` 按平台装上，`bun run build` 把目标平台的嵌进 `dist/sex`，约 32 MB），第一次运行时解包到 `$XDG_CACHE_HOME/searxng-js/`，它自己再解压到 `$XDG_CACHE_HOME/searxng/`（约 130 MB）。`SEX_SEARXNG_PATH` 可以换成别的二进制。
 - 平台：只有 linux-x64（glibc ≥ 2.35）、macOS arm64、Windows x64 有预编译二进制。其它平台（包括 linux-arm64 的 Docker 镜像和 musl）请设 `SEX_SEARXNG_URL`。
-- 配置：默认是一份最小的 `settings.yml`（继承 SearXNG 默认值，开启 JSON，关闭 limiter 和 image proxy）。要调整引擎等设置，用 `SEX_SEARXNG_SETTINGS` 指定自己的文件，并保留 `search.formats` 里的 `json`；端口、监听地址和 secret 总是由 sex 设置。
+- 配置：默认是一份最小的 `settings.yml`（继承 SearXNG 默认值，开启 JSON，关闭 limiter 和 image proxy）。要调整引擎等设置，用 `SEX_SEARXNG_SETTINGS` 指定自己的文件，并保留 `search.formats` 里的 `json`；端口、监听地址和 secret 总是由 sex 设置。设了 `SEX_PROXY_URL` 且用的是这份默认配置时，sex 会在里面加上 `outgoing.proxies`（`all://` 指向该代理），SearXNG 对搜索引擎的请求就走代理；配置文件只在启动时写入一个 `0600` 的临时文件，SearXNG 读完即删，代理凭据不进日志。你自己用 `SEX_SEARXNG_SETTINGS` 提供的文件原样使用，sex 不碰其中的 `outgoing`（要走代理请自己写 `outgoing.proxies`，日志里会提示一次）；外部 SearXNG（`SEX_SEARXNG_URL`）也不处理。
 - 资源：常驻内存约 220 MB（onefile 启动器加 SearXNG 进程）。
 - 外部实例：设 `SEX_SEARXNG_URL`（或 `--searxng-url`）后不再启动子进程，需要在它的 `settings.yml` 里开启 json format。
 - 许可：SearXNG 二进制是 AGPL-3.0-or-later。分发 `dist/sex` 或 Docker 镜像时，需要同时提供对应源码（固定版本的 SearXNG 加 [AkaraChen/searxng](https://github.com/AkaraChen/searxng) 的构建脚本），见 `node_modules/@searxng-js/<平台>/THIRD-PARTY-NOTICES.md`。
@@ -152,6 +152,18 @@ SSRF 防护在代理之前仍然生效：
 - 本机解析不出来的域名在走代理时直接拒绝（`SCRAPE_DNS_RESOLUTION_ERROR`），否则只有代理的 DNS 才认识的内部域名会绕过检查。代价是只能靠代理解析的域名抓不了。
 - 请求里的 `Proxy-Authorization` 头在走代理时被丢弃，不能借此改变代理的身份。
 
+**SearXNG**：sex 自己启动 SearXNG 时（没有 `SEX_SEARXNG_URL`），`SEX_PROXY_URL` 同样会写进它的 `outgoing.proxies`，SearXNG 去搜索引擎的请求走这个代理。这里的目标是搜索引擎，不是用户提交的 URL，所以没有 SSRF 检查。`SEX_SEARXNG_SETTINGS` 是你自己的文件时 sex 不改它；外部 SearXNG 由你自己配置。
+
+**LLM 和 S3 不走 `SEX_PROXY_URL`**：`SEX_LLM_BASE_URL` 和 `SEX_DOCUMENTS_URL` 的 S3 端点都是运维方自己配置的地址，不是用户提交的 URL。确实需要走代理时，用 Bun 认的标准环境变量 `HTTP_PROXY` / `HTTPS_PROXY`（小写也行，`NO_PROXY` 生效），已用 Bun 1.4.3 实测：`fetch`（LLM 请求用的就是它）和 `Bun.S3Client` 都读这些变量，`http://` 地址看 `HTTP_PROXY`，`https://` 地址看 `HTTPS_PROXY`。注意它是整个进程范围的：sex 访问本机 SearXNG（`127.0.0.1`）的请求也会走代理，所以要同时设 `NO_PROXY=127.0.0.1,localhost`；没显式用 `SEX_PROXY_URL` 的 `fetch` 同样受影响。
+
+**stealth 重试**（`SEX_STEALTH_PROXY_URL`）：设置后，普通抓取被拦截时换这个代理重试一次。判断“被拦截”的规则只有一处（`packages/core/src/errors.ts` 的 `isBlocked`）：响应状态是 403 或 429，或者抛出的错误在错误目录里标了 `blocked`（目前只有 `SCRAPE_SITE_ERROR`，连接被重置 / 断开）。别的状态、`PRIVATE_NETWORK_BLOCKED` 这类我们自己的拒绝都不重试。
+
+- 重试在这次抓取的同一个 `Deadline` 里，剩下不到 2 秒就不重试；超时照常是 `SCRAPE_TIMEOUT`。重试本身失败时保留第一次的结果，`warning` 里说明。
+- 用了 stealth 的文档，`metadata.proxyUsed` 是 `"stealth"`，`warning` 写明重试过；没重试或重试没被采用是 `"basic"`。重试得到的响应不管状态是什么都会被采用（再被拦就是第二次的 403）。
+- 请求 `proxy: "basic"` 不重试；`proxy: "stealth"` 从第一次请求就走 stealth 代理，并且用纯 HTTP（不用浏览器，`warning` 说明，带 `actions` 是 400）；`auto`、`enhanced` 和不传一样。两个代理相同时不重试。
+- 浏览器只有启动时那一个代理，所以浏览器渲染出的页面被拦截（403 / 429，没有 `actions`）时，换 stealth 代理做一次纯 HTTP 抓取，这次没被拦截才替换浏览器的结果（脚本没有执行，`warning` 说明）。
+- SSRF 规则和 `SEX_PROXY_URL` 完全一样：每一跳先在本机解析并检查，本机解析不了的域名拒绝，调用方的 `Proxy-Authorization` 丢弃，由 stealth 代理解析域名所以无法固定 IP（残留风险同下）。缓存键不含代理，stealth 取回的 2xx 页面会和其他页面一样进缓存。
+
 **残留风险**：走代理时由代理解析域名，连接无法固定到 sex 检查过的 IP（`pinToAddress` 只在直连时有效）。DNS rebinding（sex 检查时返回公网 IP，代理查询时返回内网 IP）在 sex 这一侧防不住，需要代理自己拒绝内网目标，例如 squid 的 ACL，或带 SSRF 防护的代理；sex 的检查是对它的补充，不是替代。`--cdp-url` 的外部浏览器同理，而且它的 service worker、WebSocket 等不经过 request interception 的网络路径也只能靠网络层（代理或防火墙）限制。
 
 ### 配置
@@ -181,7 +193,8 @@ SSRF 防护在代理之前仍然生效：
 | `SEX_LLM_TIMEOUT` | — | `120000`（毫秒，最小 1000） | 单次 LLM 调用的超时，包括遇到限流时的等待和重试 |
 | `SEX_LLM_MAX_INPUT_CHARS` | — | `200000`（最小 1000） | 单次 LLM 调用最多发送的页面字符数 |
 | `SEX_ALLOW_PRIVATE_NETWORK` | `--allow-private-network` | `search`/`fetch`：`true`；`serve`：`false` | 是否允许抓取回环、内网、link-local 地址 |
-| `SEX_PROXY_URL` | —（只读环境变量，凭据不进进程列表） | 无 | 出站 HTTP(S) 代理，如 `http://user:pass@proxy:3128`。用户给的 URL 的所有抓取（HTTP 路径、浏览器、robots.txt、sitemap、webhook）都走它；SearXNG、LLM、S3 不走。安全影响见[出站代理](#出站代理) |
+| `SEX_PROXY_URL` | —（只读环境变量，凭据不进进程列表） | 无 | 出站 HTTP(S) 代理，如 `http://user:pass@proxy:3128`。用户给的 URL 的所有抓取（HTTP 路径、浏览器、robots.txt、sitemap、webhook）都走它；sex 自己启动的 SearXNG 也走它（自带 `settings.yml` 时不处理）；LLM、S3 不走。安全影响见[出站代理](#出站代理) |
+| `SEX_STEALTH_PROXY_URL` | —（只读环境变量，凭据不进进程列表） | 无 | 第二个出站代理，格式同上。普通抓取被站点拦截（403、429，或连接被重置 / 断开）时换它重试一次；请求 `proxy: "stealth"` 时直接用它。不设置则不重试，行为和以前一样。见[出站代理](#出站代理) |
 | `SEX_USER_AGENT` | `--user-agent` | Chrome 桌面 UA | 页面抓取使用的 User-Agent |
 | `SEX_CONCURRENCY` | `--concurrency` | `8` | 单进程内同时进行的页面抓取数 |
 | `SEX_TIMEOUT` | `--timeout` | `30000`（毫秒，最小 1） | 单页默认超时（请求用到 LLM（LLM 格式或 `checkPromptInjection`）且没传 `timeout` 时至少 60000）|
@@ -306,7 +319,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - 没做的参数不会静默丢掉：
   - `redactPII`、`zeroDataRetention`（scrape、search）、`onlyCleanContent` 为真时返回 `501 NOT_SUPPORTED`。
   - `maxAge`、`storeInCache`、`minAge`、`lockdown` 见[页面缓存](#页面缓存)。**默认 `maxAge` 是 0（总是现抓），不是 Firecrawl 的两天**，要默认用缓存设 `SEX_CACHE_MAX_AGE_MS`。sex-lite 和没有数据目录的 sex 没有缓存：`maxAge`、`storeInCache` 接受但没有效果，`lockdown`、`minAge` 返回 Firecrawl 的 `404 SCRAPE_NO_CACHED_DATA`，不去抓活页面。
-  - `proxy` 是 `basic` / `stealth` / `enhanced` / `auto` 之一；`stealth` / `enhanced` 没有代理池，`location.country` 不做地域定位，没有浏览器时 `mobile` 只改 User-Agent，这几项在 `warning` 里写 `-- your scrape may be partial`。搜索的 `country` / `location` 和不是 `qdr:` 的 `tbs` 同样不生效，`warning` 里也有说明。`json` 格式的 `model` 被忽略（模型是 `SEX_LLM_MODEL`），也有 warning。
+  - `proxy` 是 `basic` / `stealth` / `enhanced` / `auto` 之一；`enhanced` 没有对应的代理池（`stealth` 在设了 `SEX_STEALTH_PROXY_URL` 时可用，见[出站代理](#出站代理)），`location.country` 不做地域定位，没有浏览器时 `mobile` 只改 User-Agent，这几项在 `warning` 里写 `-- your scrape may be partial`。搜索的 `country` / `location` 和不是 `qdr:` 的 `tbs` 同样不生效，`warning` 里也有说明。`json` 格式的 `model` 被忽略（模型是 `SEX_LLM_MODEL`），也有 warning。
   - `rawBase64` 格式返回原始字节的 base64（`document.rawBase64`），不能和其它格式、`checkPromptInjection`、`actions` 组合（`400`）；有浏览器时也直接 HTTP 抓取，不渲染。
   - `fastMode: true` 跳过浏览器，只做 HTTP 抓取（脚本不会运行），不能和 `actions` 一起用（`400`）。
   - 其它不存在的字段仍被丢掉（官方 SDK 会带 `origin`、`integration` 之类）；设 `SEX_STRICT_REQUESTS=1` 后改为返回 `400`（`Unrecognized key in body: "..."`）。
