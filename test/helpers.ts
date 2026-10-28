@@ -10,6 +10,26 @@ const page = (title: string, body: string) =>
 const paragraphs = (topic: string) =>
   Array.from({ length: 4 }, (_, i) => `<p>Paragraph ${i + 1} about ${topic}. ${"Lorem ipsum dolor sit amet. ".repeat(8)}</p>`).join("");
 
+// Throwaway self-signed certificate for localhost / 127.0.0.1 (test fixture only).
+export const CERT = `-----BEGIN CERTIFICATE-----
+MIIBmzCCAUGgAwIBAgIUcK2B/nZ/V1i/94gceqNkDbfZ0WMwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAyNTE0MjEyMloYDzIxMjYxMDAx
+MTQyMTIyWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAAQdLtMTE3HiHuXUFKrJab17zxVxWMOLxOwNs2OFbeTm/yFPpDddITJS
++ZOmK4Mq2cVEIxiP5/U3Egn/EnjnT4F4o28wbTAdBgNVHQ4EFgQUa2l4M/yUi+3y
+4sUjQgbqNgniE5MwHwYDVR0jBBgwFoAUa2l4M/yUi+3y4sUjQgbqNgniE5MwDwYD
+VR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwCgYIKoZI
+zj0EAwIDSAAwRQIgHiq/3W41m/lnQsAM3ixZlYIfSfTn/XIvV/s83GYIa5kCIQCR
+tUbyO/u9ZV5j9oRx95bDP7s1F+/sK2D6d0rx5Xo6pg==
+-----END CERTIFICATE-----
+`;
+export const KEY = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgJVB4a/Q2SjNcJ64B
+y89h6w4xR6WqdZm2vZadjEz4RrehRANCAAQdLtMTE3HiHuXUFKrJab17zxVxWMOL
+xOwNs2OFbeTm/yFPpDddITJS+ZOmK4Mq2cVEIxiP5/U3Egn/EnjnT4F4
+-----END PRIVATE KEY-----
+`;
+
 /** A tiny local website: /, /docs/a, /docs/b, /private/x, robots.txt, sitemap.xml, JSON. */
 export function startFixtureSite() {
   const server = Bun.serve({

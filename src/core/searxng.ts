@@ -10,7 +10,7 @@ const START_FAILURE_LIMIT = 3;
 const START_FAILURE_WINDOW_MS = 60_000;
 const START_COOLDOWN_MS = 30_000;
 
-const unavailable = (message: string) => new AppError(502, "SEARCH_BACKEND_UNAVAILABLE", message);
+const unavailable = (message: string) => new AppError("SEARCH_BACKEND_UNAVAILABLE", message);
 
 /** The last few non-empty lines of server output, for error messages. */
 const tail = (output: string, lines = 5) =>

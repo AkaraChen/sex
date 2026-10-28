@@ -3,7 +3,7 @@ import { JSON_SCHEMA_OUTPUT_REGISTRY, ZodToJsonSchemaConverter } from "@orpc/zod
 import { z } from "zod";
 import type { Engine } from "../core/engine.ts";
 import { PAGE_BUDGET_CHARS } from "../core/jobs/index.ts";
-import { toAppError } from "../errors.ts";
+import { AppError, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import {
   ActiveCrawlsResponse,
@@ -42,9 +42,10 @@ const base = os.$context<HttpContext>().use(async ({ next }) => {
     if (err instanceof ORPCError) throw err;
     const e = toAppError(err);
     if (e.status >= 500) {
-      log.error("request failed", { code: e.code, error: e.message, stack: err instanceof Error ? err.stack : undefined });
+      // Errors sex raised on purpose (an unreachable site, a refused LLM reply) need no stack; an unexpected one does.
+      log.error("request failed", { code: e.code, error: e.message, stack: err instanceof AppError ? undefined : (err as Error)?.stack });
     }
-    throw new ORPCError(e.code, { status: e.status, message: e.message, data: e.details });
+    throw new ORPCError(e.code, { status: e.status, message: e.message, data: e.details, cause: e });
   }
 });
 

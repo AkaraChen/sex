@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { gzipSync } from "node:zlib";
+import { Deadline } from "../src/core/deadline.ts";
 import type { Engine } from "../src/core/engine.ts";
 import { sitemapUrls } from "../src/core/map.ts";
 import { testEngine } from "./helpers.ts";
@@ -70,10 +71,10 @@ describe("map hardening", () => {
   });
 
   test("gzip sitemap inflation is capped instead of exhausting memory", async () => {
-    await expect(sitemapUrls(engine, bombBase, 10)).resolves.toEqual([]);
+    await expect(sitemapUrls(engine, bombBase, 10, Deadline.unbounded())).resolves.toEqual([]);
   });
 
   test("a small gzipped sitemap is still parsed", async () => {
-    await expect(sitemapUrls(engine, smallBase, 10)).resolves.toEqual([`${smallBase}/from-sitemap`]);
+    await expect(sitemapUrls(engine, smallBase, 10, Deadline.unbounded())).resolves.toEqual([`${smallBase}/from-sitemap`]);
   });
 });

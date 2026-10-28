@@ -58,3 +58,41 @@ await step("error mapping", async () => {
     return (err as Error).message;
   }
 });
+// The SDK retries 502s, which for an LLM-backed request means paying for the same failure several times.
+// Failures that come out the same on every try must be answered once, so count what actually reaches the server.
+await step("deterministic failures are requested once", async () => {
+  let requests = 0;
+  const counting = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(req) {
+      requests++;
+      const target = new URL(new URL(req.url).pathname, apiUrl);
+      const headers = new Headers(req.headers);
+      headers.delete("host");
+      return fetch(target, { method: req.method, headers, body: req.body });
+    },
+  });
+  try {
+    const client = new Firecrawl({ apiUrl: `http://127.0.0.1:${counting.port}`, apiKey: "unused" });
+    const cases: Array<[string, () => Promise<unknown>]> = [
+      ["unknown host (SCRAPE_DNS_RESOLUTION_ERROR)", () => client.scrape("http://no-such-host.invalid/")],
+      ["refused connection (SCRAPE_SITE_ERROR, or PRIVATE_NETWORK_BLOCKED)", () => client.scrape("http://127.0.0.1:1/")],
+      ["unsupported format (NOT_SUPPORTED)", () => client.scrape("https://example.com", { formats: ["changeTracking"] })],
+    ];
+    const out: Record<string, string> = {};
+    for (const [name, call] of cases) {
+      requests = 0;
+      const failure = await call().then(
+        () => undefined,
+        (err: unknown) => (err instanceof Error ? err.message : String(err)),
+      );
+      if (failure === undefined) throw new Error(`${name}: expected a failure`);
+      if (requests !== 1) throw new Error(`${name}: the server got ${requests} requests, expected 1`);
+      out[name] = failure.slice(0, 80);
+    }
+    return out;
+  } finally {
+    counting.stop(true);
+  }
+});

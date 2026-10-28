@@ -1,3 +1,4 @@
+import type { Deadline } from "./deadline.ts";
 import type { Engine } from "./engine.ts";
 import { decodeBody, safeFetch } from "./net.ts";
 
@@ -108,11 +109,10 @@ export function parseRobots(text: string, userAgent: string): Robots {
   };
 }
 
-export async function fetchRobots(engine: Engine, origin: string, userAgent: string, signal?: AbortSignal): Promise<Robots> {
+export async function fetchRobots(engine: Engine, origin: string, userAgent: string, deadline: Deadline): Promise<Robots> {
   try {
     const res = await safeFetch(`${origin}/robots.txt`, {
-      timeout: 10_000,
-      signal,
+      deadline: deadline.slice(10_000),
       allowPrivateNetwork: engine.config.allowPrivateNetwork,
       userAgent: engine.config.userAgent,
       maxBodyBytes: engine.config.maxBodyBytes,

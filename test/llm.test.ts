@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { resolveConfig } from "../src/config.ts";
+import { Deadline } from "../src/core/deadline.ts";
 import type { Engine } from "../src/core/engine.ts";
 import { Llm } from "../src/core/llm.ts";
 import type { AppError } from "../src/errors.ts";
 import { chatCompletionStream, startFixtureSite, testEngine } from "./helpers.ts";
+
+const NO_LIMIT = Deadline.unbounded();
 
 type Handler = (req: Request, attempt: number) => Response | Promise<Response>;
 
@@ -55,23 +58,23 @@ afterAll(() => {
 describe("result status (#5)", () => {
   test("output truncated at the token limit", async () => {
     const s = serve(() => chatCompletionStream('{"title": "Doc', { finishReason: "length" }));
-    const err = await rejection(llmFor(s.url).extractJson("page", { schema: { type: "object" } }));
-    expect(err).toMatchObject({ status: 502, code: "LLM_ERROR", details: { status: "incomplete", reason: "length" } });
+    const err = await rejection(llmFor(s.url).extractJson("page", { schema: { type: "object" } }, NO_LIMIT));
+    expect(err).toMatchObject({ status: 422, code: "LLM_INCOMPLETE_OUTPUT", details: { status: "incomplete", reason: "length" } });
     expect(err.message).toContain("token limit");
   });
 
   test("output stopped by the content filter", async () => {
     const s = serve(() => chatCompletionStream("partial", { finishReason: "content_filter" }));
-    await expect(llmFor(s.url).summarize("page")).rejects.toMatchObject({
-      code: "LLM_ERROR",
+    await expect(llmFor(s.url).summarize("page", NO_LIMIT)).rejects.toMatchObject({
+      code: "LLM_INCOMPLETE_OUTPUT",
       details: { status: "incomplete", reason: "content-filter" },
     });
   });
 
   test("refusal keeps the refusal text", async () => {
     const s = serve(() => chatCompletionStream("", { refusal: "I can't help with that." }));
-    const err = await rejection(llmFor(s.url).answer("page", "q"));
-    expect(err).toMatchObject({ status: 502, code: "LLM_REFUSED" });
+    const err = await rejection(llmFor(s.url).answer("page", "q", NO_LIMIT));
+    expect(err).toMatchObject({ status: 422, code: "LLM_REFUSED" });
     expect(err.message).toContain("I can't help with that.");
   });
 });
@@ -79,7 +82,7 @@ describe("result status (#5)", () => {
 describe("errors (#6)", () => {
   test("HTTP errors keep the status and the provider request id", async () => {
     const s = serve(() => new Response("bad key", { status: 401, headers: { "x-request-id": "req_1" } }));
-    const err = await rejection(llmFor(s.url).summarize("page"));
+    const err = await rejection(llmFor(s.url).summarize("page", NO_LIMIT));
     expect(err).toMatchObject({ status: 502, code: "LLM_ERROR", details: { status: 401, requestId: "req_1" } });
     expect(err.message).toContain("req_1");
   });
@@ -87,7 +90,10 @@ describe("errors (#6)", () => {
   test("an unreachable endpoint is LLM_UNAVAILABLE", async () => {
     const s = serve(() => new Response());
     s.stop();
-    await expect(llmFor(s.url).summarize("page")).rejects.toMatchObject({ code: "LLM_UNAVAILABLE", details: { code: "network-error" } });
+    await expect(llmFor(s.url).summarize("page", NO_LIMIT)).rejects.toMatchObject({
+      code: "LLM_UNAVAILABLE",
+      details: { code: "network-error" },
+    });
   });
 });
 
@@ -96,7 +102,7 @@ describe("rate limits (#7)", () => {
     const s = serve((_req, n) =>
       n === 1 ? new Response("slow down", { status: 429, headers: { "retry-after": "0" } }) : chatCompletionStream("ok"),
     );
-    expect(await llmFor(s.url).summarize("page")).toBe("ok");
+    expect(await llmFor(s.url).summarize("page", NO_LIMIT)).toBe("ok");
     expect(s.bodies.length).toBe(2);
   });
 
@@ -108,13 +114,13 @@ describe("rate limits (#7)", () => {
           ? new Response("busy", { status: 429, headers: { "retry-after": new Date(Date.now()).toUTCString() } })
           : chatCompletionStream("ok"),
     );
-    expect(await llmFor(s.url).summarize("page")).toBe("ok");
+    expect(await llmFor(s.url).summarize("page", NO_LIMIT)).toBe("ok");
     expect(s.bodies.length).toBe(3);
   });
 
   test("gives up after the retry budget with LLM_RATE_LIMITED", async () => {
     const s = serve(() => new Response("slow down", { status: 429, headers: { "retry-after": "0", "request-id": "req_2" } }));
-    await expect(llmFor(s.url).summarize("page")).rejects.toMatchObject({
+    await expect(llmFor(s.url).summarize("page", NO_LIMIT)).rejects.toMatchObject({
       status: 429,
       code: "LLM_RATE_LIMITED",
       details: { status: 429, requestId: "req_2", retryAfterMs: 0 },
@@ -125,7 +131,7 @@ describe("rate limits (#7)", () => {
   test("does not wait past the deadline", async () => {
     const s = serve(() => new Response("slow down", { status: 429, headers: { "retry-after": "30" } }));
     const started = Date.now();
-    await expect(llmFor(s.url, 2000).summarize("page")).rejects.toMatchObject({
+    await expect(llmFor(s.url, 2000).summarize("page", NO_LIMIT)).rejects.toMatchObject({
       code: "LLM_RATE_LIMITED",
       details: { retryAfterMs: 30_000 },
     });
@@ -136,13 +142,42 @@ describe("rate limits (#7)", () => {
   test("a wait is cut short by the caller's signal", async () => {
     const s = serve(() => new Response("slow down", { status: 429, headers: { "retry-after": "5" } }));
     const started = Date.now();
-    await expect(llmFor(s.url).summarize("page", AbortSignal.timeout(100))).rejects.toMatchObject({ status: 408, code: "TIMEOUT" });
+    await expect(llmFor(s.url).summarize("page", Deadline.unbounded(AbortSignal.timeout(100)))).rejects.toMatchObject({
+      status: 408,
+      code: "TIMEOUT",
+    });
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("a call never outlasts the deadline it is cut from, and that is SCRAPE_TIMEOUT, not the call's own TIMEOUT", async () => {
+    const s = serve(() => new Promise<Response>(() => {}));
+    const started = Date.now();
+    const err = await rejection(llmFor(s.url, 60_000).summarize("page", Deadline.start(300)));
+    expect(err).toMatchObject({ status: 408, code: "SCRAPE_TIMEOUT" });
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("a call that hits SEX_LLM_TIMEOUT before the deadline is the plain TIMEOUT", async () => {
+    const s = serve(() => new Promise<Response>(() => {}));
+    const err = await rejection(llmFor(s.url, 1000).summarize("page", Deadline.start(30_000)));
+    expect(err).toMatchObject({ status: 408, code: "TIMEOUT" });
+    expect(err.message).toContain("1000ms");
+  });
+
+  test("a rate-limit wait that does not fit in the deadline is not started", async () => {
+    const s = serve(() => new Response("slow down", { status: 429, headers: { "retry-after": "5" } }));
+    const err = await rejection(llmFor(s.url, 60_000).summarize("page", Deadline.start(1000)));
+    expect(err).toMatchObject({ status: 429, code: "LLM_RATE_LIMITED" });
+    expect(s.bodies.length).toBe(1);
   });
 
   test("other statuses are not retried", async () => {
     const s = serve(() => new Response("down", { status: 503 }));
-    await expect(llmFor(s.url).summarize("page")).rejects.toMatchObject({ status: 502, code: "LLM_ERROR", details: { status: 503 } });
+    await expect(llmFor(s.url).summarize("page", NO_LIMIT)).rejects.toMatchObject({
+      status: 502,
+      code: "LLM_ERROR",
+      details: { status: 503 },
+    });
     expect(s.bodies.length).toBe(1);
   });
 });
@@ -156,13 +191,13 @@ describe("structured output validation (#8)", () => {
 
   test("valid output passes", async () => {
     const s = serve(() => chatCompletionStream('{"title":"A","price":3}'));
-    expect(await llmFor(s.url).extractJson("page", { schema })).toEqual({ title: "A", price: 3 });
+    expect(await llmFor(s.url).extractJson("page", { schema }, NO_LIMIT)).toEqual({ title: "A", price: 3 });
   });
 
   test("output that breaks the schema is LLM_INVALID_OUTPUT", async () => {
     const s = serve(() => chatCompletionStream('{"price":"cheap"}'));
-    const err = await rejection(llmFor(s.url).extractJson("page", { schema }));
-    expect(err).toMatchObject({ status: 502, code: "LLM_INVALID_OUTPUT" });
+    const err = await rejection(llmFor(s.url).extractJson("page", { schema }, NO_LIMIT));
+    expect(err).toMatchObject({ status: 422, code: "LLM_INVALID_OUTPUT" });
     expect((err.details as { errors: string[] }).errors).toEqual(
       expect.arrayContaining(["/ must have required property 'title'", "/price must be number"]),
     );
@@ -172,14 +207,14 @@ describe("structured output validation (#8)", () => {
     // xsai drops `not` / `allOf` / `if` when it builds the strict json_schema, so only our check enforces them.
     const s = serve(() => chatCompletionStream('{"title":"A"}'));
     const strict = { type: "object", properties: { title: { type: "string", not: { const: "A" } } } };
-    await expect(llmFor(s.url).extractJson("page", { schema: strict })).rejects.toMatchObject({ code: "LLM_INVALID_OUTPUT" });
+    await expect(llmFor(s.url).extractJson("page", { schema: strict }, NO_LIMIT)).rejects.toMatchObject({ code: "LLM_INVALID_OUTPUT" });
   });
 
   test("the fallback without response_format is validated too", async () => {
     const s = serve((_req, n) =>
       n === 1 ? new Response("json_schema not supported", { status: 400 }) : chatCompletionStream('```json\n{"title":1}\n```'),
     );
-    await expect(llmFor(s.url).extractJson("page", { schema })).rejects.toMatchObject({ code: "LLM_INVALID_OUTPUT" });
+    await expect(llmFor(s.url).extractJson("page", { schema }, NO_LIMIT)).rejects.toMatchObject({ code: "LLM_INVALID_OUTPUT" });
     // The rejected json_schema request, the fallback, then one correction round, still without response_format.
     expect(s.bodies.length).toBe(3);
     expect(s.bodies.map((b) => b.response_format?.type ?? "none")).toEqual(["json_schema", "none", "none"]);
@@ -189,7 +224,7 @@ describe("structured output validation (#8)", () => {
     const s = serve(() => chatCompletionStream('{"title":"A"}'));
     const llm = llmFor(s.url);
     for (const $schema of ["http://json-schema.org/draft-07/schema#", "https://json-schema.org/draft/2019-09/schema"]) {
-      expect(await llm.extractJson("page", { schema: { $schema, ...schema } })).toEqual({ title: "A" });
+      expect(await llm.extractJson("page", { schema: { $schema, ...schema } }, NO_LIMIT)).toEqual({ title: "A" });
     }
   });
 

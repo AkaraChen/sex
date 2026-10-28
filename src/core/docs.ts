@@ -5,6 +5,7 @@ import type { ConvertEngine } from "here-docs";
 import type { Config } from "../config.ts";
 import { AppError } from "../errors.ts";
 import { log } from "../log.ts";
+import type { Deadline } from "./deadline.ts";
 
 type HereDocs = typeof import("here-docs");
 
@@ -67,8 +68,8 @@ export interface DocsConvertOptions {
   filename?: string;
   /** Stop after this many pages. */
   maxPages?: number;
-  timeoutMs: number;
-  signal?: AbortSignal;
+  /** Bounds the conversion; when it ends the conversion is aborted and the error is the deadline's. */
+  deadline: Deadline;
 }
 
 /** Warnings that mean nothing could be converted at all, not a partial result. */
@@ -94,15 +95,14 @@ export class DocsConverter {
   }
 
   async convert(bytes: Uint8Array, opts: DocsConvertOptions): Promise<DocsResult> {
-    const { mod, engine } = await this.start();
-    const deadline = AbortSignal.timeout(opts.timeoutMs);
-    const signal = opts.signal ? AbortSignal.any([opts.signal, deadline]) : deadline;
+    const { deadline } = opts;
+    const { mod, engine } = await deadline.bound(this.start(), "while starting the document converter");
     const sections: string[] = [];
     const warnings: DocsWarning[] = [];
     let numPages: number | undefined;
     let pagesConverted = 0;
     try {
-      for await (const part of mod.convertPages(bytes, { engine, filename: opts.filename, signal })) {
+      for await (const part of mod.convertPages(bytes, { engine, filename: opts.filename, signal: deadline.signal })) {
         if (part.markdown.trim()) sections.push(part.markdown);
         warnings.push(...part.warnings);
         if (part.page === null) continue;
@@ -111,19 +111,16 @@ export class DocsConverter {
         if (opts.maxPages !== undefined && pagesConverted >= opts.maxPages) break;
       }
     } catch (err) {
-      if (deadline.aborted) {
-        throw new AppError(408, "SCRAPE_TIMEOUT", `Timed out after ${opts.timeoutMs}ms converting the document`);
-      }
-      if (opts.signal?.aborted) throw new AppError(408, "TIMEOUT", "Request cancelled while converting the document");
-      throw new AppError(500, "DOCUMENT_CONVERT_FAILED", `Document conversion failed: ${(err as Error).message ?? err}`);
+      deadline.throwIfAborted("while converting the document");
+      throw new AppError("DOCUMENT_CONVERT_FAILED", `Document conversion failed: ${(err as Error).message ?? err}`);
     }
 
     const markdown = sections.join("\n\n");
     if (!markdown.trim()) {
       const fatal = warnings.find((w) => UNCONVERTIBLE.has(w.code));
-      if (fatal) throw new AppError(415, "UNSUPPORTED_FILE", `Unsupported file: ${fatal.message}`);
+      if (fatal) throw new AppError("UNSUPPORTED_FILE", `Unsupported file: ${fatal.message}`);
       const unreadable = warnings.find((w) => UNREADABLE.has(w.code));
-      if (unreadable) throw new AppError(422, "DOCUMENT_PARSE_FAILED", `Failed to parse document: ${unreadable.message}`);
+      if (unreadable) throw new AppError("DOCUMENT_PARSE_FAILED", `Failed to parse document: ${unreadable.message}`);
     }
     return { markdown, numPages, pagesConverted: numPages === undefined ? undefined : pagesConverted, warnings };
   }
@@ -142,14 +139,14 @@ export class DocsConverter {
       try {
         mod = await loadHereDocs();
       } catch (err) {
-        throw new AppError(502, "DOCS_UNAVAILABLE", `SEX_DOCS is on but here-docs could not be loaded: ${(err as Error).message}`);
+        throw new AppError("DOCS_UNAVAILABLE", `SEX_DOCS is on but here-docs could not be loaded: ${(err as Error).message}`);
       }
       try {
         const engine = await mod.createEngine();
         log.info("document converter ready", { ms: Math.round(performance.now() - t0) });
         return { mod, engine };
       } catch (err) {
-        throw new AppError(502, "DOCS_UNAVAILABLE", `here-docs could not start: ${(err as Error).message}`);
+        throw new AppError("DOCS_UNAVAILABLE", `here-docs could not start: ${(err as Error).message}`);
       }
     })();
     // A failed start is retried by the next request instead of being cached forever.

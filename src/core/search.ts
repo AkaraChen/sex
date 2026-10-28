@@ -1,6 +1,7 @@
 import { AppError, badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import type { Document, SearchData, SearchRequest } from "../schemas.ts";
+import { Deadline } from "./deadline.ts";
 import type { Engine } from "./engine.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "./scrape.ts";
 
@@ -53,22 +54,21 @@ function unresponsiveEngines(body: { unresponsive_engines?: unknown }): string[]
   return list.flatMap((e) => (Array.isArray(e) && typeof e[0] === "string" ? [`${e[0]}: ${e[1] ?? "unresponsive"}`] : []));
 }
 
-/** Queries SearXNG, retrying once on network errors and 5xx within the caller's deadline. Unresponsive engines are appended to `unresponsive`. */
+/** Queries SearXNG, retrying once on a retryable failure (network error, 5xx) within the caller's deadline. Unresponsive engines are appended to `unresponsive`. */
 export async function searxng(
   engine: Engine,
   query: SearxQuery,
   pageno: number,
-  signal?: AbortSignal,
+  deadline: Deadline,
   unresponsive?: string[],
 ): Promise<SearxResult[]> {
   try {
-    return await searxngOnce(engine, query, pageno, signal, unresponsive);
+    return await searxngOnce(engine, query, pageno, deadline, unresponsive);
   } catch (err) {
-    const retryable = err instanceof AppError && (err.details as { retryable?: boolean } | undefined)?.retryable;
-    if (!retryable || signal?.aborted) throw err;
+    if (!(err instanceof AppError) || !err.retryable) throw err;
     log.debug("retrying SearXNG request", { error: err.message });
-    await Bun.sleep(RETRY_DELAY_MS);
-    return searxngOnce(engine, query, pageno, signal, unresponsive);
+    await deadline.sleep(RETRY_DELAY_MS, "before retrying the SearXNG request");
+    return searxngOnce(engine, query, pageno, deadline, unresponsive);
   }
 }
 
@@ -76,41 +76,38 @@ async function searxngOnce(
   engine: Engine,
   query: SearxQuery,
   pageno: number,
-  signal?: AbortSignal,
+  deadline: Deadline,
   unresponsive?: string[],
 ): Promise<SearxResult[]> {
   const params = new URLSearchParams({ q: query.q, format: "json", categories: query.categories, pageno: String(pageno) });
   if (query.timeRange) params.set("time_range", query.timeRange);
   if (query.language) params.set("language", query.language);
-  const { timeout } = engine.config;
   const searxngUrl = await engine.searxng.url();
-  const deadline = AbortSignal.timeout(timeout);
-  const sig = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  // One request gets SEX_TIMEOUT of what the search has left.
+  const request = deadline.slice(engine.config.timeout, { expiredCode: "TIMEOUT" });
+  const what = "while querying SearXNG";
   let res: Response;
   try {
-    res = await fetch(`${searxngUrl}/search?${params}`, { headers: { accept: "application/json" }, signal: sig });
+    res = await fetch(`${searxngUrl}/search?${params}`, { headers: { accept: "application/json" }, signal: request.signal });
   } catch (err) {
-    if (deadline.aborted) throw new AppError(408, "TIMEOUT", `SearXNG request timed out after ${timeout}ms`);
-    if (signal?.aborted) throw new AppError(408, "TIMEOUT", "SearXNG request cancelled");
+    request.throwIfAborted(what);
     throw new AppError(
-      502,
       "SEARCH_BACKEND_UNAVAILABLE",
       `Cannot reach SearXNG at ${searxngUrl}: ${err instanceof Error ? err.message : String(err)}`,
-      { retryable: true },
     );
   }
   if (!res.ok) {
     const hint = res.status === 403 ? " (is the json format enabled in SearXNG settings.yml?)" : "";
-    throw new AppError(502, "SEARCH_BACKEND_ERROR", `SearXNG returned HTTP ${res.status}${hint}`, { retryable: res.status >= 500 });
+    // A 5xx may pass on a second try; a 4xx is a configuration problem.
+    throw new AppError("SEARCH_BACKEND_ERROR", `SearXNG returned HTTP ${res.status}${hint}`, undefined, { retryable: res.status >= 500 });
   }
   let body: { results?: SearxResult[]; unresponsive_engines?: unknown };
   try {
     body = (await res.json()) as typeof body;
   } catch {
-    if (deadline.aborted) throw new AppError(408, "TIMEOUT", `SearXNG request timed out after ${timeout}ms`);
-    if (signal?.aborted) throw new AppError(408, "TIMEOUT", "SearXNG request cancelled");
+    request.throwIfAborted(what);
     const type = res.headers.get("content-type") ?? "none";
-    throw new AppError(502, "SEARCH_BACKEND_ERROR", `SearXNG returned a non-JSON response (content-type: ${type})`);
+    throw new AppError("SEARCH_BACKEND_ERROR", `SearXNG returned a non-JSON response (content-type: ${type})`);
   }
   unresponsive?.push(...unresponsiveEngines(body));
   return body.results ?? [];
@@ -122,13 +119,13 @@ async function collect(
   query: SearxQuery,
   want: number,
   accept: (r: SearxResult) => boolean,
-  signal?: AbortSignal,
+  deadline: Deadline,
   unresponsive?: string[],
 ): Promise<SearxResult[]> {
   const seen = new Set<string>();
   const out: SearxResult[] = [];
   for (let page = 1; page <= MAX_PAGES && out.length < want; page++) {
-    const results = await searxng(engine, query, page, signal, unresponsive);
+    const results = await searxng(engine, query, page, deadline, unresponsive);
     let added = 0;
     for (const r of results) {
       if (!r.url || seen.has(r.url)) continue;
@@ -164,12 +161,12 @@ export async function search(engine: Engine, req: SearchRequest, signal?: AbortS
   const wantsScrape = !!req.scrapeOptions?.formats?.length;
   if (wantsScrape) assertScrapeCapabilities(engine, req.scrapeOptions);
   if (req.includeDomains?.length && req.excludeDomains?.length) {
-    throw new AppError(400, "BAD_REQUEST", "includeDomains and excludeDomains cannot both be specified");
+    throw new AppError("BAD_REQUEST", "includeDomains and excludeDomains cannot both be specified");
   }
   const includeDomains = req.includeDomains?.map(normalizeDomain);
-  // Without a request timeout the whole search (pages and scrapes) still gets a deadline.
-  const timeoutSignal = AbortSignal.timeout(req.timeout ?? Math.max(engine.config.timeout * 2, 60_000));
-  const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  // Without a request timeout the whole search (pages and scrapes) still gets a deadline. It keeps the plain TIMEOUT code
+  // it always had: SCRAPE_TIMEOUT names the scrape of a page, not a search.
+  const deadline = Deadline.start(req.timeout ?? Math.max(engine.config.timeout * 2, 60_000), { signal, expiredCode: "TIMEOUT" });
   const unresponsive: string[] = [];
 
   const categories = (req.categories ?? []).map((c) => (typeof c === "string" ? c : c.type));
@@ -197,12 +194,12 @@ export async function search(engine: Engine, req: SearchRequest, signal?: AbortS
   };
 
   const run = async (categories: string): Promise<SearxResult[]> => {
-    if (!includeDomains?.length) return collect(engine, { ...base, q, categories }, limit, accept, combined, unresponsive);
+    if (!includeDomains?.length) return collect(engine, { ...base, q, categories }, limit, accept, deadline, unresponsive);
     // One site: query per domain, interleaved, since multi-site syntax is not portable across engines.
     const perDomain = await Promise.all(
       includeDomains.map((d) =>
         engine.searchDomainLimit(() =>
-          collect(engine, { ...base, q: `${q} site:${d}`, categories }, limit, accept, combined, unresponsive),
+          collect(engine, { ...base, q: `${q} site:${d}`, categories }, limit, accept, deadline, unresponsive),
         ),
       ),
     );
@@ -277,7 +274,7 @@ export async function search(engine: Engine, req: SearchRequest, signal?: AbortS
     const scrapeOne = async <T extends { url?: string }>(item: T): Promise<T & Document> => {
       if (!item.url) return item;
       try {
-        const { document } = await scrapeUrl(engine, item.url, req.scrapeOptions, { signal: combined });
+        const { document } = await scrapeUrl(engine, item.url, req.scrapeOptions, { deadline });
         return { ...item, ...document };
       } catch (err) {
         const e = toAppError(err);

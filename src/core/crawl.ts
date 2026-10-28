@@ -2,6 +2,7 @@ import type { z } from "zod";
 import { badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import { CrawlRequest } from "../schemas.ts";
+import { Deadline } from "./deadline.ts";
 import type { Engine } from "./engine.ts";
 import { type TaskEffects, taskEffects } from "./jobs/effects.ts";
 import { type JobRecord, type JobStore, sendWebhook, validateWebhook } from "./jobs/index.ts";
@@ -50,7 +51,7 @@ function validateDerived(out: Record<string, unknown>): Record<string, unknown> 
 /** Uses the LLM to turn a natural-language prompt into crawl options. */
 export async function crawlParamsFromPrompt(engine: Engine, url: string, prompt: string): Promise<Record<string, unknown>> {
   engine.llm.require("Crawl prompts");
-  const out = await engine.llm.crawlOptions(url, prompt);
+  const out = await engine.llm.crawlOptions(url, prompt, Deadline.unbounded());
   return validateDerived(out ?? {});
 }
 
@@ -229,7 +230,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: s
 
     if (!req.ignoreRobotsTxt) {
       const robotsTxt = await safeFetch(`${start.origin}/robots.txt`, {
-        timeout: 10_000,
+        deadline: Deadline.start(10_000),
         allowPrivateNetwork: engine.config.allowPrivateNetwork,
         userAgent: engine.config.userAgent,
         maxBodyBytes: engine.config.maxBodyBytes,
@@ -255,7 +256,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: s
         }
         return true;
       };
-      const urls = await sitemapUrls(engine, start.origin, plan.limit, undefined, {
+      const urls = await sitemapUrls(engine, start.origin, plan.limit, Deadline.unbounded(), {
         accept,
         scopePath: plan.basePath,
         robots: plan.robots,

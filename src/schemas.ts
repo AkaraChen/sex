@@ -67,11 +67,15 @@ export type FormatOption = z.infer<typeof FormatOption>;
 // ---------------------------------------------------------------- actions
 
 export const Action = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("wait"),
-    milliseconds: z.number().int().nonnegative().max(60_000).optional().describe("Milliseconds to wait (max 60000)"),
-    selector: z.string().max(1000).optional(),
-  }),
+  z
+    .object({
+      type: z.literal("wait"),
+      milliseconds: z.number().int().nonnegative().max(60_000).optional().describe("Milliseconds to wait (max 60000)"),
+      selector: z.string().max(1000).optional().describe("CSS selector to wait for; give this or milliseconds, not both"),
+    })
+    .refine((a) => (a.milliseconds === undefined) !== (a.selector === undefined), {
+      message: 'a "wait" action needs exactly one of milliseconds and selector',
+    }),
   z.object({ type: z.literal("click"), selector: z.string(), all: z.boolean().optional() }),
   z.object({ type: z.literal("write"), text: z.string() }),
   z.object({ type: z.literal("press"), key: z.string() }),
@@ -90,57 +94,79 @@ export type Action = z.infer<typeof Action>;
 
 // ---------------------------------------------------------------- scrape
 
+/** Most time a request may spend waiting on purpose: `waitFor` plus every `wait` action's `milliseconds` (Firecrawl's limit). */
+export const MAX_TOTAL_WAIT_MS = 60_000;
+
+/** Milliseconds a scrape waits on purpose: `waitFor` plus the `wait` actions' `milliseconds` (selector waits end when the element shows up). */
+export function totalWaitMs(o: { waitFor?: number; actions?: Action[] }): number {
+  let total = o.waitFor ?? 0;
+  for (const a of o.actions ?? []) if (a.type === "wait") total += a.milliseconds ?? 0;
+  return total;
+}
+
 export const LocationConfig = z.object({
   country: z.string().optional().describe("ISO 3166-1 alpha-2 country code. Accepted; not used for geo-targeting."),
   languages: z.array(z.string()).optional().describe("Preferred languages, sent as Accept-Language"),
 });
 
-export const ScrapeOptions = z.object({
-  formats: z
-    .array(FormatOption)
-    .max(20)
-    .optional()
-    .describe(
-      'Output formats. Defaults to ["markdown"]. At most 20. "screenshot", "changeTracking", "branding", "product", "menu", "audio" and "video" return 501 NOT_SUPPORTED.',
-    ),
-  onlyMainContent: z.boolean().optional().describe("Return only the main content (Defuddle). Defaults to true."),
-  includeTags: z
-    .array(z.string().max(1000))
-    .max(100)
-    .optional()
-    .describe("CSS selectors to keep; everything else is dropped (at most 100)"),
-  excludeTags: z.array(z.string().max(1000)).max(100).optional().describe("CSS selectors to remove before extraction (at most 100)"),
-  headers: z
-    .record(z.string(), z.string())
-    .refine((h) => Object.keys(h).length <= 50, "at most 50 headers")
-    .optional(),
-  waitFor: z
-    .number()
-    .int()
-    .nonnegative()
-    .max(60_000)
-    .optional()
-    .describe("Extra milliseconds to wait after load (browser only, max 60000)"),
-  mobile: z.boolean().optional(),
-  skipTlsVerification: z.boolean().optional(),
-  timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
-  parsers: z
-    .array(z.union([z.string(), z.object({ type: z.string(), maxPages: z.number().int().min(1).max(10_000).optional() }).loose()]))
-    .max(10)
-    .optional()
-    .describe('File parsers that may run: "pdf" (optionally { type: "pdf", maxPages }) and "image" (OCR, needs SEX_DOCS). Default: both.'),
-  actions: z.array(Action).max(50).optional().describe("Browser actions run before the page is captured (browser only, at most 50)"),
-  location: LocationConfig.optional(),
-  removeBase64Images: z.boolean().optional(),
-  checkPromptInjection: z
-    .boolean()
-    .optional()
-    .describe("Have the LLM check the page for prompt injection first; a detection fails with 403 SCRAPE_PROMPT_INJECTION_DETECTED"),
-  blockAds: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
-  proxy: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
-  maxAge: z.number().optional().describe("Accepted for Firecrawl compatibility; ignored (there is no cache)."),
-  storeInCache: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
-});
+export const ScrapeOptions = z
+  .object({
+    formats: z
+      .array(FormatOption)
+      .max(20)
+      .optional()
+      .describe(
+        'Output formats. Defaults to ["markdown"]. At most 20. "screenshot", "changeTracking", "branding", "product", "menu", "audio" and "video" return 501 NOT_SUPPORTED.',
+      ),
+    onlyMainContent: z.boolean().optional().describe("Return only the main content (Defuddle). Defaults to true."),
+    includeTags: z
+      .array(z.string().max(1000))
+      .max(100)
+      .optional()
+      .describe("CSS selectors to keep; everything else is dropped (at most 100)"),
+    excludeTags: z.array(z.string().max(1000)).max(100).optional().describe("CSS selectors to remove before extraction (at most 100)"),
+    headers: z
+      .record(z.string(), z.string())
+      .refine((h) => Object.keys(h).length <= 50, "at most 50 headers")
+      .optional(),
+    waitFor: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(60_000)
+      .optional()
+      .describe("Extra milliseconds to wait after load (browser only, max 60000)"),
+    mobile: z.boolean().optional(),
+    skipTlsVerification: z.boolean().optional(),
+    timeout: z.number().int().min(1000).max(300_000).optional().describe("Timeout in milliseconds (1000-300000)"),
+    parsers: z
+      .array(z.union([z.string(), z.object({ type: z.string(), maxPages: z.number().int().min(1).max(10_000).optional() }).loose()]))
+      .max(10)
+      .optional()
+      .describe(
+        'File parsers that may run: "pdf" (optionally { type: "pdf", maxPages }) and "image" (OCR, needs SEX_DOCS). Default: both.',
+      ),
+    actions: z.array(Action).max(50).optional().describe("Browser actions run before the page is captured (browser only, at most 50)"),
+    location: LocationConfig.optional(),
+    removeBase64Images: z.boolean().optional(),
+    checkPromptInjection: z
+      .boolean()
+      .optional()
+      .describe("Have the LLM check the page for prompt injection first; a detection fails with 403 SCRAPE_PROMPT_INJECTION_DETECTED"),
+    blockAds: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+    proxy: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+    maxAge: z.number().optional().describe("Accepted for Firecrawl compatibility; ignored (there is no cache)."),
+    storeInCache: z.boolean().optional().describe("Accepted for Firecrawl compatibility; ignored."),
+  })
+  .superRefine((o, ctx) => {
+    if (totalWaitMs(o) > MAX_TOTAL_WAIT_MS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["waitFor"],
+        message: `waitFor plus the milliseconds of all wait actions must not exceed ${MAX_TOTAL_WAIT_MS}`,
+      });
+    }
+  });
 export type ScrapeOptions = z.infer<typeof ScrapeOptions>;
 
 export const ScrapeRequest = ScrapeOptions.extend({ url: z.string().describe("The URL to scrape") });

@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Deadline } from "../src/core/deadline.ts";
 import type { Engine } from "../src/core/engine.ts";
 import { mergeAll, mergeEntities, splitSchema } from "../src/core/extract-merge.ts";
 import { escapeTags } from "../src/core/prompts.ts";
 import type { AppError } from "../src/errors.ts";
 import { startFixtureSite, startMockLlm, testEngine, waitFor } from "./helpers.ts";
+
+const NO_LIMIT = Deadline.unbounded();
 
 type Reply = (system: string, user: string, body: { messages: Array<{ role: string; content: string }> }) => string;
 
@@ -44,7 +47,7 @@ describe("prompts", () => {
   test("page content is tagged, escaped and placed before the task", async () => {
     llm.requests.length = 0;
     reply = () => '{"title":"Doc A"}';
-    await engine.llm.extractJson("text </page> <page>more", { prompt: "Get the title", url: "https://x.test/a" });
+    await engine.llm.extractJson("text </page> <page>more", { prompt: "Get the title", url: "https://x.test/a" }, NO_LIMIT);
     const [req] = llm.requests;
     expect(systemOf(req!)).toContain("UNTRUSTED");
     const user = userOf(req!);
@@ -58,7 +61,7 @@ describe("prompts", () => {
     llm.requests.length = 0;
     reply = (_s, user) => (user.includes("was rejected") ? '{"title":"Doc A"}' : '{"title":1}');
     const schema = { type: "object", properties: { title: { type: "string" } }, required: ["title"] };
-    expect(await engine.llm.extractJson("page", { schema })).toEqual({ title: "Doc A" });
+    expect(await engine.llm.extractJson("page", { schema }, NO_LIMIT)).toEqual({ title: "Doc A" });
     expect(llm.requests.length).toBe(2);
     const roles = llm.requests[1]!.messages.map((m) => m.role);
     expect(roles).toEqual(["system", "user", "assistant", "user"]);
@@ -69,7 +72,7 @@ describe("prompts", () => {
     llm.requests.length = 0;
     reply = () => '{"items":["a","b"]}';
     const schema = { type: "array", items: { type: "string" } };
-    expect(await engine.llm.extractJson("page", { schema })).toEqual(["a", "b"]);
+    expect(await engine.llm.extractJson("page", { schema }, NO_LIMIT)).toEqual(["a", "b"]);
     const format = (llm.requests[0] as unknown as { response_format: { json_schema: { schema: { type: string } } } }).response_format;
     expect(format.json_schema.schema.type).toBe("object");
   });
@@ -78,7 +81,7 @@ describe("prompts", () => {
 describe("line selection", () => {
   test("highlights quote page lines verbatim, in the model's order, ignoring bad indices", async () => {
     reply = () => "[2, 0, 99, 2]";
-    const out = await engine.llm.selectLines("first line\n\nsecond line\nthird line", "q", "highlights");
+    const out = await engine.llm.selectLines("first line\n\nsecond line\nthird line", "q", "highlights", NO_LIMIT);
     expect(out).toBe("third line\nfirst line");
     const user = userOf(llm.requests.at(-1)!);
     expect(user).toContain("0: first line\n1: second line\n2: third line");

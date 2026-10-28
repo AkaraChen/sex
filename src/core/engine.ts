@@ -69,7 +69,7 @@ export class Engine {
 
   async cancelJob(job: JobRecord): Promise<void> {
     if (!(await this.jobs.store.finish(job.id, "cancelled"))) {
-      throw new AppError(409, "JOB_FINISHED", `Job ${job.id} already finished`);
+      throw new AppError("JOB_FINISHED", `Job ${job.id} already finished`);
     }
   }
 

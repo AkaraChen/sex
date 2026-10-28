@@ -2,15 +2,16 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import ipaddr from "ipaddr.js";
 import { DEFAULT_MAX_BODY_BYTES } from "../config.ts";
-import { AppError, badRequest } from "../errors.ts";
+import { AppError, badRequest, type ErrorCode } from "../errors.ts";
+import type { Deadline } from "./deadline.ts";
 
 const MAX_REDIRECTS = 10;
 const MAX_PINNED_ADDRESSES = 4;
 
 export interface FetchOptions {
   headers?: Record<string, string>;
-  timeout: number;
-  signal?: AbortSignal;
+  /** Bounds the whole fetch (redirects and body included). Pass `deadline.slice(ms)` for a step budget of its own. */
+  deadline: Deadline;
   allowPrivateNetwork: boolean;
   skipTlsVerification?: boolean;
   userAgent: string;
@@ -69,13 +70,12 @@ export async function resolvePublicAddresses(url: URL, allowPrivateNetwork: bool
   if (allowPrivateNetwork) return [];
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (host === "localhost" || host.endsWith(".localhost")) {
-    throw new AppError(403, "PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${url.href}`);
+    throw new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${url.href}`);
   }
   const literal = isIP(host) !== 0;
   const addresses = literal ? [host] : (await lookup(host, { all: true }).catch(() => [])).map((a) => a.address);
   if (addresses.some(isPrivateIp)) {
     throw new AppError(
-      403,
       "PRIVATE_NETWORK_BLOCKED",
       `Refusing to fetch private address: ${url.href} (start with --allow-private-network to permit)`,
     );
@@ -110,7 +110,7 @@ async function readLimited(res: Response, signal: AbortSignal, maxBytes: number)
     size += value.byteLength;
     if (size > maxBytes) {
       await reader.cancel();
-      throw new AppError(413, "RESPONSE_TOO_LARGE", `Response body exceeds ${maxBytes} bytes`);
+      throw new AppError("RESPONSE_TOO_LARGE", `Response body exceeds ${maxBytes} bytes`);
     }
     chunks.push(value);
   }
@@ -123,10 +123,9 @@ async function readLimited(res: Response, signal: AbortSignal, maxBytes: number)
   return out;
 }
 
-/** fetch() with SSRF checks on every redirect hop, a timeout and a body size cap. */
+/** fetch() with SSRF checks on every redirect hop, a deadline and a body size cap. */
 export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<FetchedResponse> {
-  const timeoutSignal = AbortSignal.timeout(opts.timeout);
-  const signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal;
+  const { signal } = opts.deadline;
   let url = parseHttpUrl(rawUrl);
   let method = opts.method ?? "GET";
   let body: string | undefined = opts.body;
@@ -197,15 +196,60 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
         body: bytes,
       };
     }
-    throw new AppError(508, "TOO_MANY_REDIRECTS", `Too many redirects: ${rawUrl}`);
+    throw new AppError("TOO_MANY_REDIRECTS", `Too many redirects: ${rawUrl}`);
   } catch (err) {
-    if (timeoutSignal.aborted) {
-      throw new AppError(408, "SCRAPE_TIMEOUT", `Timed out after ${opts.timeout}ms fetching ${rawUrl}`);
-    }
+    opts.deadline.throwIfAborted(`while fetching ${rawUrl}`);
     if (err instanceof AppError) throw err;
-    if (opts.signal?.aborted) throw new AppError(408, "TIMEOUT", `Request cancelled while fetching ${rawUrl}`);
-    throw new AppError(502, "FETCH_FAILED", `Failed to fetch ${rawUrl}: ${err instanceof Error ? err.message : String(err)}`);
+    throw networkError(err, rawUrl, { skipTlsVerification: opts.skipTlsVerification });
   }
+}
+
+const DNS_FAILURES = /^(ENOTFOUND|EAI_\w+|ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|CouldntResolveHost)$/;
+/** Problems with the certificate itself, which `skipTlsVerification` accepts. */
+const CERT_FAILURES =
+  /^(CERT_\w+|ERR_CERT_\w+|ERR_TLS_CERT_ALTNAME_INVALID|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_(GET_ISSUER_CERT(_LOCALLY)?|VERIFY_LEAF_SIGNATURE)|ERR_SSL_(UNKNOWN_CA|BAD_CERT\w*|CERTIFICATE\w*)|PeerFailedVerification|SslCertproblem|SslIssuerError|SslInvalidcertstatus)$/;
+/** Other failures of the TLS handshake (wrong protocol, no shared cipher, a plain-HTTP port): skipping verification does not help. */
+const TLS_FAILURES = /^(EPROTO|ERR_SSL_\w+|ERR_TLS_\w+|ERR_BAD_SSL_CLIENT_AUTH_CERT|Ssl\w+|TlsConnectionTruncated)$/;
+const CONNECTION_FAILURES =
+  /^(ECONN\w+|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE|ConnectionRefused|ConnectionClosed|FailedToOpenSocket|UND_ERR_\w+|ERR_CONNECTION_\w+|ERR_EMPTY_RESPONSE|ERR_TIMED_OUT|ERR_ADDRESS_\w+|ERR_NETWORK_\w+|ERR_INTERNET_DISCONNECTED|ERR_INVALID_HTTP_RESPONSE|ERR_HTTP2_\w+|ERR_PROXY_\w+|CouldntConnect|ConnectionFailed|GotNothing|RecvError|SendError|OperationTimedout)$/;
+/** Lightpanda names a failed request after the libcurl error, then " at <url>". */
+const LIGHTPANDA_ERROR =
+  /^(Couldnt\w+|ConnectionFailed|GotNothing|RecvError|SendError|OperationTimedout|PeerFailedVerification|Ssl\w+|TlsConnectionTruncated) at /;
+
+/** The error code of a failed request: Node / Bun `code` (also on `cause`), or the name a browser puts in the message (Chromium `net::ERR_*`, Lightpanda's libcurl names). */
+function networkErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const e = err as { code?: unknown; message?: unknown; cause?: unknown };
+  if (typeof e.code === "string") return e.code;
+  const message = typeof e.message === "string" ? e.message : "";
+  return /net::(ERR_[A-Z0-9_]+)/.exec(message)?.[1] ?? LIGHTPANDA_ERROR.exec(message)?.[1] ?? networkErrorCode(e.cause);
+}
+
+/**
+ * Names a failure to fetch a page: what `fetch()` throws, or what a CDP browser reports (`net::ERR_*`, or libcurl names from Lightpanda). Deterministic
+ * problems get their own code so the client does not retry them: an unknown host is `SCRAPE_DNS_RESOLUTION_ERROR`, a bad
+ * certificate `SCRAPE_SSL_ERROR` (with a hint to `skipTlsVerification`), a refused or dropped connection and any other
+ * browser network error `SCRAPE_SITE_ERROR`. Anything unrecognised is `FETCH_FAILED`.
+ * Does not look at aborts: callers translate those with their `Deadline` first.
+ */
+export function networkError(err: unknown, url: string, opts: { skipTlsVerification?: boolean } = {}): AppError {
+  const reason = networkErrorCode(err);
+  const message = err instanceof Error ? err.message : String(err);
+  const details = reason ? { reason } : undefined;
+  const make = (code: ErrorCode, text: string) => new AppError(code, text, details);
+  if (reason && DNS_FAILURES.test(reason)) {
+    return make("SCRAPE_DNS_RESOLUTION_ERROR", `Could not resolve the host name of ${url} (${reason}). Check that the domain exists.`);
+  }
+  if (reason && CERT_FAILURES.test(reason)) {
+    const hint = opts.skipTlsVerification ? "" : " To scrape it anyway, set skipTlsVerification to true.";
+    return make("SCRAPE_SSL_ERROR", `The TLS certificate of ${url} was rejected (${reason}).${hint}`);
+  }
+  if (reason && TLS_FAILURES.test(reason)) return make("SCRAPE_SSL_ERROR", `The TLS handshake with ${url} failed (${reason}).`);
+  // Every other `net::ERR_*` is the browser failing to get a response from the site.
+  if (reason && (CONNECTION_FAILURES.test(reason) || message.includes(`net::${reason}`))) {
+    return make("SCRAPE_SITE_ERROR", `Could not load ${url}: the connection failed (${reason}).`);
+  }
+  return make("FETCH_FAILED", `Failed to fetch ${url}: ${message}`);
 }
 
 function lowerKeys(h: Record<string, string>): Record<string, string> {

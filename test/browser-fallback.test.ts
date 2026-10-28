@@ -1,29 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Engine } from "../src/core/engine.ts";
-import { testEngine } from "./helpers.ts";
+import { CERT, KEY, testEngine } from "./helpers.ts";
 
 // Opt-in: needs a CDP browser, e.g. SEX_TEST_CDP_URL=http://127.0.0.1:9666 bun test test/browser-fallback.test.ts
 const CDP = process.env.SEX_TEST_CDP_URL;
-
-// Throwaway self-signed certificate for localhost / 127.0.0.1 (test fixture only).
-const CERT = `-----BEGIN CERTIFICATE-----
-MIIBmzCCAUGgAwIBAgIUcK2B/nZ/V1i/94gceqNkDbfZ0WMwCgYIKoZIzj0EAwIw
-FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAyNTE0MjEyMloYDzIxMjYxMDAx
-MTQyMTIyWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
-PQMBBwNCAAQdLtMTE3HiHuXUFKrJab17zxVxWMOLxOwNs2OFbeTm/yFPpDddITJS
-+ZOmK4Mq2cVEIxiP5/U3Egn/EnjnT4F4o28wbTAdBgNVHQ4EFgQUa2l4M/yUi+3y
-4sUjQgbqNgniE5MwHwYDVR0jBBgwFoAUa2l4M/yUi+3y4sUjQgbqNgniE5MwDwYD
-VR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwCgYIKoZI
-zj0EAwIDSAAwRQIgHiq/3W41m/lnQsAM3ixZlYIfSfTn/XIvV/s83GYIa5kCIQCR
-tUbyO/u9ZV5j9oRx95bDP7s1F+/sK2D6d0rx5Xo6pg==
------END CERTIFICATE-----
-`;
-const KEY = `-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgJVB4a/Q2SjNcJ64B
-y89h6w4xR6WqdZm2vZadjEz4RrehRANCAAQdLtMTE3HiHuXUFKrJab17zxVxWMOL
-xOwNs2OFbeTm/yFPpDddITJS+ZOmK4Mq2cVEIxiP5/U3Egn/EnjnT4F4
------END PRIVATE KEY-----
-`;
 
 const page = `<!doctype html><html lang="en"><head><title>Secure Fixture</title></head><body><main><article><h1>Secure heading</h1><p>Served over self-signed TLS.</p></article></main></body></html>`;
 
@@ -82,7 +62,7 @@ describe.skipIf(!CDP)("browser fallbacks", () => {
   test("skipTlsVerification is honored in the browser", async () => {
     const url = `https://127.0.0.1:${https.port}/`;
     const strict = await engine.scrape({ url }).catch((e: unknown) => e);
-    expect((strict as { code?: string }).code).toBe("FETCH_FAILED");
+    expect((strict as { code?: string }).code).toBe("SCRAPE_SSL_ERROR");
     const doc = await engine.scrape({ url, skipTlsVerification: true, formats: ["markdown"] });
     expect(doc.markdown).toContain("Served over self-signed TLS");
   });

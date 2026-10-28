@@ -3,6 +3,7 @@ import { AppError, browserRequired, llmRequired, toAppError, unsupported } from 
 import { log } from "../log.ts";
 import type { Document, FormatOption, ScrapeOptions } from "../schemas.ts";
 import type { BrowserScrapeResult } from "./browser.ts";
+import { Deadline } from "./deadline.ts";
 import type { Engine } from "./engine.ts";
 import { compileJsonSchema } from "./json-schema.ts";
 import { assertPublicUrl, decodeBody, MARKUP_TYPE, parseHttpUrl, safeFetch } from "./net.ts";
@@ -104,7 +105,13 @@ export function assertScrapeCapabilities(engine: Engine, options: ScrapeOptions 
 }
 
 export interface ScrapeInternalOptions {
+  /** Cancels the scrape (client disconnected, job cancelled). Ignored when `deadline` is given. */
   signal?: AbortSignal;
+  /**
+   * The deadline of the operation this scrape is part of (a search with `scrapeOptions`). The scrape's own `timeout` is cut
+   * from it, and so is the LLM time, so the whole never outlasts it.
+   */
+  deadline?: Deadline;
   /** Always collect links (used by crawl/map) even if the caller did not ask for them. */
   collectLinks?: boolean;
 }
@@ -128,10 +135,23 @@ export async function scrapeUrl(
   const url = rewriteUrl(requested);
   await assertPublicUrl(url, engine.config.allowPrivateNetwork);
   return engine.scrapeLimit(() => {
+    // The clock starts when the scrape does, not when it joins the queue for a free slot.
+    const outer = internal.deadline ?? Deadline.unbounded(internal.signal);
     // Waiting in the queue can outlast the caller; do not start work nobody is waiting for.
-    if (internal.signal?.aborted) throw new AppError(408, "TIMEOUT", "Request cancelled before the scrape started");
-    return scrapeInner(engine, url.href, requested.href, options, formats, internal);
+    outer.throwIfAborted("before the scrape started");
+    // `timeout` bounds getting the document: fetching or rendering, waiting, converting and extracting. The LLM formats
+    // are not part of it (Firecrawl counts them): they have SEX_LLM_TIMEOUT, 120 s by default against a 30 s timeout.
+    const budgets = { page: outer.slice(options.timeout ?? engine.config.timeout, { expiredCode: "SCRAPE_TIMEOUT" }), llm: outer };
+    return scrapeInner(engine, url.href, requested.href, options, formats, budgets, internal);
   });
+}
+
+/** Where the time of one scrape comes from. */
+interface ScrapeBudgets {
+  /** Fetching or rendering the page, converting files, extracting content. */
+  page: Deadline;
+  /** What the LLM calls are cut from: each call gets `SEX_LLM_TIMEOUT` of it. */
+  llm: Deadline;
 }
 
 async function scrapeInner(
@@ -140,10 +160,10 @@ async function scrapeInner(
   sourceUrl: string,
   options: ScrapeOptions,
   formats: NormalizedFormats,
+  { page: deadline, llm: llmDeadline }: ScrapeBudgets,
   internal: ScrapeInternalOptions,
 ): Promise<ScrapeOutcome> {
   const { config } = engine;
-  const timeout = options.timeout ?? config.timeout;
   const onlyMainContent = options.onlyMainContent ?? true;
   const headers: Record<string, string> = { ...(options.headers ?? {}) };
   if (options.location?.languages?.length && !Object.keys(headers).some((h) => h.toLowerCase() === "accept-language")) {
@@ -175,7 +195,7 @@ async function scrapeInner(
   if (engine.browser.enabled && !fileKindOf(new URL(url)) && url === sourceUrl) {
     browserResult = await engine.browser.scrape({
       url,
-      timeout,
+      deadline,
       headers,
       userAgent: config.userAgent,
       mobile: options.mobile,
@@ -193,7 +213,6 @@ async function scrapeInner(
               return false;
             }
           },
-      signal: internal.signal,
     });
     ({ url: finalUrl, status, contentType } = browserResult);
     rawHtml = browserResult.rawHtml;
@@ -201,12 +220,14 @@ async function scrapeInner(
   } else if (options.waitFor) {
     warnings.push("waitFor is ignored without a browser");
   }
+  if (engine.browser.enabled && options.waitFor && options.waitFor > (options.timeout ?? config.timeout) / 2) {
+    warnings.push("waitFor is more than half of timeout, so little time is left to load and read the page; raise timeout or lower waitFor");
+  }
 
   if (!browserResult || browserResult.nonHtml) {
     const res = await safeFetch(url, {
       headers,
-      timeout,
-      signal: internal.signal,
+      deadline,
       allowPrivateNetwork: config.allowPrivateNetwork,
       maxBodyBytes: config.maxBodyBytes,
       skipTlsVerification: options.skipTlsVerification,
@@ -219,31 +240,31 @@ async function scrapeInner(
     contentType = res.contentType;
     const isPdf = /application\/pdf/i.test(contentType) || startsWith(res.body, "%PDF-");
     if (isPdf) {
-      if (!parsers.pdf) throw new AppError(415, "UNSUPPORTED_FILE", "PDF parsing is disabled by the parsers option");
+      if (!parsers.pdf) throw new AppError("UNSUPPORTED_FILE", "PDF parsing is disabled by the parsers option");
       if (engine.docs.enabled) {
-        const doc = await convertDocument(engine, res.body, finalUrl, parsers.maxPages, timeout, internal.signal, warnings);
+        const doc = await convertDocument(engine, res.body, finalUrl, parsers.maxPages, deadline, warnings);
         plainMarkdown = doc.markdown;
         pdfMeta = { numPages: doc.numPages };
       } else {
-        const pdf = await engine.extractPool.pdf(res.body, parsers.maxPages);
+        const pdf = await engine.extractPool.pdf(res.body, parsers.maxPages, deadline);
         plainMarkdown = pdf.markdown;
         pdfMeta = { title: pdf.title, numPages: pdf.numPages };
       }
       contentType ||= "application/pdf";
     } else if (!contentType && engine.docs.enabled && isConvertibleByExtension(finalUrl, parsers.image)) {
-      plainMarkdown = (await convertDocument(engine, res.body, finalUrl, undefined, timeout, internal.signal, warnings)).markdown;
+      plainMarkdown = (await convertDocument(engine, res.body, finalUrl, undefined, deadline, warnings)).markdown;
     } else if (!contentType || MARKUP_TYPE.test(contentType)) {
       rawHtml = decodeBody(res.body, contentType);
-      extracted = await engine.extractPool.html(rawHtml, { ...extractOpts, url: finalUrl });
+      extracted = await engine.extractPool.html(rawHtml, { ...extractOpts, url: finalUrl }, deadline);
     } else if (/^(text\/|application\/(json|javascript|x-ndjson))/i.test(contentType)) {
       const text = decodeBody(res.body, contentType);
       plainMarkdown = /json/i.test(contentType) ? `\`\`\`json\n${text}\n\`\`\`` : text;
       rawHtml = text;
     } else if (engine.docs.enabled && (parsers.image || !/^image\//i.test(contentType))) {
       // Office documents, EPUB, RTF and (with the "image" parser) raster images; here-docs detects the format from the bytes.
-      plainMarkdown = (await convertDocument(engine, res.body, finalUrl, undefined, timeout, internal.signal, warnings)).markdown;
+      plainMarkdown = (await convertDocument(engine, res.body, finalUrl, undefined, deadline, warnings)).markdown;
     } else {
-      throw new AppError(415, "UNSUPPORTED_FILE", `Unsupported content type: ${contentType}`);
+      throw new AppError("UNSUPPORTED_FILE", `Unsupported content type: ${contentType}`);
     }
   }
 
@@ -295,11 +316,10 @@ async function scrapeInner(
   if (formats.attributes) doc.attributes = extracted?.attributes ?? [];
   if (browserResult?.actions) doc.actions = browserResult.actions;
 
-  const sig = internal.signal;
   if (options.checkPromptInjection) {
     // Runs before every LLM-backed format, so content it blocks never reaches one.
     const { text, truncated } = engine.llm.fit(markdown);
-    const { scannedFully } = await engine.llm.checkInjection(text, sig);
+    const { scannedFully } = await engine.llm.checkInjection(text, llmDeadline);
     if (truncated || !scannedFully) {
       warnings.push(
         truncated
@@ -314,21 +334,22 @@ async function scrapeInner(
     if (truncated) warnings.push(`The page was too long for the LLM; only its first ${engine.llm.maxInputChars} characters were used.`);
     const { llm } = engine;
     const settled = await Promise.allSettled([
-      formats.json ? llm.extractJson(content, { ...formats.json, url: finalUrl }, sig) : undefined,
-      formats.summary ? llm.summarize(content, sig, finalUrl) : undefined,
+      formats.json ? llm.extractJson(content, { ...formats.json, url: finalUrl }, llmDeadline) : undefined,
+      formats.summary ? llm.summarize(content, llmDeadline, finalUrl) : undefined,
       formats.question
         ? formats.questionMode === "directQuote"
-          ? llm.selectLines(content, formats.question, "answer", sig, finalUrl)
-          : llm.answer(content, formats.question, sig, finalUrl)
+          ? llm.selectLines(content, formats.question, "answer", llmDeadline, finalUrl)
+          : llm.answer(content, formats.question, llmDeadline, finalUrl)
         : undefined,
-      formats.highlights ? llm.selectLines(content, formats.highlights, "highlights", sig, finalUrl) : undefined,
+      formats.highlights ? llm.selectLines(content, formats.highlights, "highlights", llmDeadline, finalUrl) : undefined,
     ]);
-    // A failed format must not throw away the rest of the page; only configuration, injection and cancellation do.
+    // A failed format must not throw away the rest of the page; only configuration, injection and the end of the deadline do.
     const labels = ["JSON extraction", "Summary", "Question answering", "Highlights"];
     const values: unknown[] = settled.map((r, i) => {
       if (r.status === "fulfilled") return r.value;
       const err = toAppError(r.reason);
-      if (sig?.aborted || err.status === 501 || err.code === "SCRAPE_PROMPT_INJECTION_DETECTED") throw r.reason;
+      if (llmDeadline.signal.aborted) throw llmDeadline.translate(r.reason);
+      if (err.status === 501 || err.code === "SCRAPE_PROMPT_INJECTION_DETECTED") throw r.reason;
       log.warn("LLM format failed", { format: labels[i], code: err.code, error: err.message });
       warnings.push(`${labels[i]} failed: ${err.message}`);
       return undefined;
@@ -364,12 +385,11 @@ async function convertDocument(
   body: Uint8Array,
   url: string,
   maxPages: number | undefined,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
+  deadline: Deadline,
   warnings: string[],
 ) {
   const filename = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "") || undefined;
-  const doc = await engine.docs.convert(body, { filename, maxPages, timeoutMs, signal });
+  const doc = await engine.docs.convert(body, { filename, maxPages, deadline });
   for (const w of doc.warnings) warnings.push(w.message);
   if (doc.numPages !== undefined && doc.pagesConverted !== undefined && doc.pagesConverted < doc.numPages) {
     warnings.push(`Converted the first ${doc.pagesConverted} of ${doc.numPages} pages (parsers maxPages)`);

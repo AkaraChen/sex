@@ -229,7 +229,6 @@ export async function applyRequestPolicies(page: PolicyPage, opts: RequestPolicy
   if (!interceptable) {
     const remedies = policies.flatMap((p) => (p.remedy ? [p.remedy] : []));
     throw new AppError(
-      501,
       "BROWSER_INTERCEPTION_UNSUPPORTED",
       `This browser cannot intercept requests, so ${policies.map((p) => p.purpose).join(" and ")} cannot be enforced. Use a browser with CDP Fetch support${remedies.length ? ` ${remedies.join(" ")}` : ""}.`,
     );
