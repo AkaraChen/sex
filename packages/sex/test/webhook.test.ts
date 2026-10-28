@@ -69,7 +69,6 @@ const job = (webhook: unknown): JobRecord => ({
   completed: 0,
   pending: 0,
   scheduled: 0,
-  slots: 0,
 });
 
 describe("safeFetch redirect handling", () => {

@@ -8,14 +8,18 @@ import type { WebhookConfig } from "../../schemas.ts";
 import type { Engine } from "../engine.ts";
 import { createDocumentLog } from "./documents.ts";
 import { BunqueueTaskQueue } from "./queue.ts";
+import { JobScheduler } from "./scheduler.ts";
 import { SqliteJobStore } from "./sqlite.ts";
 import type { JobRecord, JobStore, TaskQueue } from "./types.ts";
 
+export { JobScheduler, pageLimits } from "./scheduler.ts";
 export * from "./types.ts";
 
 export interface JobBackend {
   store: JobStore;
   queue: TaskQueue;
+  /** Every task goes into the queue through this (order, pace), never directly. */
+  scheduler: JobScheduler;
   close(): Promise<void>;
 }
 
@@ -32,6 +36,7 @@ export function createJobBackend(config: Config): JobBackend {
   return {
     store,
     queue,
+    scheduler: new JobScheduler(queue),
     async close() {
       await queue.close();
       await store.close();
@@ -84,6 +89,7 @@ export function sendWebhook(
 export async function settleTask(engine: Engine, jobId: string, taskId?: string, countCompleted = false): Promise<void> {
   const left = await engine.jobs.store.settle(jobId, taskId, countCompleted);
   if (left === null || left > 0) return;
+  await engine.jobs.scheduler.release(jobId);
   if (await engine.jobs.store.finish(jobId, "completed")) {
     const job = await engine.jobs.store.get(jobId);
     if (job) sendWebhook(engine.config, job, "completed");

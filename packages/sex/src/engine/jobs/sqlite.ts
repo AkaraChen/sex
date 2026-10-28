@@ -35,8 +35,6 @@ CREATE TABLE IF NOT EXISTS jobs (
   completed INTEGER NOT NULL DEFAULT 0,
   pending INTEGER NOT NULL DEFAULT 0,
   scheduled INTEGER NOT NULL DEFAULT 0,
-  slots INTEGER NOT NULL DEFAULT 0,
-  next_slot_at INTEGER NOT NULL DEFAULT 0,
   robots_txt TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS jobs_active ON jobs (kind, status);
@@ -74,7 +72,6 @@ CREATE TABLE IF NOT EXISTS outbox (
   owner TEXT,
   url TEXT NOT NULL,
   depth INTEGER NOT NULL,
-  run_at INTEGER NOT NULL,
   PRIMARY KEY (job_id, task_id)
 );
 CREATE INDEX IF NOT EXISTS outbox_owner ON outbox (job_id, owner);
@@ -102,11 +99,9 @@ interface JobRow {
   completed: number;
   pending: number;
   scheduled: number;
-  slots: number;
-  next_slot_at: number;
 }
 
-const COUNTERS = new Set<CounterName>(["total", "completed", "pending", "scheduled", "slots"]);
+const COUNTERS = new Set<CounterName>(["total", "completed", "pending", "scheduled"]);
 
 function toRecord(r: JobRow): JobRecord {
   const rec: JobRecord = {
@@ -120,7 +115,6 @@ function toRecord(r: JobRow): JobRecord {
     completed: r.completed,
     pending: r.pending,
     scheduled: r.scheduled,
-    slots: r.slots,
   };
   if (r.url !== null) rec.url = r.url;
   if (r.error !== null) rec.error = r.error;
@@ -216,6 +210,16 @@ export class SqliteJobStore implements JobStore {
         this.db.run("INSERT OR IGNORE INTO task_effects (job_id, task_id, effect) SELECT job_id, task_id, 'settle' FROM settled");
         this.db.run("DROP TABLE settled");
       })();
+    }
+    // Politeness-delay slots were reserved ahead of time; the scheduler now paces a job's pages while it runs.
+    for (const [table, column] of [
+      ["jobs", "slots"],
+      ["jobs", "next_slot_at"],
+      ["outbox", "run_at"],
+    ] as const) {
+      if (this.db.query(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = '${column}'`).get()) {
+        this.db.run(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+      }
     }
     this.sweep();
     this.recovery = this.repair().catch((err) => log.warn("document repair failed", { error: errorText(err) }));
@@ -496,15 +500,10 @@ export class SqliteJobStore implements JobStore {
       if (!accepted.length) return [];
       const n = accepted.length;
       this.exec("UPDATE jobs SET scheduled = scheduled + ?1, total = total + ?1, pending = pending + ?1 WHERE id = ?2", n, id);
-      let first = 0;
-      if (opts.intervalMs) {
-        first = Math.max(opts.now, job.next_slot_at);
-        this.exec("UPDATE jobs SET next_slot_at = ? WHERE id = ?", first + n * opts.intervalMs, id);
-      }
-      const insert = this.db.query("INSERT INTO outbox (job_id, task_id, owner, url, depth, run_at) VALUES (?, ?, ?, ?, ?, ?)");
-      return accepted.map((c, i) => {
-        const task = { taskId: randomUUID(), url: c.url, depth: opts.depth, runAt: opts.intervalMs ? first + i * opts.intervalMs : 0 };
-        insert.run(id, task.taskId, owner ?? null, task.url, task.depth, task.runAt);
+      const insert = this.db.query("INSERT INTO outbox (job_id, task_id, owner, url, depth) VALUES (?, ?, ?, ?, ?)");
+      return accepted.map((c) => {
+        const task = { taskId: randomUUID(), url: c.url, depth: opts.depth };
+        insert.run(id, task.taskId, owner ?? null, task.url, task.depth);
         return task;
       });
     })();
@@ -512,8 +511,8 @@ export class SqliteJobStore implements JobStore {
 
   async outbox(id: string, owner: string) {
     return this.db
-      .query<{ taskId: string; url: string; depth: number; runAt: number }, [string, string]>(
-        "SELECT task_id AS taskId, url, depth, run_at AS runAt FROM outbox WHERE job_id = ? AND owner = ? ORDER BY rowid",
+      .query<{ taskId: string; url: string; depth: number }, [string, string]>(
+        "SELECT task_id AS taskId, url, depth FROM outbox WHERE job_id = ? AND owner = ? ORDER BY rowid",
       )
       .all(id, owner);
   }
