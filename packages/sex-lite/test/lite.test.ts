@@ -54,6 +54,7 @@ describe("http", () => {
   test("only search and scrape are served", async () => {
     expect((await call("POST", "/v2/crawl", { url: site.url })).status).toBe(404);
     expect((await call("POST", "/v2/map", { url: site.url })).status).toBe(404);
+    expect((await call("POST", "/v2/parse", { url: site.url })).status).toBe(404);
     const spec = await call("GET", "/openapi.json");
     expect(Object.keys(spec.body.paths).sort()).toEqual(["/v2/scrape", "/v2/search"]);
   });

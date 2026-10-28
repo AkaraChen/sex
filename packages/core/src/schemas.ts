@@ -112,15 +112,18 @@ export const LocationConfig = z.object({
   languages: z.array(z.string()).optional().describe("Preferred languages, sent as Accept-Language"),
 });
 
-/** `{ type: "pdf" }`; only `maxPages` is used, the other options are accepted and reported in `warning`. */
+/** `{ type: "pdf" }`; `maxPages`, `pages` and `pageMarkers` are used, the other options are accepted and reported in `warning`. */
 const PdfParser = z.strictObject({
   type: z.literal("pdf"),
   maxPages: z.number().int().min(1).max(10_000).optional(),
   mode: z.enum(["fast", "auto", "ocr"]).optional().describe("Accepted; not used."),
-  pages: z.boolean().optional().describe("Accepted; not used."),
-  pageMarkdown: z.boolean().optional().describe("Accepted; not used."),
+  pages: z.boolean().optional().describe("Return the pages one by one in the document's `pages` ({ pageNumber, markdown })."),
+  pageMarkdown: z.boolean().optional().describe("Alias of `pages`."),
   blocks: z.boolean().optional().describe("Accepted; not used."),
-  pageMarkers: z.boolean().optional().describe("Accepted; not used."),
+  pageMarkers: z
+    .boolean()
+    .optional()
+    .describe("Join the pages in `markdown` with a `---` line and `<!-- page N -->` between them (no marker before the first page)."),
   refresh: z.boolean().optional().describe("Accepted; not used (there is no cache)."),
 });
 
@@ -234,6 +237,10 @@ export const Document = z
     images: z.array(z.string()).optional(),
     summary: z.string().optional(),
     rawBase64: z.string().optional(),
+    pages: z
+      .array(z.object({ pageNumber: z.number().int(), markdown: z.string() }))
+      .optional()
+      .describe('The PDF page by page; only with `parsers: [{ type: "pdf", pages: true }]`.'),
     json: z.unknown().optional(),
     answer: z.string().optional(),
     highlights: z.string().optional(),

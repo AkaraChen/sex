@@ -7,6 +7,20 @@ import { z } from "zod";
 
 export * from "@sex/core/schemas.ts";
 
+// ---------------------------------------------------------------- parse
+
+/** `multipart/form-data` of `POST /v2/parse`, as Firecrawl takes it: the file, and its scrape options as a JSON string. */
+export const ParseRequest = z.object({
+  file: z
+    .file()
+    .describe("The file to convert: a PDF, an office document, a CSV, an image (OCR) or an HTML file. At most SEX_MAX_BODY_BYTES."),
+  options: z
+    .string()
+    .optional()
+    .describe('Scrape options as a JSON object string, e.g. {"formats":["markdown"],"parsers":[{"type":"pdf","pages":true}]}.'),
+});
+export type ParseRequest = z.infer<typeof ParseRequest>;
+
 // ---------------------------------------------------------------- map
 
 export const MapRequest = z.object({

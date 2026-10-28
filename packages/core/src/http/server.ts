@@ -180,6 +180,8 @@ export function serveHttpApp<E extends BaseEngine>(engine: E, spec: AppSpec<E>, 
     port: opts.port,
     hostname: opts.host,
     fetch: app.fetch,
+    // An upload (POST /v2/parse) is held in memory whole; its limit is SEX_MAX_BODY_BYTES, plus room for the form's other fields.
+    maxRequestBodySize: engine.config.maxBodyBytes + 1024 * 1024,
     // Scrapes, searches with scrapeOptions and maps can legitimately take minutes.
     idleTimeout: 255,
   });

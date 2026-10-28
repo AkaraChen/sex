@@ -4,35 +4,9 @@ import { AppError } from "@sex/core/errors.ts";
 import { markdownToHtml } from "@sex/core/markdown-html.ts";
 import { MARKUP_TYPE } from "@sex/core/net.ts";
 import { DocsConverter, type HereDocs } from "../src/engine/docs.ts";
-import { testEngine } from "./helpers.ts";
+import { testEngine, textPdf } from "./helpers.ts";
 
 const fixture = (name: string) => Bun.file(new URL(`./fixtures/${name}`, import.meta.url));
-
-/** A text PDF with one line per page ("Text page N"), built by hand. */
-function textPdf(pages: number): Uint8Array {
-  const objs = ["<< /Type /Catalog /Pages 2 0 R >>", ""];
-  const kids: string[] = [];
-  for (let i = 0; i < pages; i++) {
-    const stream = `BT /F1 18 Tf 20 100 Td (Text page ${i + 1}) Tj ET`;
-    kids.push(`${objs.length + 1} 0 R`);
-    objs.push(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents ${objs.length + 2} 0 R /Resources << /Font << /F1 ${2 + pages * 2 + 1} 0 R >> >> >>`,
-    );
-    objs.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
-  }
-  objs[1] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pages} >>`;
-  objs.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
-  let out = "%PDF-1.4\n";
-  const offsets: number[] = [];
-  for (const [i, o] of objs.entries()) {
-    offsets.push(out.length);
-    out += `${i + 1} 0 obj\n${o}\nendobj\n`;
-  }
-  const xref = out.length;
-  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
-  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  return new TextEncoder().encode(out);
-}
 
 const TYPES: Record<string, string> = {
   pdf: "application/pdf",
@@ -62,6 +36,9 @@ async function rejection(p: Promise<unknown>): Promise<AppError> {
   }
   throw new Error("expected rejection");
 }
+
+/** text3.pdf's pages joined with pageMarkers; `prefix` is what the converter puts before each page's text. */
+const marked = (prefix = "") => [1, 2, 3].map((n) => `${n > 1 ? `---\n\n<!-- page ${n} -->\n\n` : ""}${prefix}Text page ${n}`).join("\n\n");
 
 const docs = testEngine({ docs: true });
 const plain = testEngine();
@@ -94,6 +71,23 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
     expect(doc.metadata?.numPages).toBe(2);
     expect(doc.metadata?.totalPages).toBe(3);
     expect(doc.warning).toContain("first 2 of 3 pages");
+  });
+
+  test("parsers pages returns each page, pageMarkers marks the page boundaries", async () => {
+    const doc = await docs.scrape({ url: at("text3.pdf"), parsers: [{ type: "pdf", pages: true, pageMarkers: true }] });
+    expect(doc.pages?.map((p) => p.pageNumber)).toEqual([1, 2, 3]);
+    expect(doc.pages?.[1]?.markdown).toContain("Text page 2");
+    expect(doc.markdown).toBe(marked("## "));
+    expect(doc.warning).toBeUndefined();
+  });
+
+  test("pages and pageMarkers respect maxPages; neither is set unless asked for", async () => {
+    const limited = await docs.scrape({ url: at("text3.pdf"), parsers: [{ type: "pdf", maxPages: 2, pages: true, pageMarkers: true }] });
+    expect(limited.pages?.map((p) => p.pageNumber)).toEqual([1, 2]);
+    expect(limited.markdown).not.toContain("Text page 3");
+    const plainDoc = await docs.scrape({ url: at("text3.pdf") });
+    expect(plainDoc.pages).toBeUndefined();
+    expect(plainDoc.markdown).not.toContain("<!-- page");
   });
 
   test("html and rawHtml of a converted document are its Markdown rendered", async () => {
@@ -187,6 +181,27 @@ describe("without SEX_DOCS", () => {
     expect(doc.metadata?.numPages).toBe(2);
     expect(doc.metadata?.totalPages).toBe(3);
     expect(doc.warning).toContain("first 2 of 3 pages");
+  });
+
+  test("parsers pages returns each page, pageMarkers marks the page boundaries", async () => {
+    const doc = await plain.scrape({ url: at("text3.pdf"), parsers: [{ type: "pdf", pages: true, pageMarkers: true }] });
+    expect(doc.pages).toEqual([1, 2, 3].map((n) => ({ pageNumber: n, markdown: `Text page ${n}` })));
+    expect(doc.markdown).toBe(marked());
+    expect(doc.warning).toBeUndefined();
+  });
+
+  test("pageMarkdown is an alias of pages; pages and pageMarkers are not reported as ignored", async () => {
+    const doc = await plain.scrape({ url: at("text3.pdf"), parsers: [{ type: "pdf", pageMarkdown: true }] });
+    expect(doc.pages).toHaveLength(3);
+    expect(doc.markdown).toContain("---");
+    expect(doc.markdown).not.toContain("<!-- page");
+    expect(doc.warning).toBeUndefined();
+  });
+
+  test("pages are left out unless asked for, and mode is still reported as ignored", async () => {
+    const doc = await plain.scrape({ url: at("text3.pdf"), parsers: [{ type: "pdf", mode: "ocr" }] });
+    expect(doc.pages).toBeUndefined();
+    expect(doc.warning).toContain("mode");
   });
 
   test("without maxPages numPages and totalPages are the page count", async () => {

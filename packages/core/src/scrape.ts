@@ -7,8 +7,9 @@ import { AppError, badRequest, browserRequired, llmRequired, toAppError, unsuppo
 import type { ExtractPool } from "./extract-pool.ts";
 import { log } from "./log.ts";
 import { markdownToHtml } from "./markdown-html.ts";
-import { assertPublicUrl, decodeBody, MARKUP_TYPE, parseHttpUrl, safeFetch } from "./net.ts";
+import { assertPublicUrl, decodeBody, type FetchedResponse, MARKUP_TYPE, parseHttpUrl, safeFetch } from "./net.ts";
 import type { PageExtractResult } from "./page.ts";
+import { joinPages, type PdfPage } from "./pdf.ts";
 import { fileKindOf, rewriteUrl } from "./rewrite.ts";
 import type { Document, FormatOption, ScrapeOptions } from "./schemas.ts";
 
@@ -165,7 +166,7 @@ function ignoredOptionWarnings(options: ScrapeOptions): string[] {
   const unused = new Set<string>();
   for (const p of options.parsers ?? []) {
     if (typeof p === "string" || p.type !== "pdf") continue;
-    for (const key of ["mode", "pages", "pageMarkdown", "blocks", "pageMarkers", "refresh"] as const) {
+    for (const key of ["mode", "blocks", "refresh"] as const) {
       const v = p[key];
       if (v !== undefined && v !== false && v !== "auto") unused.add(key);
     }
@@ -186,6 +187,8 @@ export interface ScrapeInternalOptions {
   llmOutsideTimeout?: boolean;
   /** Always collect links (used by crawl/map) even if the caller did not ask for them. */
   collectLinks?: boolean;
+  /** The file to convert instead of fetching a URL (`scrapeUpload`); the browser is not involved. */
+  upload?: { body: Uint8Array; contentType: string };
 }
 
 export interface ScrapeOutcome {
@@ -246,6 +249,41 @@ interface ScrapeBudgets {
   llm: Deadline;
 }
 
+/** A file the caller sent (`POST /v2/parse`), converted like the body of a fetched URL. Its name is the document's `sourceURL`. */
+export async function scrapeUpload(
+  ctx: ScrapeContext,
+  file: File,
+  options: ScrapeOptions = {},
+  internal: ScrapeInternalOptions = {},
+): Promise<ScrapeOutcome> {
+  const formats = assertScrapeCapabilities(ctx, options);
+  if (formats.rawBase64) throw badRequest("The rawBase64 format is not supported for uploads");
+  if (options.actions?.length) throw badRequest("actions need a browser render and cannot be used with an uploaded file");
+  // Checked before the file is read into memory.
+  if (file.size > ctx.config.maxBodyBytes) {
+    throw new AppError("RESPONSE_TOO_LARGE", `The file is larger than SEX_MAX_BODY_BYTES (${ctx.config.maxBodyBytes} bytes)`);
+  }
+  // A synthetic URL only so the name decides the file type; it is never fetched.
+  const filename = file.name || "upload";
+  const url = new URL(`file:///${encodeURIComponent(filename)}`).href;
+  const contentType = /^application\/octet-stream/i.test(file.type) ? "" : file.type;
+  const body = new Uint8Array(await file.arrayBuffer());
+  return ctx.scrapeLimit(() => {
+    const outer = internal.deadline ?? Deadline.unbounded(internal.signal);
+    outer.throwIfAborted("before the conversion started");
+    const deadline = outer.slice(scrapeTimeout(ctx.config, options, formats), { expiredCode: "SCRAPE_TIMEOUT" });
+    return scrapeInner(
+      ctx,
+      url,
+      filename,
+      options,
+      formats,
+      { page: deadline, llm: deadline },
+      { ...internal, upload: { body, contentType } },
+    );
+  });
+}
+
 async function scrapeInner(
   ctx: ScrapeContext,
   url: string,
@@ -257,7 +295,7 @@ async function scrapeInner(
 ): Promise<ScrapeOutcome> {
   const { config } = ctx;
   // fastMode: no rendering, only the HTTP fetch.
-  const browser = ctx.browser?.enabled && !options.fastMode ? ctx.browser : undefined;
+  const browser = ctx.browser?.enabled && !options.fastMode && !internal.upload ? ctx.browser : undefined;
   const docs = ctx.docs?.enabled ? ctx.docs : undefined;
   const onlyMainContent = options.onlyMainContent ?? true;
   const headers: Record<string, string> = { ...(options.headers ?? {}) };
@@ -276,17 +314,19 @@ async function scrapeInner(
   };
   const warnings: string[] = ignoredOptionWarnings(options);
 
-  const fetchBody = () =>
-    safeFetch(url, {
-      headers,
-      deadline,
-      allowPrivateNetwork: config.allowPrivateNetwork,
-      maxBodyBytes: config.maxBodyBytes,
-      skipTlsVerification: options.skipTlsVerification,
-      userAgent: options.mobile
-        ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
-        : config.userAgent,
-    });
+  const fetchBody = async (): Promise<FetchedResponse> =>
+    internal.upload
+      ? { url, status: 200, headers: new Headers(), contentType: internal.upload.contentType, body: internal.upload.body }
+      : safeFetch(url, {
+          headers,
+          deadline,
+          allowPrivateNetwork: config.allowPrivateNetwork,
+          maxBodyBytes: config.maxBodyBytes,
+          skipTlsVerification: options.skipTlsVerification,
+          userAgent: options.mobile
+            ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+            : config.userAgent,
+        });
 
   // The file as it is, whatever it is: never rendered, so the browser is not involved.
   if (formats.rawBase64) {
@@ -342,6 +382,16 @@ async function scrapeInner(
     warnings.push("waitFor is more than half of timeout, so little time is left to load and read the page; raise timeout or lower waitFor");
   }
 
+  /** The PDF's markdown, with page markers if asked for. Without per-page text (the converter gave none) it stays as it is. */
+  const pageMarkers = (markdown: string, pages: PdfPage[] | undefined, warns: string[]) => {
+    if (!parsers.pageMarkers) return markdown;
+    if (!pages) {
+      warns.push("pageMarkers could not be applied: the converter did not return the document page by page");
+      return markdown;
+    }
+    return joinPages(pages, true);
+  };
+
   const fetchPage = async (warns: string[]): Promise<FetchedPage> => {
     const res = await fetchBody();
     const out: FetchedPage = { url: res.url, status: res.status, contentType: res.contentType, rawHtml: "" };
@@ -363,14 +413,16 @@ async function scrapeInner(
       }
       if (docs) {
         const doc = await convertDocument(docs, res.body, out.url, parsers.maxPages, deadline, warns);
-        setMarkdown(doc.markdown);
+        out.pdfPages = doc.pages;
+        setMarkdown(pageMarkers(doc.markdown, doc.pages, warns));
         // `numPages` is what was converted, `totalPages` what the file has.
         const converted =
           doc.pagesConverted ?? (doc.numPages === undefined ? undefined : Math.min(doc.numPages, parsers.maxPages ?? doc.numPages));
         out.pdfMeta = { numPages: converted, totalPages: doc.numPages };
       } else {
         const pdf = await ctx.extractPool.pdf(res.body, parsers.maxPages, deadline);
-        setMarkdown(pdf.markdown);
+        out.pdfPages = pdf.pages;
+        setMarkdown(pageMarkers(pdf.markdown, pdf.pages, warns));
         out.pdfMeta = { title: pdf.title, numPages: pdf.numPages, totalPages: pdf.totalPages };
         if (pdf.numPages < pdf.totalPages) warns.push(`Extracted the first ${pdf.numPages} of ${pdf.totalPages} pages (parsers maxPages)`);
       }
@@ -426,10 +478,12 @@ async function scrapeInner(
     rawHtml,
     extracted,
     plainMarkdown,
+    pdfPages,
     pdfMeta,
   } = page ?? {
     ...(browserResult as BrowserScrapeResult),
     plainMarkdown: undefined,
+    pdfPages: undefined,
     pdfMeta: undefined,
   };
 
@@ -472,6 +526,8 @@ async function scrapeInner(
 
   const doc: Document = { metadata };
   if (formats.markdown) doc.markdown = markdown;
+  if (parsers.pages && pdfPages) doc.pages = pdfPages;
+  else if (parsers.pages && pdfMeta) warnings.push("pages could not be returned: the converter did not return the document page by page");
   if (formats.html) doc.html = extracted?.html ?? rawHtml;
   if (formats.rawHtml) doc.rawHtml = rawHtml;
   if (formats.links) doc.links = extracted?.links ?? [];
@@ -553,6 +609,8 @@ interface FetchedPage {
   rawHtml: string;
   extracted?: PageExtractResult;
   plainMarkdown?: string;
+  /** The PDF page by page, when the converter could tell. */
+  pdfPages?: PdfPage[];
   /** `numPages`: pages extracted; `totalPages`: pages in the file. */
   pdfMeta?: { title?: string; numPages?: number; totalPages?: number };
 }
@@ -583,16 +641,28 @@ function emptyBrowserPage(result: BrowserScrapeResult, options: ScrapeOptions, d
   );
 }
 
+interface FileParsers {
+  pdf: boolean;
+  image: boolean;
+  maxPages?: number;
+  /** Return `Document.pages`. */
+  pages: boolean;
+  /** Mark the page boundaries in the markdown. */
+  pageMarkers: boolean;
+}
+
 /** Firecrawl `parsers`: which file parsers may run, and the PDF page budget. Omitted means every parser, all pages. */
-function fileParsers(parsers: ScrapeOptions["parsers"]): { pdf: boolean; image: boolean; maxPages?: number } {
-  if (parsers === undefined) return { pdf: true, image: true };
-  const out: { pdf: boolean; image: boolean; maxPages?: number } = { pdf: false, image: false };
+function fileParsers(parsers: ScrapeOptions["parsers"]): FileParsers {
+  if (parsers === undefined) return { pdf: true, image: true, pages: false, pageMarkers: false };
+  const out: FileParsers = { pdf: false, image: false, pages: false, pageMarkers: false };
   for (const p of parsers) {
     if (p === "image" || (typeof p === "object" && p.type === "image")) out.image = true;
     if (p === "pdf") out.pdf = true;
     if (typeof p === "object" && p.type === "pdf") {
       out.pdf = true;
       if (p.maxPages !== undefined) out.maxPages = p.maxPages;
+      out.pages ||= (p.pages ?? p.pageMarkdown) === true;
+      out.pageMarkers ||= p.pageMarkers === true;
     }
   }
   return out;

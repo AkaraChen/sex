@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import type { DocsConvertOptions, DocsResult, DocsWarning, ScrapeDocs } from "@sex/core/capabilities.ts";
 import { AppError } from "@sex/core/errors.ts";
 import { log } from "@sex/core/log.ts";
+import type { PdfPage } from "@sex/core/pdf.ts";
 import type { ConvertEngine } from "here-docs";
 import pLimit from "p-limit";
 import type { Config } from "../config.ts";
@@ -103,6 +104,8 @@ export class DocsConverter implements ScrapeDocs {
     // Keep a tenth of what is left for the rest of the scrape, so pages converted before the time ran out can still be returned.
     const work = deadline.remaining() === Number.POSITIVE_INFINITY ? deadline : deadline.slice(Math.floor(deadline.remaining() * 0.9));
     const sections: string[] = [];
+    const pages: PdfPage[] = [];
+    let unpaged = false;
     const warnings: DocsWarning[] = [];
     let numPages: number | undefined;
     let pagesConverted = 0;
@@ -110,7 +113,11 @@ export class DocsConverter implements ScrapeDocs {
       for await (const part of mod.convertPages(bytes, { engine, filename: opts.filename, signal: work.signal })) {
         if (part.markdown.trim()) sections.push(part.markdown);
         warnings.push(...part.warnings);
-        if (part.page === null) continue;
+        if (part.page === null) {
+          unpaged ||= !!part.markdown.trim();
+          continue;
+        }
+        pages.push({ pageNumber: part.page, markdown: part.markdown });
         numPages = part.pageCount ?? numPages;
         pagesConverted++;
         if (opts.maxPages !== undefined && pagesConverted >= opts.maxPages) break;
@@ -120,7 +127,7 @@ export class DocsConverter implements ScrapeDocs {
         // Out of time with pages in hand: return those instead of throwing them away.
         const of = numPages === undefined ? "" : ` of ${numPages}`;
         warnings.push({ code: "timeout", message: `Timed out: converted only the first ${pagesConverted}${of} pages` });
-        return { markdown: sections.join("\n\n"), numPages, pagesConverted, warnings };
+        return { markdown: sections.join("\n\n"), pages: unpaged ? undefined : pages, numPages, pagesConverted, warnings };
       }
       work.throwIfAborted("while converting the document");
       throw new AppError("DOCUMENT_CONVERT_FAILED", `Document conversion failed: ${(err as Error).message ?? err}`);
@@ -133,7 +140,13 @@ export class DocsConverter implements ScrapeDocs {
       const unreadable = warnings.find((w) => UNREADABLE.has(w.code));
       if (unreadable) throw new AppError("DOCUMENT_PARSE_FAILED", `Failed to parse document: ${unreadable.message}`);
     }
-    return { markdown, numPages, pagesConverted: numPages === undefined ? undefined : pagesConverted, warnings };
+    return {
+      markdown,
+      pages: pages.length && !unpaged ? pages : undefined,
+      numPages,
+      pagesConverted: numPages === undefined ? undefined : pagesConverted,
+      warnings,
+    };
   }
 
   async close(): Promise<void> {
