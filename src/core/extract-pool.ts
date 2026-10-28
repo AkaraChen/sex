@@ -16,7 +16,6 @@ type WorkerReply = { id: number; ok: true; result: unknown } | { id: number; ok:
 interface Job {
   id: number;
   msg: JobMsg;
-  deadline: Deadline;
   resolve: (value: unknown) => void;
   reject: (err: unknown) => void;
   timer?: ReturnType<typeof setTimeout>;
@@ -82,7 +81,7 @@ export class ExtractPool {
           deadline.signal.removeEventListener("abort", onAbort);
           fn(value);
         };
-      const job: Job = { id: this.nextId++, msg, deadline, resolve: settle(resolve), reject: settle(reject) };
+      const job: Job = { id: this.nextId++, msg, resolve: settle(resolve), reject: settle(reject) };
       deadline.signal.addEventListener("abort", onAbort, { once: true });
       this.queue.push(job);
       this.dispatch();
