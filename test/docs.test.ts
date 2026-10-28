@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { Deadline } from "../src/core/deadline.ts";
 import { DocsConverter } from "../src/core/docs.ts";
 import { MARKUP_TYPE } from "../src/core/net.ts";
 import { AppError } from "../src/errors.ts";
@@ -105,18 +106,18 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
 
   test("a conversion over its deadline is a 408 SCRAPE_TIMEOUT", async () => {
     const bytes = await fixture("scan.pdf").bytes();
-    const err = await rejection(docs.docs.convert(bytes, { timeoutMs: 1 }));
+    const err = await rejection(docs.docs.convert(bytes, { deadline: Deadline.start(1) }));
     expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "SCRAPE_TIMEOUT" });
   });
 
   test("a cancelled request stops the conversion with 408 TIMEOUT", async () => {
     const bytes = await fixture("scan.pdf").bytes();
-    const err = await rejection(docs.docs.convert(bytes, { timeoutMs: 60_000, signal: AbortSignal.abort() }));
+    const err = await rejection(docs.docs.convert(bytes, { deadline: Deadline.start(60_000, { signal: AbortSignal.abort() }) }));
     expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "TIMEOUT" });
   });
 
   test("unrecognised bytes are a 415", async () => {
-    const err = await rejection(docs.docs.convert(new Uint8Array([0, 1, 2, 3]), { timeoutMs: 10_000 }));
+    const err = await rejection(docs.docs.convert(new Uint8Array([0, 1, 2, 3]), { deadline: Deadline.start(10_000) }));
     expect({ status: err.status, code: err.code }).toEqual({ status: 415, code: "UNSUPPORTED_FILE" });
   });
 });

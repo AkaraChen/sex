@@ -5,6 +5,7 @@ import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Engine } from "../core/engine.ts";
+import { AppError } from "../errors.ts";
 import { log } from "../log.ts";
 import { buildServer } from "../mcp/server.ts";
 import { VERSION } from "../version.ts";
@@ -21,7 +22,7 @@ const REQUEST_ID = /^[\w.-]{1,128}$/;
 const formatPath = (path: Issue["path"]) =>
   (path ?? []).map((p) => (typeof p === "object" && p !== null && "key" in p ? String(p.key) : String(p))).join(".");
 
-/** Firecrawl-shaped error body: `{ success: false, error, code, details }`. */
+/** Firecrawl-shaped error body: `{ success: false, error, code, details }`, plus `retryable` for errors raised by sex itself. */
 function encodeError(error: { code: string; message: string; data: unknown; cause?: unknown }) {
   const cause = error.cause as { issues?: Issue[] } | undefined;
   if (Array.isArray(cause?.issues)) {
@@ -36,7 +37,13 @@ function encodeError(error: { code: string; message: string; data: unknown; caus
     // Output validation failed: this is a server bug, not a client error.
     return { success: false, code: "INVALID_RESPONSE", error: `Server produced an invalid response: ${summary}`, details };
   }
-  return { success: false, code: error.code, error: error.message, ...(error.data !== undefined ? { details: error.data } : {}) };
+  return {
+    success: false,
+    code: error.code,
+    error: error.message,
+    ...(error.cause instanceof AppError ? { retryable: error.cause.retryable } : {}),
+    ...(error.data !== undefined ? { details: error.data } : {}),
+  };
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);

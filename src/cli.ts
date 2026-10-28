@@ -33,7 +33,7 @@ type CommonArgs = { [K in keyof typeof commonArgs]?: (typeof commonArgs)[K]["typ
 /** Strict integer parse: `30s` or `abc` is an error, not a silent NaN. Empty means unset. */
 const int = (v: string | undefined, label: string): number | undefined => {
   if (v === undefined || v.trim() === "") return undefined;
-  if (!/^\d+$/.test(v.trim())) throw new AppError(400, "CONFIG_INVALID", `${label} must be an integer (got ${JSON.stringify(v)})`);
+  if (!/^\d+$/.test(v.trim())) throw new AppError("CONFIG_INVALID", `${label} must be an integer (got ${JSON.stringify(v)})`);
   return Number(v.trim());
 };
 const list = (v: string | undefined) =>

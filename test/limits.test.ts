@@ -52,6 +52,55 @@ describe("request limits", () => {
     expect(body.code).toBe("BAD_REQUEST");
   });
 
+  test("waitFor plus all wait actions above 60000 is rejected, at 60000 it passes", async () => {
+    const url = "http://127.0.0.1:1/";
+    const over = await post("/v2/scrape", {
+      url,
+      waitFor: 30000,
+      actions: [
+        { type: "wait", milliseconds: 20000 },
+        { type: "wait", milliseconds: 10001 },
+      ],
+    });
+    expect(over.status).toBe(400);
+    expect(over.body.code).toBe("BAD_REQUEST");
+    expect(over.body.error).toContain("waitFor");
+
+    const exact = await post("/v2/scrape", {
+      url,
+      waitFor: 30000,
+      actions: [
+        { type: "wait", milliseconds: 20000 },
+        { type: "wait", milliseconds: 10000 },
+      ],
+    });
+    expect(exact.body.code).not.toBe("BAD_REQUEST");
+  });
+
+  test("a wait that is by selector adds nothing to the total", async () => {
+    const { body } = await post("/v2/scrape", {
+      url: "http://127.0.0.1:1/",
+      waitFor: 60000,
+      actions: [{ type: "wait", selector: "#ready" }],
+    });
+    expect(body.code).not.toBe("BAD_REQUEST");
+  });
+
+  test("the same limit applies to scrapeOptions of search and batch", async () => {
+    const scrapeOptions = { waitFor: 60000, actions: [{ type: "wait", milliseconds: 1 }] };
+    expect((await post("/v2/search", { query: "q", scrapeOptions })).status).toBe(400);
+    expect((await post("/v2/batch/scrape", { urls: ["http://127.0.0.1:1/"], ...scrapeOptions })).status).toBe(400);
+  });
+
+  test("a wait action needs exactly one of milliseconds and selector", async () => {
+    for (const action of [{ type: "wait" }, { type: "wait", milliseconds: 100, selector: "#a" }]) {
+      const { status, body } = await post("/v2/scrape", { url: "http://127.0.0.1:1/", actions: [action] });
+      expect(status).toBe(400);
+      expect(body.code).toBe("BAD_REQUEST");
+      expect(body.error).toContain("milliseconds");
+    }
+  });
+
   test("more than 50 includeDomains is rejected", async () => {
     const includeDomains = Array.from({ length: 51 }, (_, i) => `site${i}.example`);
     const { status, body } = await post("/v2/search", { query: "q", includeDomains });

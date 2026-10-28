@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { resolveConfig } from "../src/config.ts";
+import { Deadline } from "../src/core/deadline.ts";
 import { type JobRecord, sendWebhook } from "../src/core/jobs/index.ts";
 import { safeFetch } from "../src/core/net.ts";
 import { waitFor } from "./helpers.ts";
@@ -77,7 +78,7 @@ describe("safeFetch redirect handling", () => {
   test("cross-origin redirect drops authorization, cookie and proxy-authorization but keeps other headers", async () => {
     await safeFetch(`${front.origin}/cross`, {
       allowPrivateNetwork: true,
-      timeout: 5_000,
+      deadline: Deadline.start(5_000),
       userAgent: "test",
       headers: { ...credentials, "proxy-authorization": "p" },
     });
@@ -93,7 +94,7 @@ describe("safeFetch redirect handling", () => {
   test("same-origin redirect keeps authorization and cookie", async () => {
     await safeFetch(`${front.origin}/same`, {
       allowPrivateNetwork: true,
-      timeout: 5_000,
+      deadline: Deadline.start(5_000),
       userAgent: "test",
       headers: credentials,
     });
@@ -106,7 +107,7 @@ describe("safeFetch redirect handling", () => {
   test("303 turns a POST into a bodiless GET on the next hop", async () => {
     await safeFetch(`${front.origin}/post-303`, {
       allowPrivateNetwork: true,
-      timeout: 5_000,
+      deadline: Deadline.start(5_000),
       userAgent: "test",
       method: "POST",
       body: "payload",
@@ -119,7 +120,7 @@ describe("safeFetch redirect handling", () => {
   test("307 keeps the POST method and body on the next hop", async () => {
     await safeFetch(`${front.origin}/post-307`, {
       allowPrivateNetwork: true,
-      timeout: 5_000,
+      deadline: Deadline.start(5_000),
       userAgent: "test",
       method: "POST",
       body: "payload",

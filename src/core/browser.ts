@@ -11,7 +11,8 @@ import { AppError, BROWSER_HINT } from "../errors.ts";
 import { log } from "../log.ts";
 import type { Action } from "../schemas.ts";
 import { applyRequestPolicies } from "./browser-policy.ts";
-import { MARKUP_TYPE } from "./net.ts";
+import type { Deadline } from "./deadline.ts";
+import { MARKUP_TYPE, networkError } from "./net.ts";
 import { PAGE_SCRIPT, type PageExtractOptions, type PageExtractResult } from "./page.ts";
 
 const MOBILE_UA =
@@ -26,7 +27,11 @@ const START_COOLDOWN_MS = 30_000;
 
 export interface BrowserScrapeOptions {
   url: string;
-  timeout: number;
+  /**
+   * Bounds everything the browser does for this page: waiting for a slot, loading, `waitFor`, actions and the page script.
+   * When it ends the page's browser context is closed, which frees the slot at once.
+   */
+  deadline: Deadline;
   /**
    * Sent with the page's requests. `Authorization` / `Proxy-Authorization` reach the target's origin only, `Cookie` is stored as
    * host-only cookies of the target's host; everything else goes to every request (see browser-policy.ts).
@@ -41,8 +46,6 @@ export interface BrowserScrapeOptions {
   requestGuard?: (url: string) => Promise<boolean>;
   /** Accept invalid TLS certificates (Chrome only; CDP Security.setIgnoreCertificateErrors). */
   skipTlsVerification?: boolean;
-  /** Aborting closes the page's browser context, freeing its slot immediately. */
-  signal?: AbortSignal;
 }
 
 export interface BrowserScrapeResult {
@@ -117,7 +120,6 @@ async function findLightpanda(explicit?: string): Promise<string> {
   const found = candidates.find((p) => existsSync(p));
   if (!found) {
     throw new AppError(
-      501,
       "BROWSER_NOT_CONFIGURED",
       "Lightpanda binary not found (this sex was not built with one embedded). Download it from https://github.com/lightpanda-io/browser/releases and put it on PATH, or pass --lightpanda-path.",
     );
@@ -164,7 +166,7 @@ export function lightpandaArgv(
   ];
 }
 
-const startFailed = (reason: string) => new AppError(502, "BROWSER_UNAVAILABLE", `Lightpanda did not start: ${reason}`);
+const startFailed = (reason: string) => new AppError("BROWSER_UNAVAILABLE", `Lightpanda did not start: ${reason}`);
 
 /** Hands out short-lived CDP connections to a Lightpanda child process or an external browser. */
 export class BrowserPool {
@@ -204,7 +206,7 @@ export class BrowserPool {
         body = (await res.json()) as { webSocketDebuggerUrl?: string };
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
-        throw new AppError(502, "BROWSER_UNAVAILABLE", `Cannot reach the CDP browser at ${url}: ${reason}. ${BROWSER_HINT}`);
+        throw new AppError("BROWSER_UNAVAILABLE", `Cannot reach the CDP browser at ${url}: ${reason}. ${BROWSER_HINT}`);
       }
       if (!body.webSocketDebuggerUrl) throw new Error(`No webSocketDebuggerUrl at ${url}/json/version`);
       return body.webSocketDebuggerUrl;
@@ -220,7 +222,6 @@ export class BrowserPool {
     const now = Date.now();
     if (now < this.cooldownUntil) {
       throw new AppError(
-        502,
         "BROWSER_UNAVAILABLE",
         `Not starting Lightpanda for another ${Math.ceil((this.cooldownUntil - now) / 1000)}s after ${START_FAILURE_LIMIT} failed starts. Last error: ${this.lastStartError}`,
       );
@@ -312,27 +313,38 @@ export class BrowserPool {
     if (this.enabled) await this.getEndpoint();
   }
 
-  async withPage<T>(fn: (page: Page) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  /**
+   * Runs `fn` on a fresh page in its own browser context, once a slot is free. The context is closed when `fn` ends or the
+   * deadline does, which makes in-flight page operations reject, so the slot is released at once; `fn` is also abandoned at
+   * the deadline if what it is awaiting ignores the closed context. The error is the deadline's, never a symptom of the close.
+   */
+  async withPage<T>(fn: (page: Page) => Promise<T>, deadline: Deadline): Promise<T> {
     return this.limit(async () => {
-      if (signal?.aborted) throw new AppError(408, "TIMEOUT", "Browser scrape cancelled before it started");
-      const browser = await puppeteer.connect({ browserWSEndpoint: await this.getEndpoint(), defaultViewport: null });
+      deadline.throwIfAborted("before the browser scrape started");
+      const endpoint = await deadline.bound(this.getEndpoint(), "while starting the browser");
+      const connecting = puppeteer.connect({ browserWSEndpoint: endpoint, defaultViewport: null });
+      let browser: Awaited<typeof connecting>;
+      try {
+        browser = await deadline.bound(connecting, "while connecting to the browser");
+      } catch (err) {
+        connecting.then((b) => b.disconnect()).catch(() => {});
+        throw err;
+      }
       try {
         const context = await browser.createBrowserContext();
-        // Closing the context makes in-flight page operations reject, so the slot is released at once.
         let closed = false;
         const close = () => {
           if (closed) return;
           closed = true;
           context.close().catch(() => {});
         };
-        const onAbort = () => close();
-        signal?.addEventListener("abort", onAbort, { once: true });
+        deadline.signal.addEventListener("abort", close, { once: true });
         try {
-          if (signal?.aborted) throw new AppError(408, "TIMEOUT", "Browser scrape cancelled before it started");
+          deadline.throwIfAborted("before the browser scrape started");
           const page = await context.newPage();
-          return await fn(page);
+          return await deadline.bound(fn(page));
         } finally {
-          signal?.removeEventListener("abort", onAbort);
+          deadline.signal.removeEventListener("abort", close);
           close();
         }
       } finally {
@@ -342,16 +354,17 @@ export class BrowserPool {
   }
 
   async scrape(opts: BrowserScrapeOptions): Promise<BrowserScrapeResult> {
+    const { deadline } = opts;
     return this.scrapeInner(opts).catch((err: unknown) => {
-      if (opts.signal?.aborted) throw new AppError(408, "TIMEOUT", "Browser scrape cancelled");
-      throw err;
+      throw deadline.translate(err, `while rendering ${opts.url}`);
     });
   }
 
   private async scrapeInner(opts: BrowserScrapeOptions): Promise<BrowserScrapeResult> {
+    const { deadline } = opts;
     return this.withPage(async (page) => {
-      page.setDefaultTimeout(opts.timeout);
-      page.setDefaultNavigationTimeout(opts.timeout);
+      page.setDefaultTimeout(stepTimeout(deadline));
+      page.setDefaultNavigationTimeout(stepTimeout(deadline));
       await page.setUserAgent(opts.mobile ? MOBILE_UA : opts.userAgent).catch(() => {});
       const viewport = opts.mobile ? { width: 390, height: 844 } : { width: 1280, height: 800 };
       await page.setViewport({ ...viewport, isMobile: !!opts.mobile }).catch(() => {});
@@ -372,33 +385,32 @@ export class BrowserPool {
       }
 
       let aborted = false;
-      const response = await page.goto(opts.url, { waitUntil: "load", timeout: opts.timeout }).catch((err: Error) => {
+      const response = await page.goto(opts.url, { waitUntil: "load", timeout: stepTimeout(deadline) }).catch((err: Error) => {
+        deadline.throwIfAborted(`while loading ${opts.url}`);
         if (blockedDocs.length) return null;
         // PDFs and Content-Disposition: attachment responses abort the navigation; the caller re-fetches them over HTTP.
         if (err.message.includes("net::ERR_ABORTED")) {
           aborted = true;
           return null;
         }
-        if (err.name === "TimeoutError") {
-          throw new AppError(408, "SCRAPE_TIMEOUT", `Timed out after ${opts.timeout}ms loading ${opts.url}`);
-        }
-        throw new AppError(502, "FETCH_FAILED", `Browser failed to load ${opts.url}: ${err.message}`);
+        if (err.name === "TimeoutError") throw deadline.timedOut(`while loading ${opts.url}`);
+        throw networkError(err, opts.url, { skipTlsVerification: opts.skipTlsVerification });
       });
       if (blockedDocs.length) {
-        throw new AppError(403, "PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${blockedDocs[0]}`);
+        throw new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${blockedDocs[0]}`);
       }
       if (aborted) return { url: opts.url, status: 200, contentType: "", nonHtml: true, rawHtml: "" };
       const contentType = response?.headers()["content-type"] ?? "text/html";
       const base = { url: page.url() || opts.url, status: response?.status() ?? 200, contentType };
       if (!MARKUP_TYPE.test(contentType)) return { ...base, nonHtml: true, rawHtml: "" };
 
-      if (opts.waitFor) await Bun.sleep(opts.waitFor);
-      const actions = opts.actions?.length ? await runActions(page, opts.actions) : undefined;
+      if (opts.waitFor) await deadline.sleep(opts.waitFor, "while waiting (waitFor)");
+      const actions = opts.actions?.length ? await runActions(page, opts.actions, deadline) : undefined;
 
       const rawHtml = await page.content();
       const extracted = await runPageScript(page, { ...opts.extract, url: page.url() || opts.url });
       return { ...base, url: page.url() || opts.url, rawHtml, extracted, actions };
-    }, opts.signal);
+    }, deadline);
   }
 
   async close(): Promise<void> {
@@ -412,6 +424,11 @@ export class BrowserPool {
   }
 }
 
+/** Puppeteer wants a timeout in ms, where 0 means never: what is left, at least 1 and within a timer's range. */
+function stepTimeout(deadline: Deadline): number {
+  return Math.max(1, Math.min(deadline.remaining(), 2 ** 31 - 1));
+}
+
 async function runPageScript(page: Page, opts: PageExtractOptions): Promise<PageExtractResult> {
   const hasDefuddle = await page.evaluate("typeof window.Defuddle === 'function'");
   if (!hasDefuddle) await page.evaluate(defuddleBundle as unknown as string);
@@ -420,14 +437,14 @@ async function runPageScript(page: Page, opts: PageExtractOptions): Promise<Page
   )) as PageExtractResult;
 }
 
-async function runActions(page: Page, actions: Action[]): Promise<NonNullable<BrowserScrapeResult["actions"]>> {
+async function runActions(page: Page, actions: Action[], deadline: Deadline): Promise<NonNullable<BrowserScrapeResult["actions"]>> {
   const out: NonNullable<BrowserScrapeResult["actions"]> = { screenshots: [], scrapes: [], javascriptReturns: [], pdfs: [] };
   for (const [i, action] of actions.entries()) {
     try {
       switch (action.type) {
         case "wait":
-          if (action.selector) await page.waitForSelector(action.selector);
-          else await Bun.sleep(action.milliseconds ?? 1000);
+          if (action.selector !== undefined) await page.waitForSelector(action.selector, { timeout: stepTimeout(deadline) });
+          else await deadline.sleep(action.milliseconds ?? 0, `while waiting in action #${i}`);
           break;
         case "click":
           if (action.all) {
@@ -469,7 +486,9 @@ async function runActions(page: Page, actions: Action[]): Promise<NonNullable<Br
         }
       }
     } catch (err) {
-      throw new AppError(400, "ACTION_FAILED", `Action #${i} (${action.type}) failed: ${err instanceof Error ? err.message : String(err)}`);
+      deadline.throwIfAborted(`while running action #${i} (${action.type})`);
+      if (err instanceof Error && err.name === "TimeoutError") throw deadline.timedOut(`while running action #${i} (${action.type})`);
+      throw new AppError("ACTION_FAILED", `Action #${i} (${action.type}) failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   return out;

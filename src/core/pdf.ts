@@ -26,7 +26,7 @@ export async function pdfToMarkdown(data: Uint8Array, maxPages?: number): Promis
       numPages: totalPages,
     };
   } catch (err) {
-    throw new AppError(422, "PDF_PARSE_FAILED", `Failed to parse PDF: ${err instanceof Error ? err.message : String(err)}`);
+    throw new AppError("PDF_PARSE_FAILED", `Failed to parse PDF: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     // unpdf leaves the lifecycle of a proxy we created to us; this frees the document's pages and loading task.
     await pdf?.loadingTask.destroy().catch(() => {});

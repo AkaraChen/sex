@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { Deadline } from "../src/core/deadline.ts";
 import { ExtractPool } from "../src/core/extract-pool.ts";
 import type { PageExtractOptions } from "../src/core/page.ts";
 import { testEngine } from "./helpers.ts";
@@ -68,8 +69,8 @@ describe("extraction pool", () => {
 
   test("inline mode (size 0) matches worker mode", async () => {
     const url = "https://example.test/small";
-    const inline = await newPool(0, 10_000).html(smallHtml, opts(url));
-    const worker = await newPool(1, 10_000).html(smallHtml, opts(url));
+    const inline = await newPool(0, 10_000).html(smallHtml, opts(url), Deadline.unbounded());
+    const worker = await newPool(1, 10_000).html(smallHtml, opts(url), Deadline.unbounded());
     expect(inline.markdown).toContain("Hello from the small page.");
     expect(worker.markdown).toBe(inline.markdown);
     expect(worker.defuddle.title).toBe(inline.defuddle.title);
@@ -79,13 +80,50 @@ describe("extraction pool", () => {
   // succeed for the recovery call; use 1 s with a page far larger than that.
   test("a timed-out job rejects with EXTRACT_TIMEOUT and the pool recovers", async () => {
     const pool = newPool(1, 1000);
-    const err = await pool.html(hugeHtml, opts("https://example.test/big")).then(
+    const err = await pool.html(hugeHtml, opts("https://example.test/big"), Deadline.unbounded()).then(
       () => undefined,
       (e: unknown) => e,
     );
     expect(err).toMatchObject({ code: "EXTRACT_TIMEOUT", status: 422 });
 
-    const after = await pool.html(smallHtml, opts("https://example.test/small"));
+    const after = await pool.html(smallHtml, opts("https://example.test/small"), Deadline.unbounded());
     expect(after.markdown).toContain("Hello from the small page.");
+  });
+
+  test("the deadline stops a running job and the pool recovers", async () => {
+    const pool = newPool(1, 60_000);
+    const t0 = performance.now();
+    const err = await pool.html(hugeHtml, opts("https://example.test/big"), Deadline.start(300)).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toMatchObject({ code: "SCRAPE_TIMEOUT", status: 408 });
+    expect(performance.now() - t0).toBeLessThan(1500);
+
+    const after = await pool.html(smallHtml, opts("https://example.test/small"), Deadline.unbounded());
+    expect(after.markdown).toContain("Hello from the small page.");
+  });
+
+  test("a job still waiting in the queue leaves it when the deadline ends, without disturbing the one running", async () => {
+    const pool = newPool(1, 60_000);
+    const running = pool.html(bigHtml, opts("https://example.test/big"), Deadline.unbounded());
+    const err = await pool.html(smallHtml, opts("https://example.test/small"), Deadline.start(20)).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toMatchObject({ code: "SCRAPE_TIMEOUT" });
+    expect((await running).markdown).toContain("Needle text for the big page.");
+  });
+
+  test("a cancelled caller is TIMEOUT and stops the worker", async () => {
+    const caller = new AbortController();
+    const run = newPool(1, 60_000).html(hugeHtml, opts("https://example.test/big"), Deadline.unbounded(caller.signal));
+    setTimeout(() => caller.abort(), 30);
+    expect(
+      await run.then(
+        () => undefined,
+        (e: unknown) => e,
+      ),
+    ).toMatchObject({ code: "TIMEOUT", status: 408 });
   });
 });

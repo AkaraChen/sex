@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Deadline } from "../src/core/deadline.ts";
 import { assertPublicUrl, isPrivateIp, safeFetch } from "../src/core/net.ts";
 
 const hostOf = (u: string) => new URL(u).hostname.replace(/^\[|\]$/g, "");
@@ -52,7 +53,7 @@ describe("safeFetch end-to-end", () => {
 
   test("refuses loopback reached through the hex IPv4-mapped IPv6 form", async () => {
     const err = await safeFetch(`http://[::ffff:127.0.0.1]:${server.port}/`, {
-      timeout: 3000,
+      deadline: Deadline.start(3000),
       allowPrivateNetwork: false,
       userAgent: "t",
     }).then(

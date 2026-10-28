@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ConfigOverrides } from "../src/config.ts";
 import { pdeathsigWrapper } from "../src/core/browser.ts";
+import { Deadline } from "../src/core/deadline.ts";
 import type { Engine } from "../src/core/engine.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
@@ -106,9 +107,82 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
     expect(doc.actions?.scrapes[0]?.html).toContain("<html");
   });
 
+  describe("deadline", () => {
+    const rejected = async (p: Promise<unknown>) =>
+      p.then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    const took = async (p: Promise<unknown>) => {
+      const t0 = performance.now();
+      const err = await rejected(p);
+      return { err, ms: performance.now() - t0 };
+    };
+
+    test("waitFor longer than the timeout ends at the timeout as SCRAPE_TIMEOUT, and the slot is free again", async () => {
+      const { err, ms } = await took(engine.scrape({ url: `${origin()}/page`, waitFor: 30_000, timeout: 1500 }));
+      expect(err).toMatchObject({ status: 408, code: "SCRAPE_TIMEOUT" });
+      expect(ms).toBeLessThan(4000);
+      const doc = await engine.scrape({ url: `${origin()}/page`, formats: ["markdown"] });
+      expect(doc.markdown).toContain("Hello from the browser fixture");
+    });
+
+    test("wait actions count against the timeout", async () => {
+      const { err, ms } = await took(
+        engine.scrape({ url: `${origin()}/page`, actions: [{ type: "wait", milliseconds: 20_000 }], timeout: 1500 }),
+      );
+      expect(err).toMatchObject({ status: 408, code: "SCRAPE_TIMEOUT" });
+      expect(ms).toBeLessThan(4000);
+    });
+
+    test("waiting for a selector that never shows up ends at the timeout", async () => {
+      const { err, ms } = await took(
+        engine.scrape({ url: `${origin()}/page`, actions: [{ type: "wait", selector: "#never" }], timeout: 1500 }),
+      );
+      expect(err).toMatchObject({ status: 408, code: "SCRAPE_TIMEOUT" });
+      expect(ms).toBeLessThan(4000);
+    });
+
+    test("a script that never returns ends at the timeout", async () => {
+      const { err, ms } = await took(
+        engine.scrape({
+          url: `${origin()}/page`,
+          actions: [{ type: "executeJavascript", script: "return await new Promise(() => {})" }],
+          timeout: 1500,
+        }),
+      );
+      expect(err).toMatchObject({ status: 408, code: "SCRAPE_TIMEOUT" });
+      expect(ms).toBeLessThan(4000);
+    });
+
+    test("a cancelled caller is TIMEOUT and releases the browser", async () => {
+      const caller = new AbortController();
+      setTimeout(() => caller.abort(), 300);
+      const { err, ms } = await took(engine.scrape({ url: `${origin()}/page`, waitFor: 30_000, timeout: 60_000 }, caller.signal));
+      expect(err).toMatchObject({ status: 408, code: "TIMEOUT" });
+      expect(ms).toBeLessThan(3000);
+    });
+
+    test("a waitFor of more than half the timeout is allowed but warned about", async () => {
+      const doc = await engine.scrape({ url: `${origin()}/page`, formats: ["markdown"], waitFor: 600, timeout: 1000 });
+      expect(doc.markdown).toContain("Hello from the browser fixture");
+      expect(doc.warning).toContain("waitFor");
+    });
+
+    test("a refused connection is SCRAPE_SITE_ERROR", async () => {
+      const err = await rejected(engine.scrape({ url: "http://127.0.0.1:1/" }));
+      expect(err).toMatchObject({ status: 500, code: "SCRAPE_SITE_ERROR" });
+    });
+
+    test("an unknown host is SCRAPE_DNS_RESOLUTION_ERROR", async () => {
+      const err = await rejected(engine.scrape({ url: "http://no-such-host.invalid/" }));
+      expect(err).toMatchObject({ status: 500, code: "SCRAPE_DNS_RESOLUTION_ERROR" });
+    });
+  });
+
   test("blocks a redirect to a non-allowed address before its content is fetched", async () => {
     const err = await engine.browser
-      .scrape({ url: `${origin()}/redirect`, timeout: 10_000, userAgent: "t", extract, requestGuard: guardA })
+      .scrape({ url: `${origin()}/redirect`, deadline: Deadline.start(10_000), userAgent: "t", extract, requestGuard: guardA })
       .catch((e: unknown) => e);
     expect((err as { code?: string }).code).toBe("PRIVATE_NETWORK_BLOCKED");
     expect(bHits).toEqual([]);
@@ -119,7 +193,14 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
     const scrape = (path: string, extra: Partial<Parameters<Engine["browser"]["scrape"]>[0]> = {}) => {
       aHeaders = {};
       bHeaders = {};
-      return engine.browser.scrape({ url: `${origin()}${path}`, timeout: 10_000, userAgent: "t", extract, headers, ...extra });
+      return engine.browser.scrape({
+        url: `${origin()}${path}`,
+        deadline: Deadline.start(10_000),
+        userAgent: "t",
+        extract,
+        headers,
+        ...extra,
+      });
     };
 
     test("reach the target's origin, its subresources, and no other origin", async () => {
@@ -166,7 +247,7 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
     bHits = [];
     const result = await engine.browser.scrape({
       url: `${origin()}/img`,
-      timeout: 10_000,
+      deadline: Deadline.start(10_000),
       userAgent: "t",
       extract,
       requestGuard: guardA,
@@ -290,9 +371,9 @@ describe.skipIf(!LIGHTPANDA)("spawned lightpanda process", () => {
     hits = 0;
     // No requestGuard: only the child's --block-private-networks stands between the page and the loopback fixture.
     const err = await e.browser
-      .scrape({ url: `http://127.0.0.1:${site.port}/`, timeout: 10_000, userAgent: "t", extract })
+      .scrape({ url: `http://127.0.0.1:${site.port}/`, deadline: Deadline.start(10_000), userAgent: "t", extract })
       .catch((x: unknown) => x);
-    expect(err).toMatchObject({ code: "FETCH_FAILED" });
+    expect(err).toMatchObject({ code: "SCRAPE_SITE_ERROR" });
     expect(hits).toBe(0);
   });
 });

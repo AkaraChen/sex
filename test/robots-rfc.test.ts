@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Deadline } from "../src/core/deadline.ts";
 import { sitemapUrls } from "../src/core/map.ts";
 import { fetchRobots, parseRobots } from "../src/core/robots.ts";
 import { testEngine } from "./helpers.ts";
@@ -38,18 +39,18 @@ describe("robots.txt per RFC 9309", () => {
 
   test("a 5xx robots.txt disallows everything", async () => {
     robotsStatus = 503;
-    const robots = await fetchRobots(engine, origin(), "sex");
+    const robots = await fetchRobots(engine, origin(), "sex", Deadline.unbounded());
     expect(robots.isAllowed(`${origin()}/anything`)).toBe(false);
   });
 
   test("a 404 robots.txt allows everything", async () => {
     robotsStatus = 404;
-    const robots = await fetchRobots(engine, origin(), "sex");
+    const robots = await fetchRobots(engine, origin(), "sex", Deadline.unbounded());
     expect(robots.isAllowed(`${origin()}/anything`)).toBe(true);
   });
 
   test("an unreachable robots.txt allows everything", async () => {
-    const robots = await fetchRobots(engine, "http://127.0.0.1:1", "sex");
+    const robots = await fetchRobots(engine, "http://127.0.0.1:1", "sex", Deadline.unbounded());
     expect(robots.isAllowed("http://127.0.0.1:1/anything")).toBe(true);
   });
 
@@ -60,7 +61,7 @@ describe("robots.txt per RFC 9309", () => {
 
   test("relative Sitemap lines are resolved and CDATA with whitespace is unwrapped", async () => {
     robotsStatus = 200;
-    const urls = await sitemapUrls(engine, origin(), 100);
+    const urls = await sitemapUrls(engine, origin(), 100, Deadline.unbounded());
     expect(urls).toContain("https://example.com/cdata-page");
     expect(urls).toContain("https://example.com/a?x=1&y=2");
   });

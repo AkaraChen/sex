@@ -179,7 +179,6 @@ export function resolveConfig(
   for (const name of ["SEX_REDIS_URL", "SEX_REDIS_PREFIX"]) {
     if (str(env[name])) {
       throw new AppError(
-        400,
         "CONFIG_INVALID",
         `${name} is no longer supported: jobs run in the sex process and are stored in SQLite under SEX_DATA_DIR. Unset ${name}.`,
       );
@@ -208,7 +207,7 @@ export function resolveConfig(
     const key = String(parsed.error.issues[0]?.path[0]) as keyof typeof FIELD_RULES;
     const [name, expected] = FIELD_RULES[key];
     const value = raw[key] as string | number;
-    throw new AppError(400, "CONFIG_INVALID", `${name} must be ${expected} (got ${JSON.stringify(String(value))})`);
+    throw new AppError("CONFIG_INVALID", `${name} must be ${expected} (got ${JSON.stringify(String(value))})`);
   }
   const v = parsed.data;
 

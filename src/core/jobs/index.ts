@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Config } from "../../config.ts";
 import { log } from "../../log.ts";
 import type { WebhookConfig } from "../../schemas.ts";
+import { Deadline } from "../deadline.ts";
 import type { Engine } from "../engine.ts";
 import { assertPublicUrl, parseHttpUrl, safeFetch } from "../net.ts";
 import { createDocumentLog } from "./documents.ts";
@@ -68,7 +69,7 @@ export function sendWebhook(
     method: "POST",
     body: JSON.stringify(body),
     headers: { "content-type": "application/json", ...("headers" in cfg ? (cfg.headers ?? {}) : {}) },
-    timeout: 10_000,
+    deadline: Deadline.start(10_000),
     allowPrivateNetwork: config.allowPrivateNetwork,
     userAgent: config.userAgent,
     maxBodyBytes: 1024 * 1024,

@@ -1,6 +1,7 @@
 import { gunzipSync } from "node:zlib";
 import { log } from "../log.ts";
 import type { MapLink, MapRequest } from "../schemas.ts";
+import { Deadline } from "./deadline.ts";
 import type { Engine } from "./engine.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "./net.ts";
 import { fetchRobots, type Robots } from "./robots.ts";
@@ -46,10 +47,10 @@ export async function sitemapUrls(
   engine: Engine,
   origin: string,
   max: number,
-  signal?: AbortSignal,
+  deadline: Deadline,
   opts: SitemapOptions = {},
 ): Promise<string[]> {
-  const robots = opts.robots ?? (await fetchRobots(engine, origin, "sex", signal));
+  const robots = opts.robots ?? (await fetchRobots(engine, origin, "sex", deadline));
   // Sitemap: lines may be relative; resolve them against the site's origin.
   const declared = robots.sitemaps.flatMap((sm) => {
     try {
@@ -68,8 +69,7 @@ export async function sitemapUrls(
     visited.add(sm);
     try {
       const res = await safeFetch(sm, {
-        timeout: 15_000,
-        signal,
+        deadline: deadline.slice(15_000),
         allowPrivateNetwork: engine.config.allowPrivateNetwork,
         userAgent: engine.config.userAgent,
         maxBodyBytes: engine.config.maxBodyBytes,
@@ -115,8 +115,8 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   const includeSubdomains = req.includeSubdomains ?? true;
   const ignoreQuery = req.ignoreQueryParameters ?? true;
   const baseHost = stripWww(start.hostname);
-  const timeoutSignal = AbortSignal.timeout(req.timeout ?? 60_000);
-  const sig = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  // Keeps the code of the old plain timeout: map never had a SCRAPE_TIMEOUT of its own.
+  const deadline = Deadline.start(req.timeout ?? 60_000, { signal, expiredCode: "TIMEOUT" });
 
   const inScope = (url: string) => {
     try {
@@ -128,11 +128,11 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   };
 
   const titles = new Map<string, { title?: string; description?: string }>();
-  const fromSitemap = mode === "skip" ? Promise.resolve([]) : sitemapUrls(engine, start.origin, limit, sig, { accept: inScope });
+  const fromSitemap = mode === "skip" ? Promise.resolve([]) : sitemapUrls(engine, start.origin, limit, deadline, { accept: inScope });
   const fromPage =
     mode === "only"
       ? Promise.resolve([] as string[])
-      : scrapeUrl(engine, start.href, { formats: ["links"], timeout: engine.config.timeout }, { signal: sig, collectLinks: true })
+      : scrapeUrl(engine, start.href, { formats: ["links"], timeout: engine.config.timeout }, { deadline, collectLinks: true })
           .then(({ links, linkTitles }) => {
             for (const [u, t] of Object.entries(linkTitles ?? {})) if (!titles.has(u)) titles.set(u, { title: t });
             return links ?? [];
@@ -146,7 +146,7 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
       ? Promise.resolve([] as string[])
       : Promise.all(
           [1, 2].map((page) =>
-            searxng(engine, { q: `site:${baseHost}${req.search ? ` ${req.search}` : ""}`, categories: "general" }, page, sig).catch(
+            searxng(engine, { q: `site:${baseHost}${req.search ? ` ${req.search}` : ""}`, categories: "general" }, page, deadline).catch(
               () => [],
             ),
           ),

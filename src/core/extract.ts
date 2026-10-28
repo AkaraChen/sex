@@ -2,6 +2,7 @@ import pLimit from "p-limit";
 import { AppError, badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import type { ExtractRequest } from "../schemas.ts";
+import { Deadline } from "./deadline.ts";
 import type { Engine } from "./engine.ts";
 import { arrayKeys, mergeAll, splitSchema, withProperty } from "./extract-merge.ts";
 import type { JobRecord } from "./jobs/index.ts";
@@ -156,12 +157,14 @@ async function extractFromPages(
   onError: (url: string, err: unknown) => Promise<void>,
 ): Promise<{ result: unknown; used: string[] }> {
   const { llm } = engine;
+  // An extract has no time limit of its own: it ends when the job is cancelled, and each LLM call has SEX_LLM_TIMEOUT.
+  const deadline = Deadline.unbounded(signal);
   const opts = { prompt: req.prompt, systemPrompt: req.systemPrompt, urls: pages.map((p) => p.url) };
 
   let schema = req.schema;
   if (!schema && req.prompt) {
     try {
-      schema = await llm.generateSchema(req.prompt, signal);
+      schema = await llm.generateSchema(req.prompt, deadline);
       log.debug("generated extract schema", { schema });
     } catch (err) {
       if (signal.aborted) throw err;
@@ -176,7 +179,7 @@ async function extractFromPages(
     single = undefined;
   } else if (schema && arrayKeys(schema).length) {
     try {
-      const plan = await llm.planExtract(schema, req.prompt, opts.urls, signal);
+      const plan = await llm.planExtract(schema, req.prompt, opts.urls, deadline);
       log.debug("extract plan", { ...plan });
       if (plan.isMultiEntity) ({ multi, single } = splitSchema(schema, plan.multiEntityKeys));
     } catch (err) {
@@ -210,7 +213,7 @@ async function extractFromPages(
           run(
             piece.url,
             async () => {
-              const v = await llm.extractJson(piece.text, { ...opts, schema: sent, url: piece.url }, signal);
+              const v = await llm.extractJson(piece.text, { ...opts, schema: sent, url: piece.url }, deadline);
               if (!rootArray) {
                 if (!v || typeof v !== "object" || (v as Record<string, unknown>)[RELEVANT] === false) return undefined;
                 delete (v as Record<string, unknown>)[RELEVANT];
@@ -240,7 +243,7 @@ async function extractFromPages(
               const v = await llm.extractJson(
                 c.text,
                 { ...opts, schema: single, url: c.urls.length === 1 ? c.urls[0] : undefined },
-                signal,
+                deadline,
               );
               for (const u of c.urls) used.add(u);
               return v;
@@ -260,7 +263,7 @@ async function extractFromPages(
     const validate = compileJsonSchema(schema);
     if (!validate(result)) {
       const errors = describeSchemaErrors(validate.errors);
-      throw new AppError(502, "LLM_INVALID_OUTPUT", `Merged extract result does not match the JSON Schema: ${errors.join("; ")}`, {
+      throw new AppError("LLM_INVALID_OUTPUT", `Merged extract result does not match the JSON Schema: ${errors.join("; ")}`, {
         errors,
       });
     }
