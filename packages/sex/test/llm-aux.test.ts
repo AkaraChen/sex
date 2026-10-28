@@ -27,7 +27,7 @@ afterAll(() => {
 });
 
 describe("small model", () => {
-  test("auxiliary calls use it; extraction and summaries stay on the main model", async () => {
+  test("planning, schema and crawl calls use it; the guard, extraction and summaries stay on the main model", async () => {
     const engine = testEngine({ llmModel: "big", llmSmallModel: "tiny", llmBaseUrl: llm.url });
     try {
       llm.requests.length = 0;
@@ -52,7 +52,8 @@ describe("small model", () => {
         requests()
           .filter((r) => systemOf(r).includes(needle))
           .map((r) => r.model);
-      expect(byKind("security classifier")).toEqual(["tiny"]);
+      // A security check is not where to save money.
+      expect(byKind("security classifier")).toEqual(["big"]);
       expect(byKind("You write the JSON Schema")).toEqual(["tiny"]);
       expect(byKind("classify data extraction")).toEqual(["tiny"]);
       expect(byKind("configure a web crawler")).toEqual(["tiny"]);
@@ -207,6 +208,17 @@ describe("highlight units", () => {
     // Cutting loses no text, and "e.g." does not end a sentence.
     expect(units.slice(3).join(" ")).toBe(paragraph);
     expect(units.slice(3, 5)).toEqual([sentence, "Number 0."]);
+  });
+
+  test("sentences are cut by ICU rules: CJK full stops split, abbreviations do not", () => {
+    const cjk = `${"这是第一句话。".repeat(80)}`;
+    const units = splitSegments(cjk);
+    expect(units).toHaveLength(80);
+    expect(units.every((u) => u === "这是第一句话。")).toBe(true);
+    const english = `${"See e.g. the docs for details about this. ".repeat(12)}`.trim();
+    const parts = splitSegments(english);
+    expect(parts).toHaveLength(12);
+    expect(parts[0]).toBe("See e.g. the docs for details about this.");
   });
 
   test("an unclosed fence runs to the end, and a huge block is grouped by whole lines", () => {

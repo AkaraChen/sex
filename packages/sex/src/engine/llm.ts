@@ -274,7 +274,6 @@ export class Llm implements ScrapeLlm {
       const v = await this.completeJson("Prompt injection checks", P.injectionGuardSystem(tag), P.injectionGuardUser(tag, content), {
         outputFormat: GUARD_SCHEMA,
         deadline,
-        small: true,
         check: (v) => (isGuardVerdict(v) ? undefined : ['expected {"isInjection": boolean, "reason": string}']),
       });
       return v as { isInjection: boolean; reason: string };

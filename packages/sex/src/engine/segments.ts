@@ -11,8 +11,8 @@ const LONG_LINE_CHARS = 400;
 
 const FENCE = /^\s*(`{3,}|~{3,})/;
 const TABLE_ROW = /^\s*\|.*\|\s*$/;
-/** After `.!?` before a capital, digit, quote or bracket (so "e.g. foo" stays whole), or after a CJK full stop. */
-const SENTENCE_END = /(?<=[.!?]["')\]]?)\s+(?=["'([A-Z0-9])|(?<=[。！？])/u;
+/** ICU sentence rules, so abbreviations ("e.g.") and CJK full stops are handled; built once. */
+const SENTENCES = new Intl.Segmenter(undefined, { granularity: "sentence" });
 
 export function splitSegments(content: string): string[] {
   const lines = content.split("\n").map((l) => l.trimEnd());
@@ -56,6 +56,6 @@ function pushBlock(out: string[], lines: string[]): void {
 }
 
 function splitSentences(line: string): string[] {
-  const parts = line.split(SENTENCE_END).filter((s) => s.trim());
+  const parts = [...SENTENCES.segment(line)].map((p) => p.segment.trim()).filter(Boolean);
   return parts.length ? parts : [line];
 }

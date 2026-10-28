@@ -34,7 +34,7 @@ export interface Config extends CoreConfig {
   docs: boolean;
   /** Documents converted by here-docs at the same time; the rest wait (inside their deadline). */
   docsConcurrency: number;
-  /** `smallModel` (same endpoint and key) serves the auxiliary calls: guard, extract planning, schema generation, crawl prompts, `/*` rerank. */
+  /** `smallModel` (same endpoint and key) serves the auxiliary calls: extract planning, schema generation, crawl prompts, `/*` rerank. */
   llm?: { baseUrl: string; apiKey?: string; model: string; smallModel?: string };
   /** Deadline for a single LLM request in ms. */
   llmTimeout: number;

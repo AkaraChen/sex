@@ -161,7 +161,7 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 | `SEX_BLOCK_MEDIA` | `--block-media` | `false` | 浏览器路径额外拦截图片和音视频请求；广告拦截（`blockAds`）见[浏览器](#浏览器) |
 | `SEX_DOCS` | `--docs` | `false` | 用 here-docs 转换 PDF / Office 文档 / 图片（结构化 + 本地 OCR），见[文档转换](#文档转换) |
 | `SEX_LLM_MODEL` | `--llm-model` | 无（LLM 关闭） | 设置后开启 LLM 功能 |
-| `SEX_LLM_SMALL_MODEL` | `--llm-small-model` | 无（用主模型） | 辅助调用用的小模型，和 `SEX_LLM_MODEL` 共用 base URL 和 key，必须同时设置 `SEX_LLM_MODEL`。用于 `checkPromptInjection` 的检查、extract 的分类和生成 schema、crawl `prompt` 转选项、extract 的 `/*` 选页；抽取、summary、question、highlights 仍用主模型。注意注入检查的漏检率可能随模型变小而升高 |
+| `SEX_LLM_SMALL_MODEL` | `--llm-small-model` | 无（用主模型） | 辅助调用用的小模型，和 `SEX_LLM_MODEL` 共用 base URL 和 key，必须同时设置 `SEX_LLM_MODEL`。用于 extract 的分类和生成 schema、crawl `prompt` 转选项、extract 的 `/*` 选页；抽取、summary、question、highlights 仍用主模型；`checkPromptInjection` 的注入检查是安全检查，也始终用主模型，不为省钱降低检出率 |
 | `SEX_LLM_BASE_URL`（回退 `OPENAI_BASE_URL`） | `--llm-base-url` | `https://api.openai.com/v1` | OpenAI 兼容接口 |
 | `SEX_LLM_API_KEY`（回退 `OPENAI_API_KEY`） | `--llm-api-key` | 无 | LLM API key |
 | `SEX_LLM_TIMEOUT` | — | `120000`（毫秒，最小 1000） | 单次 LLM 调用的超时，包括遇到限流时的等待和重试 |
@@ -288,7 +288,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - LLM 相关的格式（json / summary / question / highlights）和 extract：
   - 带 JSON Schema 时，模型输出会按原始 schema 校验（Ajv，按 `$schema` 选择 draft-07 / 2019-09 / 2020-12，未写时按 2020-12；`format` 不校验）。输出不是合法 JSON 或不符合 schema 时，会把错误发回给模型修正一次，仍不符合才返回 `422 LLM_INVALID_OUTPUT`。schema 本身不合法时，在开始抓取之前就返回 `400 BAD_REQUEST`。根节点是数组的 schema 会包成 `{ items }` 发给模型（structured output 要求根节点是对象），返回时再拆开。
   - 页面内容放在 `<page>` 等标签里交给模型，system prompt 声明标签内是不可信内容，页面里的同名标签会被转义。页面超过 `SEX_LLM_MAX_INPUT_CHARS` 时截断，并在 `warning` 里说明。
-  - `highlights` 和 `query` 格式的 `mode: "directQuote"` 让模型只返回编号，再从页面原文取出对应的内容，结果一定是原文。编号按行切，但代码围栏和表格整块算一个编号（超过 2000 字符的按整行分组），超过 400 字符的长行按句子切开。`question` 和默认的 `query` 是自由回答。
+  - `highlights` 和 `query` 格式的 `mode: "directQuote"` 让模型只返回编号，再从页面原文取出对应的内容，结果一定是原文。编号按行切，但代码围栏和表格整块算一个编号（超过 2000 字符的按整行分组），超过 400 字符的长行按句子切开（用运行时的 `Intl.Segmenter`，ICU 规则，中日文句号和 "e.g." 这类缩写都能处理；"Dr. Smith" 这类仍可能被切开）。`question` 和默认的 `query` 是自由回答。
   - `checkPromptInjection: true` 时，先用 LLM 检查送给模型的全部内容（标题加页面 markdown，按 32000 字符分块、块间重叠 2000），发现后返回 `403 SCRAPE_PROMPT_INJECTION_DETECTED`。页面超过 200 万字符时只检查前 200 万字符，其余部分不会送给模型，`warning` 里会说明。检查调用本身失败时放行，并在 `warning` 里说明有内容没检查到。extract 的 `scrapeOptions` 里也可以开；各页面的 `warning` 会带上页面 URL，汇总到 extract 状态的 `warning` 字段。
   - extract 的 URL 以 `/*` 结尾且有 `prompt` 时：先 map 取最多 200 个候选（按 prompt 关键词排序），再用一次小模型调用，根据 `url | title | description` 选出最相关的 `limit` 个（候选放在 `<links>` 标签里，模型只返回编号，所以不会多出候选以外的页面）。模型调用失败或一个都没选时，退回 map 的前 `limit` 个页面，并在 `warning` 里说明；没有 `prompt` 时不调用模型。这次调用计入 `tokensUsed`。
   - extract 的流程沿用 Firecrawl：只有 prompt 时先让模型生成 schema；schema 里有数组时，先判断是"单一答案"还是"多实体"。多实体的数组字段逐页抽取（每页带 `is_content_relevant`，不相关的页丢掉），其余字段把所有页面一起抽取；多份结果在代码里合并（数组拼接、去重，同一实体的空字段互相补全；标量取第一个非空值），不再让 LLM 合并。

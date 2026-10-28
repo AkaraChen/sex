@@ -33,7 +33,7 @@ const commonArgs = {
   "llm-small-model": {
     type: "string",
     description:
-      "Cheaper model for guard, extract planning, schema and crawl prompt calls (env SEX_LLM_SMALL_MODEL, default: the main model)",
+      "Cheaper model for extract planning, schema, crawl prompt and /* page selection calls (env SEX_LLM_SMALL_MODEL, default: the main model)",
   },
   "llm-base-url": { type: "string", description: "OpenAI-compatible base URL (env SEX_LLM_BASE_URL, default https://api.openai.com/v1)" },
   "llm-api-key": { type: "string", description: "LLM API key (env SEX_LLM_API_KEY or OPENAI_API_KEY)" },
