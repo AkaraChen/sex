@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { normalizeFormats, scrapeTimeout } from "../src/core/scrape.ts";
 import { AppError } from "../src/errors.ts";
 import { startFixtureSite, testEngine } from "./helpers.ts";
 
@@ -56,6 +57,27 @@ describe("outbound deadlines", () => {
     expect(doc.markdown).toContain("Doc A");
     expect(doc.warning).toContain("Summary failed");
   }, 10_000);
+
+  test("LLM time counts toward the scrape's timeout", async () => {
+    const llm = hanging();
+    servers.push(llm);
+    // SEX_LLM_TIMEOUT alone would allow 2 minutes; the request's timeout ends the scrape first.
+    const engine = testEngine({ llmModel: "m", llmBaseUrl: `http://127.0.0.1:${llm.port}/v1`, llmTimeout: 120_000 });
+    const started = Date.now();
+    const err = await rejection(engine.scrape({ url: `${site.url}/docs/a`, formats: ["summary"], timeout: 1500 }));
+    expect(err).toMatchObject({ status: 408, code: "SCRAPE_TIMEOUT" });
+    expect(Date.now() - started).toBeLessThan(4000);
+    const guarded = await rejection(engine.scrape({ url: `${site.url}/docs/a`, checkPromptInjection: true, timeout: 1500 }));
+    expect(guarded).toMatchObject({ status: 408, code: "SCRAPE_TIMEOUT" });
+  }, 15_000);
+
+  test("a request with LLM formats and no timeout gets at least 60 s", () => {
+    const formats = (f: Parameters<typeof normalizeFormats>[0]) => normalizeFormats(f);
+    expect(scrapeTimeout({ timeout: 30_000 }, {}, formats(["markdown"]))).toBe(30_000);
+    expect(scrapeTimeout({ timeout: 30_000 }, {}, formats(["markdown", "summary"]))).toBe(60_000);
+    expect(scrapeTimeout({ timeout: 90_000 }, {}, formats(["summary"]))).toBe(90_000);
+    expect(scrapeTimeout({ timeout: 30_000 }, { timeout: 5000 }, formats(["summary"]))).toBe(5000);
+  });
 
   test("an unreachable LLM is reported as LLM_UNAVAILABLE naming the endpoint", async () => {
     const engine = testEngine({ llmModel: "m", llmBaseUrl: "http://127.0.0.1:1/v1" });

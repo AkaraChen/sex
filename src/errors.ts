@@ -62,6 +62,8 @@ export const ERRORS = {
   LLM_REFUSED: spec(422),
   LLM_INVALID_OUTPUT: spec(422),
   LLM_INCOMPLETE_OUTPUT: spec(422),
+  /** The endpoint answered 4xx (bad key, unknown model, request refused): a configuration error, the same on every try. */
+  LLM_REQUEST_REJECTED: spec(500),
   LLM_RATE_LIMITED: spec(429, true),
   LLM_ERROR: spec(502, true),
   LLM_UNAVAILABLE: spec(502, true),

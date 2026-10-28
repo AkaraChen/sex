@@ -113,6 +113,8 @@ export interface ScrapeInternalOptions {
    * from it, and so is the LLM time, so the whole never outlasts it.
    */
   deadline?: Deadline;
+  /** The LLM calls (the injection guard) are not bound by the scrape's `timeout`, only by `deadline` / `signal` (extract jobs). */
+  llmOutsideTimeout?: boolean;
   /** Always collect links (used by crawl/map) even if the caller did not ask for them. */
   collectLinks?: boolean;
 }
@@ -140,14 +142,33 @@ export async function scrapeUrl(
     const outer = internal.deadline ?? Deadline.unbounded(internal.signal);
     // Waiting in the queue can outlast the caller; do not start work nobody is waiting for.
     outer.throwIfAborted("before the scrape started");
-    // `timeout` bounds getting the document: fetching or rendering, waiting, converting and extracting. The LLM formats
-    // are not part of it (Firecrawl counts them): they have SEX_LLM_TIMEOUT, 120 s by default against a 30 s timeout.
-    const budgets = { page: outer.slice(options.timeout ?? engine.config.timeout, { expiredCode: "SCRAPE_TIMEOUT" }), llm: outer };
-    return scrapeInner(engine, url.href, requested.href, options, formats, budgets, internal);
+    // `timeout` bounds the whole scrape: fetching or rendering, waiting, converting, extracting and the LLM calls (each
+    // of which also has SEX_LLM_TIMEOUT, cut from what is left). Like Firecrawl, a request with LLM formats and no
+    // `timeout` gets at least 60 s instead of the default.
+    const timeout = scrapeTimeout(engine.config, options, formats);
+    const deadline = outer.slice(timeout, { expiredCode: "SCRAPE_TIMEOUT" });
+    // An extract job has no time limit of its own: its guard calls are cut from the job instead.
+    return scrapeInner(
+      engine,
+      url.href,
+      requested.href,
+      options,
+      formats,
+      { page: deadline, llm: internal.llmOutsideTimeout ? outer : deadline },
+      internal,
+    );
   });
 }
 
-/** Where the time of one scrape comes from. */
+/** The default `timeout` of a request with LLM formats, when it is longer than SEX_TIMEOUT (Firecrawl: json 30 s -> 60 s). */
+const LLM_MIN_TIMEOUT_MS = 60_000;
+
+/** The time one scrape has: the request's `timeout`, else SEX_TIMEOUT (at least 60 s when it asks for an LLM format). */
+export function scrapeTimeout(config: { timeout: number }, options: ScrapeOptions, formats: NormalizedFormats): number {
+  return options.timeout ?? (needsLlm(formats) ? Math.max(config.timeout, LLM_MIN_TIMEOUT_MS) : config.timeout);
+}
+
+/** Where the time of one scrape comes from: the same deadline, except for an extract's guard calls. */
 interface ScrapeBudgets {
   /** Fetching or rendering the page, converting files, extracting content. */
   page: Deadline;
@@ -221,7 +242,7 @@ async function scrapeInner(
   } else if (options.waitFor) {
     warnings.push("waitFor is ignored without a browser");
   }
-  if (engine.browser.enabled && options.waitFor && options.waitFor > (options.timeout ?? config.timeout) / 2) {
+  if (engine.browser.enabled && options.waitFor && options.waitFor > scrapeTimeout(config, options, formats) / 2) {
     warnings.push("waitFor is more than half of timeout, so little time is left to load and read the page; raise timeout or lower waitFor");
   }
 
