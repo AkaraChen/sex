@@ -1,9 +1,6 @@
 // Per-job pacing and ordering: maxConcurrency, delay, and big jobs not starving small ones. The queue-level tests pin
 // what the scheduler relies on from bunqueue (caps, cooldowns, lanes); the engine-level ones check the whole path.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { Engine } from "../src/engine/engine.ts";
 import { JobScheduler, pageLimits, type Task, type TaskOutcome } from "../src/engine/jobs/index.ts";
 import { BunqueueTaskQueue } from "../src/engine/jobs/queue.ts";
@@ -128,32 +125,25 @@ describe("the queue under the scheduler", () => {
   });
 });
 
-describe("a queue on disk", () => {
-  test("a lane's cap outlives a restart together with its queued tasks", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sex-lane-cap-"));
-    const path = join(dir, "queue.sqlite");
-    try {
-      const before = new BunqueueTaskQueue(path, 4);
-      await new JobScheduler(before).add(
-        Array.from({ length: 5 }, (_, i) => ({ task: page("restarted", i) })),
-        { maxConcurrency: 1 },
-      );
-      await before.close();
-
-      const after = new BunqueueTaskQueue(path, 4);
-      const seen: Array<{ start: number; end: number }> = [];
-      after.startWorker(async () => {
-        const entry = { start: Date.now(), end: 0 };
-        seen.push(entry);
-        await Bun.sleep(40);
-        entry.end = Date.now();
-      });
-      await waitFor(() => (seen.length === 5 && seen.every((e) => e.end) ? true : undefined));
-      await after.close();
-      expect(peak(seen)).toBe(1);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+describe("a lane's cap", () => {
+  test("holds for tasks queued before any worker runs", async () => {
+    // The cap lives in the broker with the queued tasks, not in the worker: a worker that starts later (as after a
+    // restart) meets it already in place. Only `:memory:` here, since the broker is one per process.
+    const queue = new BunqueueTaskQueue(":memory:", 4);
+    await new JobScheduler(queue).add(
+      Array.from({ length: 5 }, (_, i) => ({ task: page("early", i) })),
+      { maxConcurrency: 1 },
+    );
+    const seen: Array<{ start: number; end: number }> = [];
+    queue.startWorker(async () => {
+      const entry = { start: Date.now(), end: 0 };
+      seen.push(entry);
+      await Bun.sleep(40);
+      entry.end = Date.now();
+    });
+    await waitFor(() => (seen.length === 5 && seen.every((e) => e.end) ? true : undefined));
+    await queue.close();
+    expect(peak(seen)).toBe(1);
   });
 });
 
