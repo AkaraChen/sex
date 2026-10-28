@@ -12,7 +12,7 @@ import { extractFromHtmlInline } from "../src/page.ts";
 
 export function bigPage(cards: number, articleParagraphs = 6): string {
   const card = (i: number) =>
-    `<div class="card item-${i % 7}"><div class="card-header"><a href="/u/${i}" class="user"><img src="/a/${i}.png" alt="u${i}" width="32" height="32"> user ${i}</a><span class="time">${i}h ago</span></div><div class="card-body"><h3><a href="/p/${i}">Post number ${i} about something</a></h3><p>${"Some text for card number " + i + ". Quick brown fox jumps over the lazy dog. "}</p><ul class="tags"><li><a href="/t/a">a</a></li><li><a href="/t/b">b</a></li><li><a href="/t/c">c</a></li></ul></div><div class="card-footer"><button class="like">Like</button><button class="share">Share</button></div></div>`;
+    `<div class="card item-${i % 7}"><div class="card-header"><a href="/u/${i}" class="user"><img src="/a/${i}.png" alt="u${i}" width="32" height="32"> user ${i}</a><span class="time">${i}h ago</span></div><div class="card-body"><h3><a href="/p/${i}">Post number ${i} about something</a></h3><p>${`Some text for card number ${i}. Quick brown fox jumps over the lazy dog. `}</p><ul class="tags"><li><a href="/t/a">a</a></li><li><a href="/t/b">b</a></li><li><a href="/t/c">c</a></li></ul></div><div class="card-footer"><button class="like">Like</button><button class="share">Share</button></div></div>`;
   const paras = Array.from(
     { length: articleParagraphs },
     (_, i) => `<p>Paragraph ${i} of the article. ${"The article body goes on for a while, with plenty of words to count. ".repeat(6)}</p>`,
@@ -25,12 +25,15 @@ const runs = Number(process.argv[process.argv.indexOf("--runs") + 1]) || 3;
 const mode = process.argv[2] === "compare" ? "compare" : "stages";
 const ms = (t: number) => `${t.toFixed(0)}ms`;
 
+/** Median CPU milliseconds of `runs` runs. */
 async function median(fn: () => Promise<unknown>): Promise<number> {
   const times: number[] = [];
   for (let i = 0; i < runs; i++) {
-    const t = performance.now();
+    // CPU time of this process, not wall time: other work on the machine does not inflate it.
+    const c = process.cpuUsage();
     await fn();
-    times.push(performance.now() - t);
+    const d = process.cpuUsage(c);
+    times.push((d.user + d.system) / 1000);
   }
   return times.sort((a, b) => a - b)[Math.floor(times.length / 2)] ?? 0;
 }
@@ -45,9 +48,15 @@ if (mode === "stages") {
     const parse = performance.now() - t0;
     const nodes = document.querySelectorAll("*").length;
     const t1 = performance.now();
-    const r = await Defuddle(document as Parameters<typeof Defuddle>[0], "https://example.com/", { separateMarkdown: true, useAsync: false, profile: true } as never);
+    const r = await Defuddle(document as Parameters<typeof Defuddle>[0], "https://example.com/", {
+      separateMarkdown: true,
+      useAsync: false,
+      profile: true,
+    } as never);
     const total = performance.now() - t1;
-    console.log(`\n${(html.length / 1024).toFixed(0)} KB, ${nodes} nodes: linkedom parse ${ms(parse)}, Defuddle ${ms(total)}, ${r.wordCount} words`);
+    console.log(
+      `\n${(html.length / 1024).toFixed(0)} KB, ${nodes} nodes: linkedom parse ${ms(parse)}, Defuddle ${ms(total)}, ${r.wordCount} words`,
+    );
     const profile = (r as { profile?: Record<string, number> }).profile ?? {};
     const top = Object.entries(profile)
       .sort((a, b) => b[1] - a[1])
@@ -56,12 +65,15 @@ if (mode === "stages") {
     console.log(`  slowest steps (last attempt): ${top.join(", ") || "(no profile in this build)"}`);
   }
 } else {
+  await extractFromHtmlInline(bigPage(6), opts("https://example.com/")); // warm-up, so the first row is not the JIT
   // Ordinary page first: the fast path must not touch it. `off` raises the threshold so that Defuddle's scoring always runs.
-  for (const cards of [0, ...SIZES.slice(0, 4)]) {
+  for (const cards of [0, ...SIZES.slice(0, 5)]) {
     const html = bigPage(cards || 6);
     const nodes = parseHTML(html).document.querySelectorAll("*").length;
     const label = `${(html.length / 1024).toFixed(0)} KB, ${nodes} nodes${cards === 0 ? " (ordinary)" : ""}`;
-    const off = await median(() => extractFromHtmlInline(html, { ...opts("https://example.com/"), maxScoredElements: Number.POSITIVE_INFINITY }));
+    const off = await median(() =>
+      extractFromHtmlInline(html, { ...opts("https://example.com/"), maxScoredElements: Number.POSITIVE_INFINITY }),
+    );
     const on = await median(() => extractFromHtmlInline(html, opts("https://example.com/")));
     console.log(`${label.padEnd(38)} scoring always ${ms(off).padStart(7)}   default ${ms(on).padStart(7)}`);
   }

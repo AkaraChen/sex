@@ -333,7 +333,15 @@ async function scrapeInner(
       warnings.push("Browser returned no content, and an HTTP fetch found none either.");
     }
   }
-  const { url: finalUrl, status, contentType, rawHtml, extracted, plainMarkdown, pdfMeta } = page ?? {
+  const {
+    url: finalUrl,
+    status,
+    contentType,
+    rawHtml,
+    extracted,
+    plainMarkdown,
+    pdfMeta,
+  } = page ?? {
     ...(browserResult as BrowserScrapeResult),
     plainMarkdown: undefined,
     pdfMeta: undefined,

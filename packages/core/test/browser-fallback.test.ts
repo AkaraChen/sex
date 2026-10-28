@@ -24,7 +24,14 @@ const rendered = (url: string, markdown: string, status = 200): BrowserScrapeRes
 
 /** A browser that does what `scrape` says and counts its calls. */
 function fakeBrowser(scrape: (opts: BrowserScrapeOptions) => Promise<BrowserScrapeResult>) {
-  const browser = { enabled: true, calls: 0, scrape: (opts: BrowserScrapeOptions) => (browser.calls++, scrape(opts)) };
+  const browser = {
+    enabled: true,
+    calls: 0,
+    scrape: (opts: BrowserScrapeOptions) => {
+      browser.calls++;
+      return scrape(opts);
+    },
+  };
   return browser satisfies ScrapeBrowser;
 }
 
@@ -157,7 +164,10 @@ describe("browser failure falls back to plain HTTP", () => {
   });
 
   test("an empty page with actions is not fetched again", async () => {
-    const browser = fakeBrowser(async (o) => ({ ...rendered(o.url, ""), actions: { screenshots: [], scrapes: [], javascriptReturns: [], pdfs: [] } }));
+    const browser = fakeBrowser(async (o) => ({
+      ...rendered(o.url, ""),
+      actions: { screenshots: [], scrapes: [], javascriptReturns: [], pdfs: [] },
+    }));
     const before = emptyHits;
     await scrapeUrl(ctxWith(browser), `http://127.0.0.1:${empty.port}/`, { actions: [{ type: "wait", milliseconds: 10 }] });
     expect(emptyHits).toBe(before);
