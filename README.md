@@ -188,15 +188,18 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - Google Docs / Slides / Sheets / Drive 链接会改写成导出链接再抓取（Docs、Slides → PDF，Sheets → CSV，Drive 文件 → 直接下载），`metadata.sourceURL` 仍是原链接；改写后的 URL 同样要过 SSRF 检查。URL 扩展名是文档（pdf / office / epub / rtf）或图片时不经过浏览器，直接 HTTP 抓取；响应没有 content-type 且开了 `--docs` 时，按扩展名交给 here-docs 转换，否则当作 HTML。sex 没有 `fastMode` 参数，所以不会按它跳过浏览器。
 - crawl 的 `delay` 通过给每个页面任务分配错开的执行时间来实现；`maxConcurrency` 不按单个任务限制，并发由 `SEX_CONCURRENCY` 决定。
 - crawl 遵守 robots.txt（RFC 9309）：robots.txt 返回 5xx 时视为全部禁止，返回 4xx 时视为全部允许。
-- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
+- **一个 deadline**：一次 scrape 只有一个期限，由 `timeout`（默认 `SEX_TIMEOUT`，从开始抓取算起，排队不算）和调用方的取消共同决定。抓取或渲染、`waitFor`、`wait` action、`executeJavascript`、页面脚本、正文抽取和文档转换都在这个期限内；到期返回 `408 SCRAPE_TIMEOUT`，浏览器页面随即关闭并释放名额。客户端断开或任务被取消返回 `408 TIMEOUT`。
+  - 和 Firecrawl 不同：LLM 格式（json / summary / question / highlights）和 `checkPromptInjection` 不算在 `timeout` 里，每次 LLM 调用由 `SEX_LLM_TIMEOUT`（默认 120 秒，比默认的 `timeout` 30 秒长）单独限制；它们仍受调用方取消和 search 的整体 deadline 约束。
+  - `waitFor` 加上所有 `wait` action 的 `milliseconds` 超过 60000 返回 `400`；`waitFor` 超过 `timeout` 的一半时不拒绝，只在 `warning` 里提醒。`wait` action 的 `milliseconds` 与 `selector` 必须二选一（以前两者都不给时默认等 1 秒）。
+- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
 - `includePaths` / `excludePaths` 的正则会被启发式检查：带无界量词的分组再被无界量词修饰（`(a+)+`）、或分支相互重叠的量词分组（`(a|a)*`）会返回 `400`；每条 ≤ 1000 字符、≤ 100 条，匹配前 URL 截到 2048 字符。look-around 和反向引用仍然允许。
 - LLM 相关的格式（json / summary / question / highlights）和 extract：
-  - 带 JSON Schema 时，模型输出会按原始 schema 校验（Ajv，按 `$schema` 选择 draft-07 / 2019-09 / 2020-12，未写时按 2020-12；`format` 不校验）。输出不是合法 JSON 或不符合 schema 时，会把错误发回给模型修正一次，仍不符合才返回 `502 LLM_INVALID_OUTPUT`。schema 本身不合法时，在开始抓取之前就返回 `400 BAD_REQUEST`。根节点是数组的 schema 会包成 `{ items }` 发给模型（structured output 要求根节点是对象），返回时再拆开。
+  - 带 JSON Schema 时，模型输出会按原始 schema 校验（Ajv，按 `$schema` 选择 draft-07 / 2019-09 / 2020-12，未写时按 2020-12；`format` 不校验）。输出不是合法 JSON 或不符合 schema 时，会把错误发回给模型修正一次，仍不符合才返回 `422 LLM_INVALID_OUTPUT`。schema 本身不合法时，在开始抓取之前就返回 `400 BAD_REQUEST`。根节点是数组的 schema 会包成 `{ items }` 发给模型（structured output 要求根节点是对象），返回时再拆开。
   - 页面内容放在 `<page>` 等标签里交给模型，system prompt 声明标签内是不可信内容，页面里的同名标签会被转义。页面超过 `SEX_LLM_MAX_INPUT_CHARS` 时截断，并在 `warning` 里说明。
   - `highlights` 和 `query` 格式的 `mode: "directQuote"` 让模型只返回行号，再从页面原文取出对应的行，结果一定是原文。`question` 和默认的 `query` 是自由回答。
   - `checkPromptInjection: true` 时，先用 LLM 检查页面有没有 prompt 注入（按 32000 字符分块、块间重叠 2000），发现后返回 `403 SCRAPE_PROMPT_INJECTION_DETECTED`。检查调用本身失败时放行，并在 `warning` 里说明有内容没检查到。extract 的 `scrapeOptions` 里也可以开。
   - extract 的流程沿用 Firecrawl：只有 prompt 时先让模型生成 schema；schema 里有数组时，先判断是"单一答案"还是"多实体"。多实体的数组字段逐页抽取（每页带 `is_content_relevant`，不相关的页丢掉），其余字段把所有页面一起抽取；多份结果在代码里合并（数组拼接、去重，同一实体的空字段互相补全；标量取第一个非空值），不再让 LLM 合并。
-  - 模型输出被截断（达到 token 上限）或被内容过滤拦截时返回 `502 LLM_ERROR`，模型拒答时返回 `502 LLM_REFUSED`，不会把不完整的结果当作正常结果返回。
+  - 模型输出被截断（达到 token 上限）、被内容过滤拦截或没有内容时返回 `422 LLM_INCOMPLETE_OUTPUT`，模型拒答时返回 `422 LLM_REFUSED`，不会把不完整的结果当作正常结果返回。这几种重试结果不会变，所以不是 502（SDK 会自动重试 502，LLM 费用和延迟会翻几倍）。
   - 单个 LLM 格式失败不会让整个 scrape 失败：失败的 `json` 返回 `null`，`summary` / `question` / `highlights` 省略，原因追加到 `warning`（如 `JSON extraction failed: ...`），已抓到的 markdown 等内容照常返回。`403 SCRAPE_PROMPT_INJECTION_DETECTED`、`501 LLM_NOT_CONFIGURED` 和请求取消仍直接报错。extract 本身仍是失败即报错。
   - LLM 接口返回 429（或带 `retry-after` 的 503）时，按 `retry-after` 等待后最多重试 2 次，等待时间算在 `SEX_LLM_TIMEOUT` 内；仍然失败时返回 `429 LLM_RATE_LIMITED`。错误详情里带上游的 request id。
 - 任务取消后，正在执行的页面会跑完，但结果会被丢弃；还在队列里的任务会被跳过。
@@ -210,6 +213,32 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
   - 请求带 `Origin` 头时，必须属于 `SEX_CORS_ORIGINS`，或与 `Host` 同源，否则返回 `403 ORIGIN_NOT_ALLOWED`。不带 `Origin` 的非浏览器客户端不受影响。
   - 设置 `SEX_ALLOWED_HOSTS` 后，`Host` 头的主机名必须在列表里，否则返回 `403 HOST_NOT_ALLOWED`；未设置时，只有回环绑定会检查 `Host` 是否为 localhost 名。
 - 浏览器模式下，PDF 等非 HTML 响应会回退为普通 HTTP 抓取；`skipTlsVerification` 在 Chrome 上生效。
+
+### 错误码
+
+错误响应是 `{ "success": false, "code", "error", "retryable", "details"? }`（请求体校验失败的 400 没有 `retryable`），HTTP 状态码表示错误类别：不管重试几次结果都一样的失败不会用 502/503，因为官方 SDK 会自动重试 502（LLM 费用和延迟会翻几倍）。`retryable` 表示重试同一个请求是否可能成功。所有错误码、状态码和 `retryable` 集中定义在 `src/errors.ts` 的 `ERRORS` 里。
+
+| 状态 | code | 说明 | `retryable` |
+|---|---|---|---|
+| 400 | `BAD_REQUEST`、`CONFIG_INVALID` | 请求参数不合法（含 `waitFor` + `wait` 超过 60000、`wait` 缺 / 同时给 `milliseconds` 和 `selector`） | 否 |
+| 400 | `ACTION_FAILED` | 浏览器 action 执行失败（选择器不存在、脚本报错）；到期则是 `SCRAPE_TIMEOUT` | 否 |
+| 403 | `PRIVATE_NETWORK_BLOCKED`、`SCRAPE_PROMPT_INJECTION_DETECTED` | 内网地址被拦截；注入检查命中 | 否 |
+| 408 | `SCRAPE_TIMEOUT` | scrape 的 deadline 到期 | 是 |
+| 408 | `TIMEOUT` | 调用方取消；或单个 LLM 调用、SearXNG 请求超过自己的限制 | 否 |
+| 413 / 415 / 508 | `RESPONSE_TOO_LARGE`、`UNSUPPORTED_FILE`、`TOO_MANY_REDIRECTS` | 响应太大、文件类型不支持、重定向过多 | 否 |
+| 422 | `LLM_REFUSED`、`LLM_INVALID_OUTPUT`、`LLM_INCOMPLETE_OUTPUT` | 模型拒答、输出不合法、输出被截断 / 过滤 / 为空 | 否 |
+| 422 | `DOCUMENT_PARSE_FAILED`、`PDF_PARSE_FAILED`、`EXTRACT_TIMEOUT` | 文档无法解析；正文抽取超过 worker 的上限 | 否 |
+| 429 | `LLM_RATE_LIMITED` | LLM 限流（已按 `retry-after` 重试过） | 是 |
+| 500 | `SCRAPE_DNS_RESOLUTION_ERROR` | 域名解析失败（`ENOTFOUND` / `EAI_AGAIN` / `net::ERR_NAME_NOT_RESOLVED`） | 否 |
+| 500 | `SCRAPE_SSL_ERROR` | TLS 证书无效或握手失败；证书问题的提示里会说明可以传 `skipTlsVerification: true` | 否 |
+| 500 | `SCRAPE_SITE_ERROR` | 连接被拒绝 / 重置 / 中断，或浏览器报告其它 `net::ERR_*` | 是 |
+| 500 | `FETCH_FAILED` | 其它抓取失败 | 否 |
+| 500 | `EXTRACT_FAILED`、`DOCUMENT_CONVERT_FAILED`、`INTERNAL_ERROR` | 内部错误 | 否 |
+| 501 | `NOT_SUPPORTED`、`BROWSER_NOT_CONFIGURED`、`LLM_NOT_CONFIGURED`、`BROWSER_INTERCEPTION_UNSUPPORTED` | 功能不支持或没配置 | 否 |
+| 502 | `LLM_ERROR`、`SEARCH_BACKEND_ERROR` | 上游（LLM 服务、SearXNG）自己返回了错误；SearXNG 的 5xx 可重试 | 是 / 否 |
+| 502 | `BROWSER_UNAVAILABLE`、`DOCS_UNAVAILABLE`、`LLM_UNAVAILABLE`、`SEARCH_BACKEND_UNAVAILABLE` | 后端起不来或连不上 | 是 |
+
+和 Firecrawl 的差异：DNS 解析失败时 Firecrawl 返回 HTTP 200 加 `success: false`，sex 仍用 HTTP 状态码表示错误（`500 SCRAPE_DNS_RESOLUTION_ERROR`），错误码相同。`ACTION_FAILED` 没有改名成 `SCRAPE_ACTION_ERROR`。
 
 ## MCP
 
