@@ -32,6 +32,8 @@ export interface Config extends CoreConfig {
   blockMedia: boolean;
   /** Convert PDFs, office documents and images with here-docs (structured text + OCR). */
   docs: boolean;
+  /** Documents converted by here-docs at the same time; the rest wait (inside their deadline). */
+  docsConcurrency: number;
   llm?: { baseUrl: string; apiKey?: string; model: string };
   /** Deadline for a single LLM request in ms. */
   llmTimeout: number;
@@ -54,6 +56,7 @@ export interface ConfigOverrides extends CoreConfigOverrides {
   lightpandaPath?: string;
   blockMedia?: boolean;
   docs?: boolean;
+  docsConcurrency?: number;
   llmBaseUrl?: string;
   llmApiKey?: string;
   llmModel?: string;
@@ -88,6 +91,7 @@ const FIELDS = {
   lightpanda: flagField,
   blockMedia: flagField,
   docs: flagField,
+  docsConcurrency: intField(1),
   documentsUrl: documentsUrlField,
 };
 
@@ -101,6 +105,7 @@ const FIELD_RULES: FieldRules<keyof typeof FIELDS> = {
   lightpanda: ["SEX_LIGHTPANDA", FLAG_WORDS],
   blockMedia: ["SEX_BLOCK_MEDIA", FLAG_WORDS],
   docs: ["SEX_DOCS", FLAG_WORDS],
+  docsConcurrency: ["SEX_DOCS_CONCURRENCY", "an integer >= 1"],
   documentsUrl: ["SEX_DOCUMENTS_URL", "an s3://bucket[/prefix] or file:///absolute/path URL"],
 };
 
@@ -132,6 +137,7 @@ export function resolveConfig(
     lightpanda: flag(o.lightpanda, str(env.SEX_LIGHTPANDA)),
     blockMedia: flag(o.blockMedia, str(env.SEX_BLOCK_MEDIA)),
     docs: flag(o.docs, str(env.SEX_DOCS)),
+    docsConcurrency: o.docsConcurrency ?? str(env.SEX_DOCS_CONCURRENCY),
     documentsUrl: str(o.documentsUrl) ?? str(env.SEX_DOCUMENTS_URL),
   });
 
@@ -143,6 +149,7 @@ export function resolveConfig(
     lightpandaPath: str(o.lightpandaPath) ?? str(env.SEX_LIGHTPANDA_PATH) ?? str(env.LIGHTPANDA_EXECUTABLE_PATH),
     blockMedia: v.blockMedia ?? false,
     docs: v.docs ?? false,
+    docsConcurrency: v.docsConcurrency ?? Math.max(1, Math.min(2, navigator.hardwareConcurrency - 1)),
     llm: llmModel
       ? {
           baseUrl: (v.llmBaseUrl ?? DEFAULT_LLM_BASE_URL).replace(/\/+$/, ""),

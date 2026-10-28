@@ -110,6 +110,24 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
     expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "SCRAPE_TIMEOUT" });
   });
 
+  test("a long document over its deadline returns the pages converted so far, with a warning", async () => {
+    const pages = 3000;
+    const doc = await docs.docs.convert(textPdf(pages), { deadline: Deadline.start(300) });
+    if (doc.pagesConverted === pages) return; // fast machine: nothing to cut
+    expect(doc.pagesConverted).toBeGreaterThan(0);
+    expect(doc.warnings.some((w) => w.code === "timeout" && w.message.includes(`first ${doc.pagesConverted} of ${pages}`))).toBe(true);
+  });
+
+  test("time spent waiting for a conversion slot counts against the deadline", async () => {
+    const one = new DocsConverter({ ...docs.config, docsConcurrency: 1 });
+    const bytes = await fixture("scan.pdf").bytes();
+    const first = one.convert(bytes, { deadline: Deadline.start(60_000) });
+    const err = await rejection(one.convert(bytes, { deadline: Deadline.start(1) }));
+    expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "SCRAPE_TIMEOUT" });
+    await first;
+    await one.close();
+  });
+
   test("a cancelled request stops the conversion with 408 TIMEOUT", async () => {
     const bytes = await fixture("scan.pdf").bytes();
     const err = await rejection(docs.docs.convert(bytes, { deadline: Deadline.start(60_000, { signal: AbortSignal.abort() }) }));
