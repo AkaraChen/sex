@@ -5,6 +5,7 @@ import type { DocsConvertOptions, DocsResult, DocsWarning, ScrapeDocs } from "@s
 import { AppError } from "@sex/core/errors.ts";
 import { log } from "@sex/core/log.ts";
 import type { ConvertEngine } from "here-docs";
+import pLimit from "p-limit";
 import type { Config } from "../config.ts";
 
 type HereDocs = typeof import("here-docs");
@@ -61,9 +62,12 @@ const UNREADABLE = new Set(["encrypted", "malformed", "missing-part", "resource-
 export class DocsConverter implements ScrapeDocs {
   readonly enabled: boolean;
   private started?: Promise<{ mod: HereDocs; engine: ConvertEngine }>;
+  /** light-ocr runs on one worker thread per engine, so more than a couple of conversions only pile up pages and memory. */
+  private readonly limit: ReturnType<typeof pLimit>;
 
   constructor(config: Config) {
     this.enabled = config.docs;
+    this.limit = pLimit(config.docsConcurrency);
   }
 
   /** Start the engine now (serve / worker), so the first document does not pay for it and a broken install fails at startup. */
@@ -73,13 +77,33 @@ export class DocsConverter implements ScrapeDocs {
 
   async convert(bytes: Uint8Array, opts: DocsConvertOptions): Promise<DocsResult> {
     const { deadline } = opts;
+    // Waiting for a slot is part of the deadline; a request that gives up while queued never starts converting. Once it has
+    // started, `run` keeps its own budget (a slice) so that pages converted before the end can still be returned.
+    let started!: () => void;
+    const begun = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const result = this.limit(() => {
+      started();
+      deadline.throwIfAborted("while waiting to convert the document");
+      return this.run(bytes, opts);
+    });
+    result.catch(() => {});
+    await deadline.bound(begun, "while waiting to convert the document");
+    return result;
+  }
+
+  private async run(bytes: Uint8Array, opts: DocsConvertOptions): Promise<DocsResult> {
+    const { deadline } = opts;
     const { mod, engine } = await deadline.bound(this.start(), "while starting the document converter");
+    // Keep a tenth of what is left for the rest of the scrape, so pages converted before the time ran out can still be returned.
+    const work = deadline.remaining() === Number.POSITIVE_INFINITY ? deadline : deadline.slice(Math.floor(deadline.remaining() * 0.9));
     const sections: string[] = [];
     const warnings: DocsWarning[] = [];
     let numPages: number | undefined;
     let pagesConverted = 0;
     try {
-      for await (const part of mod.convertPages(bytes, { engine, filename: opts.filename, signal: deadline.signal })) {
+      for await (const part of mod.convertPages(bytes, { engine, filename: opts.filename, signal: work.signal })) {
         if (part.markdown.trim()) sections.push(part.markdown);
         warnings.push(...part.warnings);
         if (part.page === null) continue;
@@ -88,7 +112,13 @@ export class DocsConverter implements ScrapeDocs {
         if (opts.maxPages !== undefined && pagesConverted >= opts.maxPages) break;
       }
     } catch (err) {
-      deadline.throwIfAborted("while converting the document");
+      if (work.expired && pagesConverted > 0) {
+        // Out of time with pages in hand: return those instead of throwing them away.
+        const of = numPages === undefined ? "" : ` of ${numPages}`;
+        warnings.push({ code: "timeout", message: `Timed out: converted only the first ${pagesConverted}${of} pages` });
+        return { markdown: sections.join("\n\n"), numPages, pagesConverted, warnings };
+      }
+      work.throwIfAborted("while converting the document");
       throw new AppError("DOCUMENT_CONVERT_FAILED", `Document conversion failed: ${(err as Error).message ?? err}`);
     }
 
