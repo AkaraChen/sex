@@ -58,8 +58,11 @@ describe("http", () => {
 
   test("POST /v2/search and /v2/map", async () => {
     const search = await call("POST", "/v2/search", { query: "docs", limit: 1 });
+    expect(search.body.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(search.body).toEqual({
       success: true,
+      id: search.body.id,
+      creditsUsed: 0,
       data: { web: [{ url: `${site.url}/docs/a`, title: "Doc A", description: "About doc a", position: 1 }] },
     });
     const map = await call("POST", "/v2/map", { url: site.url, limit: 3 });

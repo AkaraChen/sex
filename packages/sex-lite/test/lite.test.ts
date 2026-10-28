@@ -45,6 +45,8 @@ describe("http", () => {
     const searched = await call("POST", "/v2/search", { query: "docs", limit: 1, scrapeOptions: { formats: ["markdown"] } });
     expect(searched.status).toBe(200);
     expect(searched.body.data.web).toHaveLength(1);
+    expect(searched.body.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(searched.body.creditsUsed).toBe(0);
     expect(searched.body.data.web[0].markdown).toContain("Doc A");
   });
 

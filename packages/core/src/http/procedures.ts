@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { ORPCError, os } from "@orpc/server";
 import type { BaseEngine } from "../engine.ts";
 import { AppError, toAppError } from "../errors.ts";
@@ -27,6 +28,9 @@ export function procedureBase<E extends BaseEngine>() {
   });
 }
 
+/** Results per source over HTTP when `limit` is absent (Firecrawl's default; the CLI and MCP keep 5 to spare an LLM tokens). */
+const HTTP_SEARCH_LIMIT = 10;
+
 const base = procedureBase<BaseEngine>();
 
 /** `/v2/scrape` and `/v2/search`, served by sex and sex-lite alike. */
@@ -42,7 +46,7 @@ export const coreRoutes = {
     .input(SearchRequest)
     .output(SearchResponse)
     .handler(async ({ input, context, signal }) => {
-      const { data, warning } = await context.engine.search(input, signal);
-      return { success: true as const, data, ...(warning ? { warning } : {}) };
+      const { data, warning } = await context.engine.search({ ...input, limit: input.limit ?? HTTP_SEARCH_LIMIT }, signal);
+      return { success: true as const, id: randomUUID(), creditsUsed: 0, data, ...(warning ? { warning } : {}) };
     }),
 };
