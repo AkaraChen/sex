@@ -49,6 +49,8 @@ export interface Config extends CoreConfig {
   jobTtlMs: number;
   /** Pages mapped for an extract URL ending in `/*`. */
   extractWildcardPages: number;
+  /** Names of the MCP tools: `web` (`web_fetch`, ...) or `firecrawl` (firecrawl-mcp's names where it has the tool). */
+  mcpToolNames: "web" | "firecrawl";
 }
 
 /** Values given on the command line; anything missing falls back to SEX_* env vars, then defaults. */
@@ -68,6 +70,8 @@ export interface ConfigOverrides extends CoreConfigOverrides {
   llmMaxInputChars?: number;
   /** Not a CLI flag (it would show in the process list); tests and embedders pass it here. */
   webhookSecret?: string;
+  /** Not a CLI flag; tests and embedders pass it here. */
+  mcpToolNames?: string;
 }
 
 const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1";
@@ -97,6 +101,7 @@ const FIELDS = {
   docs: flagField,
   docsConcurrency: intField(1),
   documentsUrl: documentsUrlField,
+  mcpToolNames: z.enum(["web", "firecrawl"]).optional(),
 };
 
 const FIELD_RULES: FieldRules<keyof typeof FIELDS> = {
@@ -111,6 +116,7 @@ const FIELD_RULES: FieldRules<keyof typeof FIELDS> = {
   docs: ["SEX_DOCS", FLAG_WORDS],
   docsConcurrency: ["SEX_DOCS_CONCURRENCY", "an integer >= 1"],
   documentsUrl: ["SEX_DOCUMENTS_URL", "an s3://bucket[/prefix] or file:///absolute/path URL"],
+  mcpToolNames: ["SEX_MCP_TOOL_NAMES", "web or firecrawl"],
 };
 
 /** Where `serve` keeps jobs when SEX_DATA_DIR is not set: $XDG_DATA_HOME/sex, else ~/.local/share/sex. */
@@ -143,6 +149,7 @@ export function resolveConfig(
     docs: flag(o.docs, str(env.SEX_DOCS)),
     docsConcurrency: o.docsConcurrency ?? str(env.SEX_DOCS_CONCURRENCY),
     documentsUrl: str(o.documentsUrl) ?? str(env.SEX_DOCUMENTS_URL),
+    mcpToolNames: str(o.mcpToolNames) ?? str(env.SEX_MCP_TOOL_NAMES),
   });
 
   const llmModel = str(o.llmModel) ?? str(env.SEX_LLM_MODEL);
@@ -168,5 +175,6 @@ export function resolveConfig(
     webhookSecret: str(o.webhookSecret) ?? str(env.SEX_WEBHOOK_SECRET),
     jobTtlMs: v.jobTtlMs ?? 24 * 60 * 60 * 1000,
     extractWildcardPages: v.extractWildcardPages ?? 25,
+    mcpToolNames: v.mcpToolNames ?? "web",
   };
 }

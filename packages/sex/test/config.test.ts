@@ -124,6 +124,9 @@ test("SEX_WEBHOOK_SECRET signs webhooks; unset or empty means unsigned", () => {
 });
 
 test("SEX_BLOCK_MEDIA is off by default; the flag wins over the env", () => {
+  expect(resolveConfig({}, undefined, {}).mcpToolNames).toBe("web");
+  expect(resolveConfig({}, undefined, { SEX_MCP_TOOL_NAMES: "firecrawl" }).mcpToolNames).toBe("firecrawl");
+  expect(() => resolveConfig({}, undefined, { SEX_MCP_TOOL_NAMES: "x" })).toThrow();
   expect(resolveConfig({}, undefined, {}).blockMedia).toBe(false);
   expect(resolveConfig({}, undefined, { SEX_BLOCK_MEDIA: "1" }).blockMedia).toBe(true);
   expect(resolveConfig({ blockMedia: false }, undefined, { SEX_BLOCK_MEDIA: "1" }).blockMedia).toBe(false);

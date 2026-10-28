@@ -30,13 +30,17 @@ export async function guard(fn: () => Promise<string>): Promise<ToolResult> {
   }
 }
 
-/** Registers `web_fetch` and `web_search`. `llmFormats` mentions the LLM formats in web_fetch's description. */
-export function registerFetchAndSearch(server: McpServer, engine: BaseEngine, opts: { llmFormats: boolean }): void {
+/** Registers `web_fetch` and `web_search` (or the names in `opts.names`). `llmFormats` mentions the LLM formats in web_fetch's description. */
+export function registerFetchAndSearch(
+  server: McpServer,
+  engine: BaseEngine,
+  opts: { llmFormats: boolean; names?: { fetch: string; search: string } },
+): void {
   const formats = opts.llmFormats
     ? '"html", "rawHtml", "links", "images", "summary" / {type:"json",prompt,schema} (LLM)'
     : '"html", "rawHtml", "links", "images"';
   server.registerTool(
-    "web_fetch",
+    opts.names?.fetch ?? "web_fetch",
     {
       description: `Fetch one URL and return its main content as markdown (default). Other formats: ${formats}. Set onlyMainContent:false for the whole page.`,
       annotations: { title: "Fetch web page", readOnlyHint: true, openWorldHint: true, destructiveHint: false },
@@ -46,7 +50,7 @@ export function registerFetchAndSearch(server: McpServer, engine: BaseEngine, op
   );
 
   server.registerTool(
-    "web_search",
+    opts.names?.search ?? "web_search",
     {
       description:
         'Search the web. Returns ranked results (url, title, description) grouped by source ("web", "news", "images"). Add scrapeOptions:{formats:["markdown"]} to also fetch each result\'s content; usually prefer web_fetch on the few URLs you need.',
