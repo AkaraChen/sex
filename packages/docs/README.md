@@ -29,7 +29,7 @@ await docs.close();
 
 ## Node
 
-here-docs declares Node 22+ and ships a `dist/`, so it should run on Node, but this repository only exercises it on Bun: it is installed from git (`github:AkaraChen/here-docs`), and a git install under Bun has TypeScript source and no `dist/`, so the `import("here-docs")` of this package's own tests on Node is not run against the real engines. The Node tests here use a stand-in for here-docs. If `here-docs` cannot be loaded the converter fails with `DOCS_UNAVAILABLE` and says why; nothing is worked around.
+here-docs (on npm, MIT) runs on Node 22+ and on Bun: its own CI converts files with the real engines on Linux (glibc and musl), macOS and Windows under Node 22 and 24, and under Bun. This package's Node tests use a stand-in for here-docs; the repository's `e2e/packages` suite starts the real engine from the published tarballs on Node and Bun. If `here-docs` cannot be loaded (an unsupported host, optional platform packages omitted) the converter fails with `DOCS_UNAVAILABLE` and says why; nothing is worked around.
 
 ## Diagnostics
 

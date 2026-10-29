@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-docs",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0",
   "type": "module",
   "description": "PDF, office document and image conversion (structured text, local OCR) through here-docs, for @searxng-js/sex-scrape",
   "license": "MIT",
@@ -26,7 +26,7 @@
     }
   },
   "dependencies": {
-    "here-docs": "github:AkaraChen/here-docs#40febc7",
+    "here-docs": "^0.1.0",
     "p-limit": "^7.3.3"
   },
   "peerDependencies": {
