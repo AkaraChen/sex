@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-page",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "HTML and PDF content extraction (Defuddle, unpdf) with a worker-thread pool, and Markdown to HTML",
   "license": "MIT",

@@ -7,7 +7,7 @@ The LLM side of [`sex-scrape`](../scrape/README.md), on any OpenAI-compatible `/
 - Page content goes inside tags in the prompts, escaped, and every system prompt that sees it ends with an untrusted-content notice. `escapeTags`, `splitSegments`, `compileJsonSchema` and `describeSchemaErrors` are exported for code that builds on the same pieces (the extract flow of `apps/sex` does).
 - Time: every call takes `{ signal, deadlineAt }`. A call gets `min(timeoutMs, what is left)`, rate limits (429, or 503 with `retry-after`) are waited out only if the wait fits, and a call cut by the caller's time is `SCRAPE_TIMEOUT` where its own `timeoutMs` is `TIMEOUT`. Token usage of the calls inside `llm.metered(meter, fn)` is added to the `TokenMeter`.
 
-The package reads no environment variables; log lines (retries, guard failures, debug lines) go to its [diagnostics channel](#diagnostics). Errors are `AppError`s from the private `sex-errors` library, bundled in: an endpoint's 4xx is `LLM_REQUEST_REJECTED` (500), a 5xx `LLM_ERROR`, an unreachable endpoint `LLM_UNAVAILABLE`.
+The package reads no environment variables; log lines (retries, guard failures, debug lines) go to its [diagnostics channel](#diagnostics). Errors are `AppError`s, which this package exports (`import { AppError } from "@searxng-js/sex-llm"`; every `@searxng-js/sex-*` package exports the same class; check them with `AppError.isInstance(e)`, never `instanceof`): an endpoint's 4xx is `LLM_REQUEST_REJECTED` (500), a 5xx `LLM_ERROR`, an unreachable endpoint `LLM_UNAVAILABLE`.
 
 ## Install
 

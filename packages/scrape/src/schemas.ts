@@ -33,7 +33,10 @@ export const JsonFormat = z.object({
   type: z.literal("json"),
   prompt: z.string().optional(),
   schema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema the extracted object must match"),
-  model: z.string().optional().describe("Accepted for Firecrawl compatibility; ignored (the model is SEX_LLM_MODEL). Adds a warning."),
+  model: z
+    .string()
+    .optional()
+    .describe("Accepted for Firecrawl compatibility; ignored (the model is the one the LLM is configured with). Adds a warning."),
 });
 
 export const ScreenshotFormat = z.object({
@@ -157,7 +160,7 @@ export const ScrapeOptions = z
       .max(20)
       .optional()
       .describe(
-        'Output formats. Defaults to ["markdown"]. At most 20. "screenshot", "deterministicJson", "branding", "product", "menu", "audio" and "video" return 501 NOT_SUPPORTED. "changeTracking" needs the markdown format too, and a server with SEX_DATA_DIR (sex; sex-lite returns 501). "rawBase64" (the file\'s bytes as base64) cannot be combined with other formats.',
+        'Output formats. Defaults to ["markdown"]. At most 20. "screenshot", "deterministicJson", "branding", "product", "menu", "audio" and "video" return 501 NOT_SUPPORTED. "changeTracking" needs the markdown format too, and a change tracker (without one it returns 501). "rawBase64" (the file\'s bytes as base64) cannot be combined with other formats.',
       ),
     onlyMainContent: z.boolean().optional().describe("Return only the main content (Defuddle). Defaults to true."),
     includeTags: z
@@ -185,7 +188,7 @@ export const ScrapeOptions = z
       .max(10)
       .optional()
       .describe(
-        'File parsers that may run: "pdf" (optionally { type: "pdf", maxPages }) and "image" (OCR, needs SEX_DOCS). Default: both. Without "pdf" a PDF comes back as base64 in markdown and html.',
+        'File parsers that may run: "pdf" (optionally { type: "pdf", maxPages }) and "image" (OCR, needs document conversion). Default: both. Without "pdf" a PDF comes back as base64 in markdown and html.',
       ),
     actions: z.array(Action).max(50).optional().describe("Browser actions run before the page is captured (browser only, at most 50)"),
     location: LocationConfig.optional(),
@@ -204,14 +207,14 @@ export const ScrapeOptions = z
       .enum(["basic", "stealth", "enhanced", "auto"])
       .optional()
       .describe(
-        'Which proxy fetches the page. Default (also "auto"): the server\'s SEX_PROXY_URL, or directly; with SEX_STEALTH_PROXY_URL set, a fetch the site blocks (403, 429, a reset connection) is retried once through it. "basic": never the stealth proxy. "stealth": through the stealth proxy from the start, over plain HTTP (no browser). Without SEX_STEALTH_PROXY_URL, and for "enhanced", the page is fetched as usual and a warning is added.',
+        'Which proxy fetches the page. Default (also "auto"): the configured outbound proxy, or directly; with a stealth proxy configured, a fetch the site blocks (403, 429, a reset connection) is retried once through it. "basic": never the stealth proxy. "stealth": through the stealth proxy from the start, over plain HTTP (no browser). Without a stealth proxy, and for "enhanced", the page is fetched as usual and a warning is added.',
       ),
     fastMode: z.boolean().optional().describe("Skip the browser and fetch the page over plain HTTP, so scripts do not run."),
     maxAge: z
       .number()
       .optional()
       .describe(
-        "Use a cached copy of the page up to this many ms old (the server default is SEX_CACHE_MAX_AGE_MS, 0 = always fetch; 0 also skips storing). Without a cache (sex-lite) the page is always fetched fresh.",
+        "Use a cached copy of the page up to this many ms old (the default is the configured one, 0 = always fetch; 0 also skips storing). Without a cache the page is always fetched fresh.",
       ),
     storeInCache: z
       .boolean()
@@ -271,7 +274,7 @@ export const ChangeTrackingResult = z.object({
   changeStatus: z
     .enum(["new", "same", "changed", "removed"])
     .describe("new: no previous scrape. same: the text is the same. changed: it differs. removed: the page answered 404."),
-  visibility: z.enum(["visible", "hidden"]).describe("Always visible: sex has no crawl-scoped pages to hide."),
+  visibility: z.enum(["visible", "hidden"]).describe("Always visible: there are no crawl-scoped pages to hide."),
   diff: z
     .object({
       text: z.string().describe("Unified diff, previous.md -> current.md"),

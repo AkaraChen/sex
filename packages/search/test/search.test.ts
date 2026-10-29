@@ -150,3 +150,33 @@ describe("search v2 parameters", async () => {
     );
   });
 });
+
+describe("a SearXNG that is still starting", () => {
+  /** A context whose SearXNG takes `ms` to report its URL, like a managed one on its first start. */
+  const slowStart = (ms: number) => {
+    const ctx = searchContext("http://127.0.0.1:9");
+    return { ...ctx, searxng: { url: () => new Promise<string>((resolve) => setTimeout(() => resolve("http://127.0.0.1:9"), ms)) } };
+  };
+
+  test("a cancel ends the wait at once with TIMEOUT", async () => {
+    const ctx = slowStart(5_000);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+    const started = Date.now();
+    const err = await caught(search(ctx, { query: "x" }, controller.signal));
+    assert.equal(code(err), "TIMEOUT");
+    assert.match(String((err as Error).message), /cancelled while waiting for SearXNG to start/);
+    assert.ok(Date.now() - started < 2_000, `took ${Date.now() - started} ms`);
+    await ctx.close();
+  });
+
+  test("the request's timeout ends the wait", async () => {
+    const ctx = slowStart(5_000);
+    const started = Date.now();
+    const err = await caught(search(ctx, { query: "x", timeout: 500 }));
+    assert.equal(code(err), "TIMEOUT");
+    assert.match(String((err as Error).message), /Timed out after 500ms while waiting for SearXNG to start/);
+    assert.ok(Date.now() - started < 2_500, `took ${Date.now() - started} ms`);
+    await ctx.close();
+  });
+});

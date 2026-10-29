@@ -7,7 +7,7 @@ PDF, Office document and image conversion for [`sex-scrape`](../scrape/README.md
 - Time: `convert(bytes, { signal, deadlineAt, maxPages, filename })`. The conversion gets 90% of what is left; if that runs out after some pages, those pages are returned with a `timeout` warning, with none it is `SCRAPE_TIMEOUT`. Cancelling is `TIMEOUT`.
 - `registerEmbeddedDocs(digest, files)` is for a Bun single-file executable that embeds here-docs and its native engines (see `apps/sex/scripts/build.ts`): the files are extracted once to `$XDG_CACHE_HOME/sex/docs-<digest>` and loaded from there.
 
-The package reads no environment variables; log lines go to its [diagnostics channel](#diagnostics). Errors are `AppError`s from the private `sex-errors` library, bundled in.
+The package reads no environment variables; log lines go to its [diagnostics channel](#diagnostics). Errors are `AppError`s, which this package exports (`import { AppError } from "@searxng-js/sex-docs"`; every `@searxng-js/sex-*` package exports the same class): check them with `AppError.isInstance(e)`, never `instanceof`; `e.code`, `e.status` and `e.retryable` are plain fields.
 
 ## Install
 

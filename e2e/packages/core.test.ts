@@ -129,9 +129,8 @@ for (const runtime of ["node", "bun"] as const) {
       if (!r.warmup.ok) expect(r.warmup).toMatchObject({ isAppError: true, code: "DOCS_UNAVAILABLE" });
     });
 
-    // BUG: sex-scrape's README says to check errors with `AppError.isInstance(e)`, but no published package exports `AppError`
-    // (it is declared in the .d.ts files, not exported), so a consumer has to look for the `Symbol.for("searxng-js.sex.error")` marker.
-    test.failing("a published package exports AppError, so a consumer can follow the README and call AppError.isInstance", async () => {
+    // Every published package exports AppError (fixed in 0.1.1; it used to be bundled but not exported).
+    test("a published package exports AppError, so a consumer can follow the README and call AppError.isInstance", async () => {
       const r = await consumeOk(projects[runtime], runtime, "apperror.mjs", cfg());
       expect(r.exporters.length).toBeGreaterThan(0);
       expect(r.works).toBe(true);

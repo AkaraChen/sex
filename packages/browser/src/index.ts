@@ -1,3 +1,5 @@
+// Errors are this class (bundled in every package, recognised across them by AppError.isInstance, never instanceof).
+export { AppError, type ErrorCode } from "@searxng-js/sex-errors";
 export { AdBlockList, loadAdBlockList, registerEmbeddedAdblock, siteOf } from "./adblock.ts";
 export { BrowserPool, type BrowserPoolOptions, lightpandaArgv, pdeathsigWrapper, registerEmbeddedLightpanda } from "./browser.ts";
 export { type BrowserKind, browserKind, contextProxy, type EgressPlan, isLoopbackHost, planEgress } from "./browser-egress.ts";

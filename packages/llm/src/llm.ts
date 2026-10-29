@@ -86,7 +86,15 @@ export interface LlmOptions {
   maxInputChars: number;
   /** The most one LLM call may take, retries and rate-limit waits included, out of what the caller's time leaves (ms). */
   timeoutMs: number;
+  /**
+   * What an endpoint's 4xx (bad key, wrong model) tells the user to check. Defaults to a generic sentence; an application
+   * names its own settings here (sex: its SEX_LLM_* variables).
+   */
+  rejectedHint?: string;
 }
+
+/** What an endpoint's 4xx tells the user to check when `LlmOptions.rejectedHint` is not set. */
+export const LLM_REJECTED_HINT = "Check the model name (and the small model's), the endpoint URL and the API key.";
 
 /** Client for any OpenAI-compatible /chat/completions endpoint, built on xsai. */
 export class Llm implements ScrapeLlm {
@@ -164,7 +172,7 @@ export class Llm implements ScrapeLlm {
       );
     } catch (err) {
       call.throwIfAborted("while waiting for the LLM");
-      throw toLlmError(err, llm.baseUrl);
+      throw toLlmError(err, llm.baseUrl, this.options.rejectedHint);
     }
     const meter = meters.getStore();
     if (meter) meter.tokens += result.totalUsage?.totalTokens ?? 0;
@@ -457,7 +465,7 @@ function requestId(headers: Headers): string | undefined {
   return headers.get("x-request-id") ?? headers.get("request-id") ?? undefined;
 }
 
-function toLlmError(err: unknown, baseUrl: string): AppError {
+function toLlmError(err: unknown, baseUrl: string, rejectedHint = LLM_REJECTED_HINT): AppError {
   if (HttpError.isInstance(err)) {
     const id = requestId(err.headers);
     const suffix = id ? ` (request id ${id})` : "";
@@ -473,7 +481,7 @@ function toLlmError(err: unknown, baseUrl: string): AppError {
     if (err.status >= 400 && err.status < 500 && err.status !== 408) {
       return new AppError(
         "LLM_REQUEST_REJECTED",
-        `The LLM endpoint rejected the request (${err.status})${suffix}: ${err.body.slice(0, 500)}. Check SEX_LLM_MODEL (and SEX_LLM_SMALL_MODEL), SEX_LLM_BASE_URL and SEX_LLM_API_KEY.`,
+        `The LLM endpoint rejected the request (${err.status})${suffix}: ${err.body.slice(0, 500)}. ${rejectedHint}`,
         { status: err.status, requestId: id },
       );
     }

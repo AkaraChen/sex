@@ -39,6 +39,15 @@ export function browserOptions(config: Config): BrowserPoolOptions {
 }
 
 /** Everything the HTTP, MCP and CLI front-ends share: the core search and fetch, plus browser, LLM, documents and jobs. */
+
+/** How a sex operator gets what a request is missing: its flags and SEX_* settings (the packages' own hints are generic). */
+const SEX_MISSING_HINTS = {
+  browser:
+    "Start with --lightpanda (spawns a local Lightpanda) or --cdp-url <ws://...> (any CDP browser), or set SEX_LIGHTPANDA=1 / SEX_CDP_URL.",
+  llm: "Pass --llm-model (plus --llm-base-url / --llm-api-key for non-OpenAI endpoints), or set SEX_LLM_MODEL / SEX_LLM_BASE_URL / SEX_LLM_API_KEY.",
+  changeTracking: "It keeps the previous scrape of a page in SEX_DATA_DIR: set it (--data-dir, or run `sex serve`, which defaults to one).",
+};
+
 export class Engine extends BaseEngine<Config> {
   override readonly browser: BrowserPool;
   override readonly llm: Llm;
@@ -53,7 +62,7 @@ export class Engine extends BaseEngine<Config> {
   readonly jobSettings: JobsSettings;
 
   constructor(config: Config) {
-    super(config);
+    super(config, { missingHints: SEX_MISSING_HINTS });
     this.jobSettings = {
       concurrency: config.concurrency,
       extractWildcardPages: config.extractWildcardPages,
@@ -69,7 +78,12 @@ export class Engine extends BaseEngine<Config> {
     }
     // The plugins take their own options; this is where the app's settings become them.
     this.browser = new BrowserPool(browserOptions(config));
-    this.llm = new Llm({ endpoint: config.llm, maxInputChars: config.llmMaxInputChars, timeoutMs: config.llmTimeout });
+    this.llm = new Llm({
+      endpoint: config.llm,
+      maxInputChars: config.llmMaxInputChars,
+      timeoutMs: config.llmTimeout,
+      rejectedHint: "Check SEX_LLM_MODEL (and SEX_LLM_SMALL_MODEL), SEX_LLM_BASE_URL and SEX_LLM_API_KEY.",
+    });
     this.docs = new DocsConverter({ enabled: config.docs, concurrency: config.docsConcurrency });
   }
 

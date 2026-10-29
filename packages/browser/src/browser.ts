@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { zstdDecompressSync } from "node:zlib";
 import { Deadline } from "@searxng-js/sex-deadline";
 import { type EgressPolicy, egressFor, MARKUP_TYPE, networkError } from "@searxng-js/sex-egress";
-import { AppError, BROWSER_HINT } from "@searxng-js/sex-errors";
+import { AppError } from "@searxng-js/sex-errors";
 import { PAGE_SCRIPT, type PageExtractOptions, type PageExtractResult } from "@searxng-js/sex-page";
 import type { Action, BrowserScrapeOptions, BrowserScrapeResult, ScrapeBrowser } from "@searxng-js/sex-scrape";
 import defuddleBundle from "defuddle/full" with { type: "text" };
@@ -86,7 +86,7 @@ async function findLightpanda(explicit?: string): Promise<string> {
   if (!found) {
     throw new AppError(
       "BROWSER_NOT_CONFIGURED",
-      "Lightpanda binary not found (this sex was not built with one embedded). Download it from https://github.com/lightpanda-io/browser/releases and put it on PATH, or pass --lightpanda-path.",
+      "Lightpanda binary not found: no path was given and none is embedded (registerEmbeddedLightpanda). Download it from https://github.com/lightpanda-io/browser/releases and put it on PATH, or pass its path.",
     );
   }
   return found;
@@ -222,7 +222,10 @@ export class BrowserPool implements ScrapeBrowser {
         body = (await res.json()) as { webSocketDebuggerUrl?: string };
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
-        throw new AppError("BROWSER_UNAVAILABLE", `Cannot reach the CDP browser at ${url}: ${reason}. ${BROWSER_HINT}`);
+        throw new AppError(
+          "BROWSER_UNAVAILABLE",
+          `Cannot reach the CDP browser at ${url}: ${reason}. Check that the browser is running and its remote debugging endpoint is reachable.`,
+        );
       }
       if (!body.webSocketDebuggerUrl) throw new Error(`No webSocketDebuggerUrl at ${url}/json/version`);
       return body.webSocketDebuggerUrl;

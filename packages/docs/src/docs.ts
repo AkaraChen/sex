@@ -172,7 +172,10 @@ export class DocsConverter implements ScrapeDocs {
       try {
         mod = await this.load();
       } catch (err) {
-        throw new AppError("DOCS_UNAVAILABLE", `SEX_DOCS is on but here-docs could not be loaded: ${(err as Error).message}`);
+        throw new AppError(
+          "DOCS_UNAVAILABLE",
+          `Document conversion is enabled but here-docs could not be loaded: ${(err as Error).message}`,
+        );
       }
       try {
         const engine = await mod.createEngine();

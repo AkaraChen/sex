@@ -74,9 +74,21 @@ describe("errors", () => {
         details: { status, requestId: "req_1" },
       });
       assert.match(err.message, /req_1/);
-      assert.match(err.message, /SEX_LLM_API_KEY/);
+      assert.match(err.message, /API key/);
     });
   }
+
+  test("an application can name its own settings in the rejection", async () => {
+    const s = await serve(() => new Response("bad key", { status: 401 }));
+    const llm = new Llm({
+      endpoint: { baseUrl: s.url, model: "m" },
+      maxInputChars: 200_000,
+      timeoutMs: 10_000,
+      rejectedHint: "Check MY_APP_KEY.",
+    });
+    const err = await rejectsWith(llm.summarize("page", NO_LIMIT), { code: "LLM_REQUEST_REJECTED" });
+    assert.match(err.message, /Check MY_APP_KEY\.$/);
+  });
 
   test("an upstream 5xx stays LLM_ERROR (502)", async () => {
     const s = await serve(() => new Response("boom", { status: 500, headers: { "x-request-id": "req_3" } }));

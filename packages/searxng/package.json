@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-searxng",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Connect to an external SearXNG, or run one as a managed child process (prebuilt binary), with restart and cooldown",
   "license": "MIT",

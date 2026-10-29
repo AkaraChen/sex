@@ -247,7 +247,7 @@ function ignoredOptionWarnings(config: Pick<ScrapeSettings, "stealthProxyUrl">, 
   }
   if (options.location?.country) out.push(`location.country is not used for geo-targeting -- ${partial}`);
   const jsonModel = options.formats?.some((f) => typeof f === "object" && f.type === "json" && "model" in f && f.model);
-  if (jsonModel) out.push("The json format's model is ignored; the model is the server's SEX_LLM_MODEL");
+  if (jsonModel) out.push("The json format's model is ignored; the model is the one the LLM is configured with");
   const unused = new Set<string>();
   for (const p of options.parsers ?? []) {
     if (typeof p === "string" || p.type !== "pdf") continue;
@@ -343,7 +343,7 @@ export async function scrapeUpload(
   if (options.actions?.length) throw badRequest("actions need a browser render and cannot be used with an uploaded file");
   // Checked before the file is read into memory.
   if (file.size > ctx.settings.maxBodyBytes) {
-    throw new AppError("RESPONSE_TOO_LARGE", `The file is larger than SEX_MAX_BODY_BYTES (${ctx.settings.maxBodyBytes} bytes)`);
+    throw new AppError("RESPONSE_TOO_LARGE", `The file is larger than the body size limit (${ctx.settings.maxBodyBytes} bytes)`);
   }
   // A synthetic URL only so the name decides the file type; it is never fetched.
   const filename = file.name || "upload";
