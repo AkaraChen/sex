@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { AppError } from "@searxng-js/sex-errors";
 import { isPrivateIp } from "@sex/core/egress.ts";
-import { AppError } from "@sex/core/errors.ts";
 import { normalizeFormats } from "@sex/core/scrape.ts";
 import { parseRobots } from "../src/engine/robots.ts";
 

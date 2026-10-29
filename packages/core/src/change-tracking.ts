@@ -1,6 +1,6 @@
+import { toAppError } from "@searxng-js/sex-errors";
 import { type ChangeTracker, GUARD_MAX_CHARS, type ScrapeLlm } from "./capabilities.ts";
 import type { Deadline } from "./deadline.ts";
-import { toAppError } from "./errors.ts";
 import { log } from "./log.ts";
 import type { ChangeTrackingResult } from "./schemas.ts";
 

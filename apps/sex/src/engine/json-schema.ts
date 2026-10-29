@@ -1,4 +1,4 @@
-import { badRequest } from "@sex/core/errors.ts";
+import { badRequest } from "@searxng-js/sex-errors";
 import type { ErrorObject, Options, ValidateFunction } from "ajv";
 import Ajv from "ajv";
 import Ajv2019 from "ajv/dist/2019.js";

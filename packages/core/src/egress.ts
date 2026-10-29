@@ -9,8 +9,8 @@
 
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { AppError } from "@searxng-js/sex-errors";
 import ipaddr from "ipaddr.js";
-import { AppError } from "./errors.ts";
 
 /** How many of a name's addresses a connection tries, in order. */
 export const MAX_PINNED_ADDRESSES = 4;

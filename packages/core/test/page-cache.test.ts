@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { AppError } from "@searxng-js/sex-errors";
 import type { BrowserScrapeOptions, BrowserScrapeResult, CachedPage, CacheKey, ScrapeBrowser, ScrapeCache } from "../src/capabilities.ts";
-import { AppError } from "../src/errors.ts";
 import { extractFromHtmlInline } from "../src/page.ts";
 import { testCoreEngine, textPdf } from "./helpers.ts";
 
@@ -47,7 +47,7 @@ async function rejection(p: Promise<unknown>): Promise<AppError> {
   try {
     await p;
   } catch (err) {
-    if (err instanceof AppError) return err;
+    if (AppError.isInstance(err)) return err;
     throw err;
   }
   throw new Error("expected rejection");

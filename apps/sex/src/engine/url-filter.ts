@@ -1,4 +1,4 @@
-import { badRequest } from "@sex/core/errors.ts";
+import { badRequest } from "@searxng-js/sex-errors";
 import { fileKindOf } from "@sex/core/rewrite.ts";
 
 /** Limits for user-supplied include/exclude regexes (the request schema allows the same). */

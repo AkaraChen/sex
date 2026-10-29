@@ -1,4 +1,4 @@
-import { AppError, type ErrorCode } from "./errors.ts";
+import { AppError, type ErrorCode } from "@searxng-js/sex-errors";
 
 export interface DeadlineOptions {
   /** Cancellation from the caller (client disconnected, job cancelled). It ends the deadline early and is reported as `TIMEOUT`. */

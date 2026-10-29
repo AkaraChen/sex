@@ -18,6 +18,7 @@
 | 目录 | 内容 |
 |---|---|
 | `packages/core`（`@sex/core`） | 两个产品共用的部分：SearXNG 搜索、HTTP 抓取 + Defuddle 提取、SSRF 防护、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` 两个 MCP 工具、CLI 的公共部分 |
+| `packages/errors`（`@searxng-js/sex-errors`，私有） | `AppError` 和错误目录（`ERRORS`），打包进用到它的包；跨包判断错误用 `AppError.isInstance` |
 | `apps/sex` | 完整版：在 core 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
 | `apps/sex-lite` | 轻量版：只用 core |
 
@@ -177,7 +178,7 @@ SSRF 防护在代理之前仍然生效：
 
 **LLM 和 S3 不走 `SEX_PROXY_URL`**：`SEX_LLM_BASE_URL` 和 `SEX_DOCUMENTS_URL` 的 S3 端点都是运维方自己配置的地址，不是用户提交的 URL。确实需要走代理时，用 Bun 认的标准环境变量 `HTTP_PROXY` / `HTTPS_PROXY`（小写也行，`NO_PROXY` 生效），已用 Bun 1.4.3 实测：`fetch`（LLM 请求用的就是它）和 `Bun.S3Client` 都读这些变量，`http://` 地址看 `HTTP_PROXY`，`https://` 地址看 `HTTPS_PROXY`。注意它是整个进程范围的：sex 访问本机 SearXNG（`127.0.0.1`）的请求也会走代理，所以要同时设 `NO_PROXY=127.0.0.1,localhost`；没显式用 `SEX_PROXY_URL` 的 `fetch` 同样受影响。
 
-**stealth 重试**（`SEX_STEALTH_PROXY_URL`）：设置后，普通抓取被拦截时换这个代理重试一次。判断“被拦截”的规则只有一处（`packages/core/src/errors.ts` 的 `isBlocked`）：响应状态是 403 或 429，或者抛出的错误在错误目录里标了 `blocked`（目前只有 `SCRAPE_SITE_ERROR`，连接被重置 / 断开）。别的状态、`PRIVATE_NETWORK_BLOCKED` 这类我们自己的拒绝都不重试。
+**stealth 重试**（`SEX_STEALTH_PROXY_URL`）：设置后，普通抓取被拦截时换这个代理重试一次。判断“被拦截”的规则只有一处（`packages/errors/src/index.ts` 的 `isBlocked`）：响应状态是 403 或 429，或者抛出的错误在错误目录里标了 `blocked`（目前只有 `SCRAPE_SITE_ERROR`，连接被重置 / 断开）。别的状态、`PRIVATE_NETWORK_BLOCKED` 这类我们自己的拒绝都不重试。
 
 - 重试在这次抓取的同一个 `Deadline` 里，剩下不到 2 秒就不重试；超时照常是 `SCRAPE_TIMEOUT`。重试本身失败时保留第一次的结果，`warning` 里说明。
 - 用了 stealth 的文档，`metadata.proxyUsed` 是 `"stealth"`，`warning` 写明重试过；没重试或重试没被采用是 `"basic"`。重试得到的响应不管状态是什么都会被采用（再被拦就是第二次的 403）。
@@ -384,7 +385,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 
 ### 错误码
 
-错误响应是 `{ "success": false, "code", "error", "retryable", "details"? }`（请求体校验失败的 400 没有 `retryable`），HTTP 状态码表示错误类别：不管重试几次结果都一样的失败不会用 502/503，因为官方 SDK 会自动重试 502（LLM 费用和延迟会翻几倍）。`retryable` 表示重试同一个请求是否可能成功。所有错误码、状态码和 `retryable` 集中定义在 `packages/core/src/errors.ts` 的 `ERRORS` 里。
+错误响应是 `{ "success": false, "code", "error", "retryable", "details"? }`（请求体校验失败的 400 没有 `retryable`），HTTP 状态码表示错误类别：不管重试几次结果都一样的失败不会用 502/503，因为官方 SDK 会自动重试 502（LLM 费用和延迟会翻几倍）。`retryable` 表示重试同一个请求是否可能成功。所有错误码、状态码和 `retryable` 集中定义在 `packages/errors/src/index.ts` 的 `ERRORS` 里。
 
 | 状态 | code | 说明 | `retryable` |
 |---|---|---|---|

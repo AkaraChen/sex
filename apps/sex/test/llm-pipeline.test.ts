@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { AppError } from "@searxng-js/sex-errors";
 import { Deadline } from "@sex/core/deadline.ts";
-import type { AppError } from "@sex/core/errors.ts";
 import type { Engine } from "../src/engine/engine.ts";
 import { conflictingFields, entitySources, mergeAll, mergeEntities, splitSchema } from "../src/engine/extract-merge.ts";
 import { escapeTags } from "../src/engine/prompts.ts";

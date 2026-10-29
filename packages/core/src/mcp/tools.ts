@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
+import { toAppError } from "@searxng-js/sex-errors";
 import type { BaseEngine } from "../engine.ts";
-import { toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import { type Document, ScrapeRequest, SearchRequest } from "../schemas.ts";
 

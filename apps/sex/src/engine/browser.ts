@@ -2,10 +2,10 @@ import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } f
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { AppError, BROWSER_HINT } from "@searxng-js/sex-errors";
 import type { BrowserScrapeOptions, BrowserScrapeResult, ScrapeBrowser } from "@sex/core/capabilities.ts";
 import type { Deadline } from "@sex/core/deadline.ts";
 import { type EgressPolicy, egressFor } from "@sex/core/egress.ts";
-import { AppError, BROWSER_HINT } from "@sex/core/errors.ts";
 import { log } from "@sex/core/log.ts";
 import { MARKUP_TYPE, networkError } from "@sex/core/net.ts";
 import { PAGE_SCRIPT, type PageExtractOptions, type PageExtractResult } from "@sex/core/page.ts";
@@ -210,7 +210,7 @@ export class BrowserPool implements ScrapeBrowser {
       this.startFailures = [];
       return endpoint;
     } catch (err) {
-      const failure = err instanceof AppError ? err : startFailed(err instanceof Error ? err.message : String(err));
+      const failure = AppError.isInstance(err) ? err : startFailed(err instanceof Error ? err.message : String(err));
       this.recordStartFailure(failure.message);
       throw failure;
     }

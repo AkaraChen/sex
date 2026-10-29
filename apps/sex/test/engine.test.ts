@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { AppError } from "@sex/core/errors.ts";
+import { AppError } from "@searxng-js/sex-errors";
 import type { Engine } from "../src/engine/engine.ts";
 import { chatCompletionStream, startFixtureSite, startMockLlm, startMockSearxng, testEngine } from "./helpers.ts";
 

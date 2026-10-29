@@ -2,8 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type SearxngServer, StartServerError, startServer } from "@searxng-js/searxng";
+import { AppError } from "@searxng-js/sex-errors";
 import type { CoreConfig as Config } from "./config.ts";
-import { AppError } from "./errors.ts";
 import { log } from "./log.ts";
 import { generatedSettings, proxyHost, redactProxy } from "./searxng-settings.ts";
 

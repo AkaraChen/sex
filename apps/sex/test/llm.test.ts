@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { AppError } from "@searxng-js/sex-errors";
 import { Deadline } from "@sex/core/deadline.ts";
-import type { AppError } from "@sex/core/errors.ts";
 import { resolveConfig } from "../src/config.ts";
 import type { Engine } from "../src/engine/engine.ts";
 import { Llm } from "../src/engine/llm.ts";

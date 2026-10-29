@@ -1,5 +1,5 @@
+import { toAppError } from "@searxng-js/sex-errors";
 import { Deadline } from "@sex/core/deadline.ts";
-import { toAppError } from "@sex/core/errors.ts";
 import { log } from "@sex/core/log.ts";
 import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "@sex/core/net.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "@sex/core/scrape.ts";

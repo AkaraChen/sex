@@ -1,5 +1,5 @@
+import { AppError } from "@searxng-js/sex-errors";
 import { z } from "zod";
-import { AppError } from "./errors.ts";
 
 /** The settings the shared engine (search, fetch, HTTP/MCP front-ends) reads; sex extends it with its own. */
 export interface CoreConfig {

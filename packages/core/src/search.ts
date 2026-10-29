@@ -1,6 +1,6 @@
+import { AppError, badRequest, toAppError, unsupported } from "@searxng-js/sex-errors";
 import type { LimitFunction } from "p-limit";
 import { Deadline } from "./deadline.ts";
-import { AppError, badRequest, toAppError, unsupported } from "./errors.ts";
 import { log } from "./log.ts";
 import { matchesQueryOperators, planOperatorQuery } from "./operators.ts";
 import type { Document, SearchData, SearchRequest } from "./schemas.ts";
@@ -77,7 +77,7 @@ export async function searxng(
   try {
     return await searxngOnce(engine, query, pageno, deadline, unresponsive);
   } catch (err) {
-    if (!(err instanceof AppError) || !err.retryable) throw err;
+    if (!AppError.isInstance(err) || !err.retryable) throw err;
     log.debug("retrying SearXNG request", { error: err.message });
     await deadline.sleep(RETRY_DELAY_MS, "before retrying the SearXNG request");
     return searxngOnce(engine, query, pageno, deadline, unresponsive);

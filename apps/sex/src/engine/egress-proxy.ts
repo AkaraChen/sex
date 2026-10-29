@@ -21,8 +21,8 @@ import http, { type ClientRequest, type IncomingMessage, type OutgoingHttpHeader
 import https from "node:https";
 import net, { type Socket } from "node:net";
 import { pipeline } from "node:stream";
+import { AppError } from "@searxng-js/sex-errors";
 import { type EgressPolicy, MAX_PINNED_ADDRESSES } from "@sex/core/egress.ts";
-import { AppError } from "@sex/core/errors.ts";
 import { log } from "@sex/core/log.ts";
 import { type AdBlockList, siteOf } from "./adblock.ts";
 
@@ -210,7 +210,7 @@ export class EgressProxy {
     try {
       return { ok: true, addresses: await this.policy.resolve(url, !!session.upstream) };
     } catch (err) {
-      if (!(err instanceof AppError)) throw err;
+      if (!AppError.isInstance(err)) throw err;
       const kind = err.code === "PRIVATE_NETWORK_BLOCKED" ? "refused" : "dns";
       session.failures.set(host.toLowerCase(), kind);
       log.debug("egress proxy refused", { host, kind });

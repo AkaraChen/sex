@@ -1,4 +1,14 @@
 import { randomUUID } from "node:crypto";
+import {
+  AppError,
+  badRequest,
+  browserRequired,
+  CHANGE_TRACKING_HINT,
+  isBlocked,
+  llmRequired,
+  toAppError,
+  unsupported,
+} from "@searxng-js/sex-errors";
 import type { LimitFunction } from "p-limit";
 import {
   type BrowserScrapeResult,
@@ -14,7 +24,6 @@ import {
 import { type ChangeTrackingRequest, trackChanges } from "./change-tracking.ts";
 import type { CoreConfig } from "./config.ts";
 import { Deadline } from "./deadline.ts";
-import { AppError, badRequest, browserRequired, CHANGE_TRACKING_HINT, isBlocked, llmRequired, toAppError, unsupported } from "./errors.ts";
 import type { ExtractPool } from "./extract-pool.ts";
 import { log } from "./log.ts";
 import { markdownToHtml } from "./markdown-html.ts";
@@ -403,7 +412,7 @@ async function scrapeInner(
     }
     fetchedVia = first;
     // One retry, through the stealth proxy, in the time the scrape has left (the same deadline: it is cut short like any step).
-    const blocked = res ? isBlocked(res.status) : failure instanceof AppError && isBlocked(failure);
+    const blocked = res ? isBlocked(res.status) : AppError.isInstance(failure) && isBlocked(failure);
     if (first === "basic" && stealthRetry && blocked && deadline.remaining() >= FALLBACK_MIN_MS) {
       const was = res ? `HTTP ${res.status}` : (failure as AppError).code;
       try {
@@ -830,7 +839,7 @@ const FALLBACK_MIN_MS = 2_000;
  * the fetch must fit in the time the scrape has left. Returns undefined when the error should be thrown as it is.
  */
 function browserFallbackReason(err: unknown, options: ScrapeOptions, deadline: Deadline): string | undefined {
-  if (!(err instanceof AppError) || !err.fallback) return undefined;
+  if (!AppError.isInstance(err) || !err.fallback) return undefined;
   if (options.actions?.length || deadline.remaining() < FALLBACK_MIN_MS) return undefined;
   return `${err.code}: ${err.message}`;
 }

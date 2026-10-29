@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { AppError } from "@sex/core/errors.ts";
+import { AppError } from "@searxng-js/sex-errors";
 import { normalizeFormats, scrapeTimeout } from "@sex/core/scrape.ts";
 import { startFixtureSite, testEngine } from "./helpers.ts";
 
@@ -16,7 +16,7 @@ async function rejection(p: Promise<unknown>): Promise<AppError> {
   try {
     await p;
   } catch (err) {
-    if (err instanceof AppError) return err;
+    if (AppError.isInstance(err)) return err;
     throw err;
   }
   throw new Error("expected rejection");

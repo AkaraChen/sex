@@ -1,0 +1,15 @@
+{
+  "name": "@searxng-js/sex-errors",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AppError and the error catalog shared by every sex package; private, bundled into the published packages",
+  "sexNodeTests": true,
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  }
+}

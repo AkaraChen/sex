@@ -207,7 +207,7 @@ flowchart LR
 自底向上：先第三类，再第二类，最后第一类。每步一个 PR，Bun 和 Node 的测试都要通过，同一个 PR 里更新 CLAUDE.md 的 Layout 和 README 的仓库结构表。
 
 - [ ] 1. **骨架**：`apps/` 目录、tsdown、changesets、`sex-source` 条件、CI 的 Bun 和 Node 两个 job、Dockerfile 路径。
-- [ ] 2. **第三类 `sex-errors`**：`Symbol.for` 标记和 `isInstance`；11 处跨包的 `instanceof AppError` 换掉；`log` 改成 `logger` 选项。
+- [x] 2. **第三类 `sex-errors`**：`Symbol.for` 标记和 `isInstance`；11 处跨包的 `instanceof AppError` 换掉。（`log` 改成 `logger` 选项随各包抽出时做，不在本步。）
 - [ ] 3. **`sex-egress`**：边界改为 `signal`。它不依赖别的包，先做。
 - [ ] 4. **第二类 `sex-page`、`sex-searxng`**：Markdown、YAML 按运行时分支。
 - [ ] 5. **`sex-scrape`、`sex-search`、`sex-server`**：完成后 `apps/sex-lite` 完全基于新包，删除 `packages/core`。
@@ -218,7 +218,12 @@ flowchart LR
 ## 风险和待确认
 
 - **SQLite 性能**：jobs 存储从 `bun:sqlite` 换成 `node:sqlite` 后，在 Bun 上可能变慢。如果明显变慢，jobs 的 SQLite 也改成按运行时分支。
-- **类型内联**：`.d.ts` 引用私有库的类型时，tsdown 要把类型一起内联。第 2 步确认。
+- **类型内联**（第 2 步已确认，可行）：发布包引用私有库（`sex-errors`）时，tsdown 把 JS 和 `.d.ts` 里的 `AppError` 等都内联，dist 里没有私有包名。需要的配置：
+  - `deps: { alwaysBundle: [/^@searxng-js\/sex-errors/] }`：私有库在 `dependencies` 里（`workspace:*`），默认会被当外部依赖，必须强制内联。
+  - `inputOptions.resolve.conditionNames: ["sex-source", "import", "default"]`：私有库没有 dist 时也能从 `src` 解析。
+  - `tsconfig: "../tsconfig.build.json"`：tsgo 生成 `.d.ts` 时，rolldown-plugin-dts 以 tsconfig 所在目录为根去找每个源文件的声明，所以 tsconfig 必须在包含所有被内联的包的目录里（`packages/tsconfig.build.json`，include `*/src`），不能用发布包自己目录里的。
+  - `fixedExtension: false`，输出 `dist/index.js` 和 `dist/index.d.ts`，不是 `.mjs` / `.d.mts`；`format: "esm"`、`dts: true`。
+  - 私有库自己也有 `tsdown.config.ts`，并设 `"sexNodeTests": true`：Node 测试按包名 import，Node 读 dist，所以 `build:packages` 也构建它。
 - **日志**：`logger` 选项的方案待确认。
 
 ## 要改的现有约定

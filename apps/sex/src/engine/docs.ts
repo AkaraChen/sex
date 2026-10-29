@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { AppError } from "@searxng-js/sex-errors";
 import type { DocsConvertOptions, DocsResult, DocsWarning, ScrapeDocs } from "@sex/core/capabilities.ts";
-import { AppError } from "@sex/core/errors.ts";
 import { log } from "@sex/core/log.ts";
 import type { PdfPage } from "@sex/core/pdf.ts";
 import type { ConvertEngine } from "here-docs";

@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { AppError, llmRequired } from "@searxng-js/sex-errors";
 import type { ScrapeLlm } from "@sex/core/capabilities.ts";
 import type { Deadline } from "@sex/core/deadline.ts";
-import { AppError, llmRequired } from "@sex/core/errors.ts";
 import { log } from "@sex/core/log.ts";
 import { type CollectResult, chat, generateText, HttpError, type JSONSchema7, type LanguageModel, type Message, XSAIError } from "xsai";
 import type { Config } from "../config.ts";
@@ -162,7 +162,7 @@ export class Llm implements ScrapeLlm {
         raw = await this.complete(what, system, messages, outputFormat, opts.deadline, opts.small);
       } catch (err) {
         // Some OpenAI-compatible servers reject json_schema; the prompt asks for JSON anyway.
-        if (!outputFormat || !(err instanceof AppError) || (err.details as { status?: number })?.status !== 400) throw err;
+        if (!outputFormat || !AppError.isInstance(err) || (err.details as { status?: number })?.status !== 400) throw err;
         log.debug("json_schema response_format rejected, retrying without it");
         outputFormat = undefined;
         raw = await this.complete(what, system, messages, undefined, opts.deadline, opts.small);

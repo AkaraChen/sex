@@ -1,5 +1,5 @@
 import { JSON_SCHEMA_OUTPUT_REGISTRY, ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
-import { badRequest } from "@sex/core/errors.ts";
+import { badRequest } from "@searxng-js/sex-errors";
 import { coreRoutes, procedureBase } from "@sex/core/http/procedures.ts";
 import { scrapeUpload } from "@sex/core/scrape.ts";
 import { z } from "zod";

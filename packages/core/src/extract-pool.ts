@@ -1,5 +1,5 @@
+import { AppError, isErrorCode } from "@searxng-js/sex-errors";
 import type { Deadline } from "./deadline.ts";
-import { AppError, isErrorCode } from "./errors.ts";
 import { log } from "./log.ts";
 import { extractFromHtmlInline, type PageExtractOptions, type PageExtractResult } from "./page.ts";
 import { type PdfText, pdfToMarkdown } from "./pdf.ts";

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AppError } from "../src/errors.ts";
+import type { AppError } from "@searxng-js/sex-errors";
 import { testCoreEngine, waitFor } from "./helpers.ts";
 
 const fake = join(import.meta.dir, "fixtures", "fake-searxng.ts");

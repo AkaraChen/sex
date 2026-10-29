@@ -1,6 +1,6 @@
 import { join } from "node:path";
+import { AppError, notFound } from "@searxng-js/sex-errors";
 import { BaseEngine } from "@sex/core/engine.ts";
-import { AppError, notFound } from "@sex/core/errors.ts";
 import type { Config } from "../config.ts";
 import type { BatchScrapeRequest, CrawlRequest, ExtractRequest, MapRequest, MapResult } from "../schemas.ts";
 import { startBatchScrape } from "./batch.ts";

@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { AppError } from "@searxng-js/sex-errors";
 import { Deadline } from "@sex/core/deadline.ts";
 import { EgressPolicy } from "@sex/core/egress.ts";
-import { AppError } from "@sex/core/errors.ts";
 import type { ConfigOverrides } from "../src/config.ts";
 import { BrowserPool, pdeathsigWrapper } from "../src/engine/browser.ts";
 import type { Engine } from "../src/engine/engine.ts";

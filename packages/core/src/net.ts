@@ -1,7 +1,7 @@
+import { AppError, badRequest, type ErrorCode } from "@searxng-js/sex-errors";
 import { DEFAULT_MAX_BODY_BYTES } from "./config.ts";
 import type { Deadline } from "./deadline.ts";
 import { egressFor, MAX_PINNED_ADDRESSES } from "./egress.ts";
-import { AppError, badRequest, type ErrorCode } from "./errors.ts";
 
 const MAX_REDIRECTS = 10;
 
@@ -175,7 +175,7 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
     throw new AppError("TOO_MANY_REDIRECTS", `Too many redirects: ${rawUrl}`);
   } catch (err) {
     opts.deadline.throwIfAborted(`while fetching ${rawUrl}`);
-    if (err instanceof AppError) throw err;
+    if (AppError.isInstance(err)) throw err;
     throw networkError(err, rawUrl, { skipTlsVerification: opts.skipTlsVerification });
   }
 }

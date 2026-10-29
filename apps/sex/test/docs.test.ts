@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { AppError } from "@searxng-js/sex-errors";
 import { Deadline } from "@sex/core/deadline.ts";
-import { AppError } from "@sex/core/errors.ts";
 import { markdownToHtml } from "@sex/core/markdown-html.ts";
 import { MARKUP_TYPE } from "@sex/core/net.ts";
 import { DocsConverter, type HereDocs } from "../src/engine/docs.ts";
@@ -31,7 +31,7 @@ async function rejection(p: Promise<unknown>): Promise<AppError> {
   try {
     await p;
   } catch (err) {
-    if (err instanceof AppError) return err;
+    if (AppError.isInstance(err)) return err;
     throw err;
   }
   throw new Error("expected rejection");

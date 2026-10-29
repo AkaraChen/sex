@@ -1,4 +1,4 @@
-import { AppError } from "./errors.ts";
+import { AppError } from "@searxng-js/sex-errors";
 
 /** One physical page of a PDF (1-based), as `parsers: [{ type: "pdf", pages: true }]` returns it in `Document.pages`. */
 export interface PdfPage {

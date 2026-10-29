@@ -9,7 +9,7 @@
  * `applyRequestPolicies` (the only code that touches Puppeteer's request objects) stay as they are.
  */
 
-import { AppError } from "@sex/core/errors.ts";
+import { AppError } from "@searxng-js/sex-errors";
 import { log } from "@sex/core/log.ts";
 import type { HTTPRequest, Page } from "puppeteer-core";
 import { type AdBlockList, siteOf } from "./adblock.ts";

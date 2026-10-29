@@ -1,6 +1,6 @@
+import { AppError, toAppError } from "@searxng-js/sex-errors";
 import type { CoreConfigOverrides } from "../config.ts";
 import type { BaseEngine } from "../engine.ts";
-import { AppError, toAppError } from "../errors.ts";
 import { log, setLogLevel } from "../log.ts";
 import { type Document, type FormatOption, type ScrapeOptions, ScrapeRequest, type SearchData, SearchRequest } from "../schemas.ts";
 
@@ -72,7 +72,7 @@ export function engineOrExit<E>(make: () => E): E | undefined {
   try {
     return make();
   } catch (err) {
-    if (!(err instanceof AppError) || err.code !== "CONFIG_INVALID") throw err;
+    if (!AppError.isInstance(err) || err.code !== "CONFIG_INVALID") throw err;
     process.stderr.write(`error: ${err.code}: ${err.message}\n`);
     process.exitCode = 2;
     return undefined;

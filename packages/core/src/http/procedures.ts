@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { ORPCError, os } from "@orpc/server";
+import { AppError, badRequest, toAppError } from "@searxng-js/sex-errors";
 import { z } from "zod";
 import type { BaseEngine } from "../engine.ts";
-import { AppError, badRequest, toAppError } from "../errors.ts";
 import { log } from "../log.ts";
 import { ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse } from "../schemas.ts";
 
@@ -43,7 +43,11 @@ export function procedureBase<E extends BaseEngine>() {
       const e = toAppError(err);
       if (e.status >= 500) {
         // Errors raised on purpose (an unreachable site, a refused LLM reply) need no stack; an unexpected one does.
-        log.error("request failed", { code: e.code, error: e.message, stack: err instanceof AppError ? undefined : (err as Error)?.stack });
+        log.error("request failed", {
+          code: e.code,
+          error: e.message,
+          stack: AppError.isInstance(err) ? undefined : (err as Error)?.stack,
+        });
       }
       throw new ORPCError(e.code, { status: e.status, message: e.message, data: e.details, cause: e });
     }

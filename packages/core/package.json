@@ -9,6 +9,7 @@
     "./*": "./src/*"
   },
   "dependencies": {
+    "@searxng-js/sex-errors": "workspace:*",
     "@modelcontextprotocol/server": "^2.4.0",
     "@orpc/openapi": "^1.16.1",
     "@orpc/server": "^1.16.1",

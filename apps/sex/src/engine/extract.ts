@@ -1,6 +1,6 @@
+import { AppError, badRequest, toAppError } from "@searxng-js/sex-errors";
 import { GUARD_MAX_CHARS } from "@sex/core/capabilities.ts";
 import { Deadline } from "@sex/core/deadline.ts";
-import { AppError, badRequest, toAppError } from "@sex/core/errors.ts";
 import { log } from "@sex/core/log.ts";
 import { assertPublicUrl, parseHttpUrl } from "@sex/core/net.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "@sex/core/scrape.ts";

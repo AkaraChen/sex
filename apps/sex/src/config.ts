@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { AppError } from "@searxng-js/sex-errors";
 import {
   CORE_FIELD_RULES,
   CORE_FIELDS,
@@ -17,7 +18,6 @@ import {
   str,
   urlField,
 } from "@sex/core/config.ts";
-import { AppError } from "@sex/core/errors.ts";
 import { z } from "zod";
 
 export { DEFAULT_MAX_BODY_BYTES } from "@sex/core/config.ts";

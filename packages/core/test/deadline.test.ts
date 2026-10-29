@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { AppError } from "@searxng-js/sex-errors";
 import { Deadline } from "../src/deadline.ts";
-import { AppError } from "../src/errors.ts";
 
-const code = (err: unknown) => (err instanceof AppError ? { status: err.status, code: err.code } : err);
+const code = (err: unknown) => (AppError.isInstance(err) ? { status: err.status, code: err.code } : err);
 
 async function rejection(p: Promise<unknown>): Promise<unknown> {
   try {

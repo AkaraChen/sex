@@ -104,30 +104,44 @@ export const isBlocked = (outcome: number | AppError): boolean =>
 export const isErrorCode = (code: unknown): code is ErrorCode => typeof code === "string" && Object.hasOwn(ERRORS, code);
 
 /**
+ * Marker every `AppError` carries. `Symbol.for` goes through the global registry, so a copy of this class bundled into
+ * another package recognises errors thrown by any other copy; `instanceof` does not. The name and the shape of the
+ * instance fields are a contract between versions: an incompatible change gets a new marker name.
+ */
+const MARKER = Symbol.for("searxng-js.sex.error");
+
+/**
  * Error type shared by every layer. The HTTP layer turns it into a Firecrawl-style
  * `{ success: false, error, code, details }` body, the MCP layer into a tool error, and the CLI into a message on stderr.
- * The status and the retry / fallback hints come from the `ERRORS` catalog, never from the throw site.
+ * The status and the retry / fallback hints come from the `ERRORS` catalog at construction and are copied onto the
+ * instance: everything that judges an error reads these fields, never looks the code up again (another bundled copy may
+ * carry a different catalog). Across packages ask `AppError.isInstance`, not `instanceof`.
  */
 export class AppError extends Error {
+  readonly [MARKER] = true;
+  readonly code: ErrorCode;
+  readonly details?: unknown;
   readonly status: number;
   readonly retryable: boolean;
   readonly fallback: boolean;
   readonly blocked: boolean;
 
   /** `overrides.retryable` is for the few codes whose answer depends on the instance (SearXNG: a 5xx is worth retrying, a 403 is not). */
-  constructor(
-    readonly code: ErrorCode,
-    message: string,
-    readonly details?: unknown,
-    overrides?: { retryable?: boolean },
-  ) {
+  constructor(code: ErrorCode, message: string, details?: unknown, overrides?: { retryable?: boolean }) {
     super(message);
     this.name = "AppError";
+    this.code = code;
+    this.details = details;
     const s = ERRORS[code];
     this.status = s.status;
     this.retryable = overrides?.retryable ?? s.retryable;
     this.fallback = s.fallback;
     this.blocked = s.blocked;
+  }
+
+  /** Whether `error` was made by any copy of `AppError`. */
+  static isInstance(error: unknown): error is AppError {
+    return error instanceof Error && (error as { [MARKER]?: unknown })[MARKER] === true;
   }
 }
 
@@ -153,7 +167,7 @@ export const llmRequired = (what: string, hint = LLM_HINT) =>
   new AppError("LLM_NOT_CONFIGURED", `LLM is not configured on this server. ${what} needs an LLM. ${hint}`);
 
 export function toAppError(err: unknown): AppError {
-  if (err instanceof AppError) return err;
+  if (AppError.isInstance(err)) return err;
   if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
     return new AppError("TIMEOUT", err.message || "Operation timed out");
   }

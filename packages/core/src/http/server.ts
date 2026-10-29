@@ -3,10 +3,10 @@ import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { OpenAPIReferencePlugin } from "@orpc/openapi/plugins";
 import type { Router } from "@orpc/server";
 import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
+import { AppError } from "@searxng-js/sex-errors";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { BaseEngine } from "../engine.ts";
-import { AppError } from "../errors.ts";
 import { log } from "../log.ts";
 import type { HttpContext } from "./procedures.ts";
 
@@ -50,7 +50,7 @@ function encodeError(error: { code: string; message: string; data: unknown; caus
     success: false,
     code: error.code,
     error: error.message,
-    ...(error.cause instanceof AppError ? { retryable: error.cause.retryable } : {}),
+    ...(AppError.isInstance(error.cause) ? { retryable: error.cause.retryable } : {}),
     ...(error.data !== undefined ? { details: error.data } : {}),
   };
 }

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";
-import type { AppError } from "@sex/core/errors.ts";
+import type { AppError } from "@searxng-js/sex-errors";
 import type { Engine } from "../src/engine/engine.ts";
 import { createApp } from "../src/http/server.ts";
 import { CERT, chatCompletionStream, KEY, startFixtureSite, startMockSearxng, testEngine } from "./helpers.ts";
