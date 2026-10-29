@@ -8,10 +8,10 @@
     "sex-lite": "src/cli.ts"
   },
   "dependencies": {
-    "@searxng-js/sex-errors": "workspace:*",
     "@modelcontextprotocol/server": "^2.4.0",
-    "@sex/core": "workspace:*",
-    "citty": "^0.2.2",
-    "zod": "^4.6.7"
+    "@searxng-js/sex-scrape": "workspace:*",
+    "@searxng-js/sex-search": "workspace:*",
+    "@searxng-js/sex-server": "workspace:*",
+    "citty": "^0.2.2"
   }
 }

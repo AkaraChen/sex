@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ChangeTracker, TrackedPage } from "@sex/core/capabilities.ts";
-import type { Deadline } from "@sex/core/deadline.ts";
+import type { CallTime, ChangeTracker, TrackedPage } from "@searxng-js/sex-scrape";
+import { Deadline } from "../deadline.ts";
 import { markdownDiff } from "./change-diff.ts";
 
 /** Bumped when the table changes. Unlike the page cache this file is the only copy of its data, so a bump must migrate. */
@@ -63,8 +63,8 @@ export class SqliteChangeTracker implements ChangeTracker {
       .run({ url, tag: tag ?? "", scrapedAt, markdown: Bun.zstdCompressSync(new TextEncoder().encode(markdown)) });
   }
 
-  diff(previous: string, current: string, deadline: Deadline) {
-    return markdownDiff(previous, current, deadline.remaining());
+  diff(previous: string, current: string, time: CallTime) {
+    return markdownDiff(previous, current, Deadline.of(time).remaining());
   }
 
   close() {

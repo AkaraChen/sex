@@ -23,7 +23,7 @@ import net, { type Socket } from "node:net";
 import { pipeline } from "node:stream";
 import { type EgressPolicy, MAX_PINNED_ADDRESSES } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
-import { log } from "@sex/core/log.ts";
+import { log } from "@searxng-js/sex-server/log";
 import { type AdBlockList, siteOf } from "./adblock.ts";
 
 const CONNECT_TIMEOUT_MS = 10_000;

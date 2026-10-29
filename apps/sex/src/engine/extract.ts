@@ -1,11 +1,10 @@
 import { assertPublicUrl, parseHttpUrl } from "@searxng-js/sex-egress";
 import { AppError, badRequest, toAppError } from "@searxng-js/sex-errors";
-import { GUARD_MAX_CHARS } from "@sex/core/capabilities.ts";
-import { Deadline } from "@sex/core/deadline.ts";
-import { log } from "@sex/core/log.ts";
-import { assertScrapeCapabilities, scrapeUrl } from "@sex/core/scrape.ts";
-import { search } from "@sex/core/search.ts";
+import { assertScrapeCapabilities, GUARD_MAX_CHARS, scrapeUrl } from "@searxng-js/sex-scrape";
+import { search } from "@searxng-js/sex-search";
+import { log } from "@searxng-js/sex-server/log";
 import pLimit from "p-limit";
+import { Deadline } from "../deadline.ts";
 import type { ExtractRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
 import { arrayKeys, conflictingFields, entitySources, mergeAll, splitSchema, withProperty } from "./extract-merge.ts";

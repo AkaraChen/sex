@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import type { FormatOption } from "@searxng-js/sex-scrape";
 import {
   type ArgValues,
   coreArgs,
@@ -13,9 +14,8 @@ import {
   runSearch,
   searchArgs,
   warmupOrExit,
-} from "@sex/core/cli/common.ts";
-import { resolveCoreConfig } from "@sex/core/config.ts";
-import type { FormatOption } from "@sex/core/schemas.ts";
+} from "@searxng-js/sex-server/cli";
+import { resolveCoreConfig } from "@searxng-js/sex-server/config";
 import { defineCommand, runMain } from "citty";
 import { liteEngine } from "./engine.ts";
 import { VERSION } from "./version.ts";

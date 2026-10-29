@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { MARKUP_TYPE } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
 import { markdownToHtml } from "@searxng-js/sex-page";
-import { Deadline } from "@sex/core/deadline.ts";
+import { Deadline } from "../src/deadline.ts";
 import { DocsConverter, type HereDocs } from "../src/engine/docs.ts";
 import { testEngine, textPdf } from "./helpers.ts";
 
@@ -116,15 +116,15 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
 
   test("a conversion over its deadline is a 408 SCRAPE_TIMEOUT", async () => {
     const bytes = await fixture("scan.pdf").bytes();
-    const err = await rejection(docs.docs.convert(bytes, { deadline: Deadline.start(1) }));
+    const err = await rejection(docs.docs.convert(bytes, { ...Deadline.start(1).time() }));
     expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "SCRAPE_TIMEOUT" });
   });
 
   test("time spent waiting for a conversion slot counts against the deadline", async () => {
     const one = new DocsConverter({ ...docs.config, docsConcurrency: 1 });
     const bytes = await fixture("scan.pdf").bytes();
-    const first = one.convert(bytes, { deadline: Deadline.start(60_000) });
-    const err = await rejection(one.convert(bytes, { deadline: Deadline.start(1) }));
+    const first = one.convert(bytes, { ...Deadline.start(60_000).time() });
+    const err = await rejection(one.convert(bytes, { ...Deadline.start(1).time() }));
     expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "SCRAPE_TIMEOUT" });
     await first;
     await one.close();
@@ -132,12 +132,12 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
 
   test("a cancelled request stops the conversion with 408 TIMEOUT", async () => {
     const bytes = await fixture("scan.pdf").bytes();
-    const err = await rejection(docs.docs.convert(bytes, { deadline: Deadline.start(60_000, { signal: AbortSignal.abort() }) }));
+    const err = await rejection(docs.docs.convert(bytes, Deadline.start(60_000, { signal: AbortSignal.abort() }).time()));
     expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "TIMEOUT" });
   });
 
   test("unrecognised bytes are a 415", async () => {
-    const err = await rejection(docs.docs.convert(new Uint8Array([0, 1, 2, 3]), { deadline: Deadline.start(10_000) }));
+    const err = await rejection(docs.docs.convert(new Uint8Array([0, 1, 2, 3]), { ...Deadline.start(10_000).time() }));
     expect({ status: err.status, code: err.code }).toEqual({ status: 415, code: "UNSUPPORTED_FILE" });
   });
 });
@@ -158,7 +158,7 @@ describe("a conversion that runs out of time", () => {
 
   test("returns the pages converted so far, with a warning", async () => {
     const c = converter(stalledHereDocs(2, 5));
-    const doc = await c.convert(new Uint8Array([1]), { deadline: Deadline.start(100) });
+    const doc = await c.convert(new Uint8Array([1]), { ...Deadline.start(100).time() });
     expect(doc.markdown).toBe("page 1\n\npage 2");
     expect({ numPages: doc.numPages, pagesConverted: doc.pagesConverted }).toEqual({ numPages: 5, pagesConverted: 2 });
     expect(doc.warnings).toEqual([{ code: "timeout", message: "Timed out: converted only the first 2 of 5 pages" }]);
@@ -167,7 +167,7 @@ describe("a conversion that runs out of time", () => {
 
   test("with no page converted is a 408 SCRAPE_TIMEOUT", async () => {
     const c = converter(stalledHereDocs(0, 5));
-    const err = await rejection(c.convert(new Uint8Array([1]), { deadline: Deadline.start(100) }));
+    const err = await rejection(c.convert(new Uint8Array([1]), { ...Deadline.start(100).time() }));
     expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "SCRAPE_TIMEOUT" });
     await c.close();
   });

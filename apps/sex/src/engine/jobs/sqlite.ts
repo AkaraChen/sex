@@ -1,6 +1,6 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { log } from "@sex/core/log.ts";
+import { log } from "@searxng-js/sex-server/log";
 import pLimit from "p-limit";
 import type { Document } from "../../schemas.ts";
 import { type DocumentLog, READ_CONCURRENCY } from "./documents.ts";

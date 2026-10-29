@@ -6,7 +6,7 @@
  * script derives it into the build cache on first use, like Lightpanda from PATH or here-docs from node_modules.
  */
 
-import { log } from "@sex/core/log.ts";
+import { log } from "@searxng-js/sex-server/log";
 
 export class AdBlockList {
   private constructor(

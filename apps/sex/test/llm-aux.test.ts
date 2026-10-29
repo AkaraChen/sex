@@ -1,6 +1,6 @@
 // The small model for auxiliary calls, `/*` link selection, the site structure in prompt crawls and highlight units.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { Deadline } from "@sex/core/deadline.ts";
+import { Deadline } from "../src/deadline.ts";
 import type { Engine } from "../src/engine/engine.ts";
 import { splitSegments } from "../src/engine/segments.ts";
 import { MOCK_LLM_TOKENS, startFixtureSite, startMockLlm, testEngine, waitFor } from "./helpers.ts";

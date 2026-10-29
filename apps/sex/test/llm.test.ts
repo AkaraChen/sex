@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { AppError } from "@searxng-js/sex-errors";
-import { Deadline } from "@sex/core/deadline.ts";
 import { resolveConfig } from "../src/config.ts";
+import { Deadline } from "../src/deadline.ts";
 import type { Engine } from "../src/engine/engine.ts";
 import { Llm } from "../src/engine/llm.ts";
 import { chatCompletionStream, startFixtureSite, testEngine } from "./helpers.ts";
@@ -149,7 +149,9 @@ describe("rate limits (#7)", () => {
   test("a wait is cut short by the caller's signal", async () => {
     const s = serve(() => new Response("slow down", { status: 429, headers: { "retry-after": "5" } }));
     const started = Date.now();
-    await expect(llmFor(s.url).summarize("page", Deadline.unbounded(AbortSignal.timeout(100)))).rejects.toMatchObject({
+    const caller = new AbortController();
+    setTimeout(() => caller.abort(), 100);
+    await expect(llmFor(s.url).summarize("page", Deadline.unbounded(caller.signal))).rejects.toMatchObject({
       status: 408,
       code: "TIMEOUT",
     });

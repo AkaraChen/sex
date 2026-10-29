@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import net from "node:net";
 import { EgressPolicy } from "@searxng-js/sex-egress";
-import { Deadline } from "@sex/core/deadline.ts";
 import { resolveConfig } from "../src/config.ts";
+import { Deadline } from "../src/deadline.ts";
 import { AdBlockList } from "../src/engine/adblock.ts";
 import { BrowserPool } from "../src/engine/browser.ts";
 
@@ -47,7 +47,7 @@ describe.skipIf(!CDP)("browser on this machine, through the EgressProxy", () => 
   };
   const publicNames = () => new PublicNames({ "public.test": ["127.0.0.1"], "ads.test": ["127.0.0.1"] });
   const scrape = (pool: BrowserPool, url: string, extra: { blockAds?: boolean; waitFor?: number } = {}) =>
-    pool.scrape({ url, deadline: Deadline.start(20_000), userAgent: "t", extract, ...extra });
+    pool.scrape({ url, ...Deadline.start(20_000).time(), userAgent: "t", extract, ...extra });
   const rejected = (p: Promise<unknown>) =>
     p.then(
       () => undefined,

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { isPrivateIp } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
-import { normalizeFormats } from "@sex/core/scrape.ts";
+import { normalizeFormats } from "@searxng-js/sex-scrape";
 import { parseRobots } from "../src/engine/robots.ts";
 
 describe("isPrivateIp", () => {

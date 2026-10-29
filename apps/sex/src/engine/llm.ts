@@ -1,11 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { AppError, llmRequired } from "@searxng-js/sex-errors";
-import type { ScrapeLlm } from "@sex/core/capabilities.ts";
-import type { Deadline } from "@sex/core/deadline.ts";
-import { log } from "@sex/core/log.ts";
+import type { CallTime, ScrapeLlm } from "@searxng-js/sex-scrape";
+import { log } from "@searxng-js/sex-server/log";
 import { type CollectResult, chat, generateText, HttpError, type JSONSchema7, type LanguageModel, type Message, XSAIError } from "xsai";
 import type { Config } from "../config.ts";
+import { Deadline } from "../deadline.ts";
 import { compileJsonSchema, describeSchemaErrors } from "./json-schema.ts";
 import * as P from "./prompts.ts";
 import { splitSegments } from "./segments.ts";
@@ -186,7 +186,8 @@ export class Llm implements ScrapeLlm {
    * original schema (xsai's strict json_schema drops keywords like `allOf` / `not`), and a root array
    * schema is sent wrapped in `{ items }` because structured output needs an object at the root.
    */
-  async extractJson(content: string, opts: ExtractJsonOptions, deadline: Deadline): Promise<unknown> {
+  async extractJson(content: string, opts: ExtractJsonOptions, time: CallTime): Promise<unknown> {
+    const deadline = Deadline.of(time);
     const validate = opts.schema ? compileJsonSchema(opts.schema) : undefined;
     const wrapped = opts.schema && isArraySchema(opts.schema);
     const sent = wrapped
@@ -207,7 +208,8 @@ export class Llm implements ScrapeLlm {
   }
 
   /** What changed between two versions of a page (change tracking `json` mode without a schema), as a JSON value. Each version gets half the input budget. */
-  async describeChanges(previous: string, current: string, opts: { prompt?: string; url?: string }, deadline: Deadline): Promise<unknown> {
+  async describeChanges(previous: string, current: string, opts: { prompt?: string; url?: string }, time: CallTime): Promise<unknown> {
+    const deadline = Deadline.of(time);
     return this.completeJson(
       "Change tracking",
       P.CHANGES_SYSTEM,
@@ -216,13 +218,19 @@ export class Llm implements ScrapeLlm {
     );
   }
 
-  async summarize(content: string, deadline: Deadline, url?: string): Promise<string> {
-    return this.complete("The summary format", P.SUMMARY_SYSTEM, P.summaryUser(this.fit(content).text, url), undefined, deadline);
+  async summarize(content: string, time: CallTime, url?: string): Promise<string> {
+    return this.complete("The summary format", P.SUMMARY_SYSTEM, P.summaryUser(this.fit(content).text, url), undefined, Deadline.of(time));
   }
 
   /** Free-form answer to a question about the page. */
-  async answer(content: string, question: string, deadline: Deadline, url?: string): Promise<string> {
-    return this.complete("The question format", P.ANSWER_SYSTEM, P.answerUser(this.fit(content).text, question, url), undefined, deadline);
+  async answer(content: string, question: string, time: CallTime, url?: string): Promise<string> {
+    return this.complete(
+      "The question format",
+      P.ANSWER_SYSTEM,
+      P.answerUser(this.fit(content).text, question, url),
+      undefined,
+      Deadline.of(time),
+    );
   }
 
   /**
@@ -230,7 +238,8 @@ export class Llm implements ScrapeLlm {
    * page, so every quote is verbatim; a number is a line, a whole code block or table, or one sentence of a long paragraph (see `splitSegments`). Highlights come most relevant first; direct
    * quote answers keep page order.
    */
-  async selectLines(content: string, query: string, purpose: "highlights" | "answer", deadline: Deadline, url?: string): Promise<string> {
+  async selectLines(content: string, query: string, purpose: "highlights" | "answer", time: CallTime, url?: string): Promise<string> {
+    const deadline = Deadline.of(time);
     const units = splitSegments(content);
     // Keep whole units within the budget. A unit of several lines (code block, table) continues indented under its number.
     const numbered: string[] = [];
@@ -256,8 +265,9 @@ export class Llm implements ScrapeLlm {
    * Fails open: a chunk the classifier could not judge is skipped, and the result says whether
    * every chunk was scanned.
    */
-  async checkInjection(markdown: string, deadline: Deadline): Promise<{ scannedFully: boolean }> {
+  async checkInjection(markdown: string, time: CallTime): Promise<{ scannedFully: boolean }> {
     if (!markdown.trim()) return { scannedFully: true };
+    const deadline = Deadline.of(time);
     const chunks: string[] = [];
     for (let i = 0; i < markdown.length; i += GUARD_CHUNK_CHARS - GUARD_CHUNK_OVERLAP) {
       chunks.push(markdown.slice(i, i + GUARD_CHUNK_CHARS));

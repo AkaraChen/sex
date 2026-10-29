@@ -7,8 +7,8 @@
 // Lightpanda: `bun scripts/lightpanda.ts <path>`. Setups are run round-robin (one scrape of each per round), so drift in the
 // machine or the network hits all of them alike.
 import { parseArgs } from "node:util";
-import { Deadline } from "@sex/core/deadline.ts";
 import { resolveConfig } from "../src/config.ts";
+import { Deadline } from "../src/deadline.ts";
 import { AdBlockList } from "../src/engine/adblock.ts";
 import { BrowserPool } from "../src/engine/browser.ts";
 import { adblockTable } from "./adblock.ts";
@@ -80,7 +80,7 @@ async function overhead() {
     current = s.list;
     return browser.scrape({
       url,
-      deadline: Deadline.start(30_000),
+      ...Deadline.start(30_000).time(),
       userAgent: UA,
       extract,
       blockAds: s.blockAds,
@@ -141,7 +141,7 @@ async function pages() {
           try {
             const res = await browser.scrape({
               url,
-              deadline: Deadline.start(45_000),
+              ...Deadline.start(45_000).time(),
               userAgent: UA,
               extract,
               blockAds,

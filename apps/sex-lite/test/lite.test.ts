@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { resolveCoreConfig } from "@sex/core/config.ts";
-import type { BaseEngine } from "@sex/core/engine.ts";
-import { startFixtureSite, startMockSearxng, testCoreConfig } from "@sex/core/test/helpers.ts";
+import { resolveCoreConfig } from "@searxng-js/sex-server/config";
+import type { BaseEngine } from "@searxng-js/sex-server/engine";
+import { startFixtureSite, startMockSearxng, testCoreConfig } from "@searxng-js/sex-server/testing";
 import { liteEngine } from "../src/engine.ts";
 import { createApp, serveHttp } from "../src/server.ts";
 

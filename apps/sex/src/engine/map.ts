@@ -1,10 +1,10 @@
 import { gunzipSync } from "node:zlib";
 import { assertPublicUrl, decodeBody, parseHttpUrl } from "@searxng-js/sex-egress";
-import { Deadline } from "@sex/core/deadline.ts";
-import { fetchWithin } from "@sex/core/fetch-within.ts";
-import { log } from "@sex/core/log.ts";
-import { scrapeUrl } from "@sex/core/scrape.ts";
-import { clean, searxng } from "@sex/core/search.ts";
+import { scrapeUrl } from "@searxng-js/sex-scrape";
+import { clean, searxng } from "@searxng-js/sex-search";
+import { log } from "@searxng-js/sex-server/log";
+import { Deadline } from "../deadline.ts";
+import { fetchWithin } from "../fetch-within.ts";
 import type { MapLink, MapRequest, MapResult } from "../schemas.ts";
 import type { Engine } from "./engine.ts";
 import { fetchRobots, type Robots } from "./robots.ts";
@@ -171,7 +171,7 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   const fromPage =
     mode === "only"
       ? Promise.resolve([] as string[])
-      : scrapeUrl(engine, start.href, { formats: ["links"], timeout: engine.config.timeout }, { deadline, collectLinks: true })
+      : scrapeUrl(engine, start.href, { formats: ["links"], timeout: engine.config.timeout }, { ...deadline.time(), collectLinks: true })
           .then(({ links, linkTitles }) => {
             for (const [u, t] of Object.entries(linkTitles ?? {})) if (!titles.has(u)) titles.set(u, { title: t });
             return links ?? [];
@@ -185,9 +185,12 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
       ? Promise.resolve([] as string[])
       : Promise.all(
           [1, 2].map((page) =>
-            searxng(engine, { q: `site:${baseHost}${req.search ? ` ${req.search}` : ""}`, categories: "general" }, page, deadline).catch(
-              () => [],
-            ),
+            searxng(
+              engine,
+              { q: `site:${baseHost}${req.search ? ` ${req.search}` : ""}`, categories: "general" },
+              page,
+              deadline.time(),
+            ).catch(() => []),
           ),
         ).then((pages) =>
           pages.flat().flatMap((r) => {

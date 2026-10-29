@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { Deadline } from "@sex/core/deadline.ts";
+import { Deadline } from "../src/deadline.ts";
 import { sitemapUrls } from "../src/engine/map.ts";
 import { fetchRobots, parseRobots } from "../src/engine/robots.ts";
 import { testEngine } from "./helpers.ts";

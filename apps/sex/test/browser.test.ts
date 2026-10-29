@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { EgressPolicy } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
-import { Deadline } from "@sex/core/deadline.ts";
 import type { ConfigOverrides } from "../src/config.ts";
+import { Deadline } from "../src/deadline.ts";
 import { BrowserPool, pdeathsigWrapper } from "../src/engine/browser.ts";
 import type { Engine } from "../src/engine/engine.ts";
 import { testEngine, waitFor } from "./helpers.ts";
@@ -201,7 +201,7 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
 
   test("blocks a redirect to a non-allowed address before its content is fetched", async () => {
     const err = await guardedA
-      .scrape({ url: `${origin()}/redirect`, deadline: Deadline.start(10_000), userAgent: "t", extract })
+      .scrape({ url: `${origin()}/redirect`, ...Deadline.start(10_000).time(), userAgent: "t", extract })
       .catch((e: unknown) => e);
     expect((err as { code?: string }).code).toBe("PRIVATE_NETWORK_BLOCKED");
     expect(bHits).toEqual([]);
@@ -214,7 +214,7 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
       bHeaders = {};
       return pool.scrape({
         url: `${origin()}${path}`,
-        deadline: Deadline.start(10_000),
+        ...Deadline.start(10_000).time(),
         userAgent: "t",
         extract,
         headers,
@@ -274,7 +274,7 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
     bHits = [];
     const result = await guardedA.scrape({
       url: `${origin()}/img`,
-      deadline: Deadline.start(10_000),
+      ...Deadline.start(10_000).time(),
       userAgent: "t",
       extract,
     });
@@ -397,7 +397,7 @@ describe.skipIf(!LIGHTPANDA)("spawned lightpanda process", () => {
     hits = 0;
     // Only the child's --block-private-networks stands between the page and the loopback fixture.
     const err = await e.browser
-      .scrape({ url: `http://127.0.0.1:${site.port}/`, deadline: Deadline.start(10_000), userAgent: "t", extract })
+      .scrape({ url: `http://127.0.0.1:${site.port}/`, ...Deadline.start(10_000).time(), userAgent: "t", extract })
       .catch((x: unknown) => x);
     expect(err).toMatchObject({ code: "SCRAPE_SITE_ERROR" });
     expect(hits).toBe(0);

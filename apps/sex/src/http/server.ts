@@ -1,4 +1,4 @@
-import { type AppSpec, createHttpApp, serveHttpApp } from "@sex/core/http/server.ts";
+import { type AppSpec, createHttpApp, serveHttpApp } from "@searxng-js/sex-server/http/server";
 import type { Engine } from "../engine/engine.ts";
 import { buildServer } from "../mcp/server.ts";
 import { VERSION } from "../version.ts";

@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/server";
-import { guard, json, registerFetchAndSearch, ToolMessageError } from "@sex/core/mcp/tools.ts";
+import { guard, json, registerFetchAndSearch, ToolMessageError } from "@searxng-js/sex-server/mcp/tools";
 import { z } from "zod";
 import type { Engine } from "../engine/engine.ts";
 import type { JobRecord } from "../engine/jobs/index.ts";

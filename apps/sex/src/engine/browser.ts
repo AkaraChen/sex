@@ -5,14 +5,14 @@ import { join } from "node:path";
 import { type EgressPolicy, egressFor, MARKUP_TYPE, networkError } from "@searxng-js/sex-egress";
 import { AppError, BROWSER_HINT } from "@searxng-js/sex-errors";
 import { PAGE_SCRIPT, type PageExtractOptions, type PageExtractResult } from "@searxng-js/sex-page";
-import type { BrowserScrapeOptions, BrowserScrapeResult, ScrapeBrowser } from "@sex/core/capabilities.ts";
-import type { Deadline } from "@sex/core/deadline.ts";
-import { log } from "@sex/core/log.ts";
+import type { BrowserScrapeOptions, BrowserScrapeResult, ScrapeBrowser } from "@searxng-js/sex-scrape";
+import { log } from "@searxng-js/sex-server/log";
 import type { Subprocess } from "bun";
 import defuddleBundle from "defuddle/full" with { type: "text" };
 import pLimit from "p-limit";
 import puppeteer, { type Page } from "puppeteer-core";
 import type { Config } from "../config.ts";
+import { Deadline } from "../deadline.ts";
 import type { Action } from "../schemas.ts";
 import { type AdBlockList, loadAdBlockList } from "./adblock.ts";
 import { type BrowserKind, browserKind, type EgressPlan, planEgress } from "./browser-egress.ts";
@@ -356,14 +356,13 @@ export class BrowserPool implements ScrapeBrowser {
   }
 
   async scrape(opts: BrowserScrapeOptions): Promise<BrowserScrapeResult> {
-    const { deadline } = opts;
-    return this.scrapeInner(opts).catch((err: unknown) => {
+    const deadline = Deadline.of(opts);
+    return this.scrapeInner(opts, deadline).catch((err: unknown) => {
       throw deadline.translate(err, `while rendering ${opts.url}`);
     });
   }
 
-  private async scrapeInner(opts: BrowserScrapeOptions): Promise<BrowserScrapeResult> {
-    const { deadline } = opts;
+  private async scrapeInner(opts: BrowserScrapeOptions, deadline: Deadline): Promise<BrowserScrapeResult> {
     const plan = planEgress(
       this.route,
       { checkPrivateNetwork: !this.policy.allowPrivateNetwork, proxyUrl: this.config.proxyUrl },

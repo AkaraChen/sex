@@ -1,4 +1,4 @@
-import type { ChangeTrackingResult } from "@sex/core/schemas.ts";
+import type { ChangeTrackingResult } from "@searxng-js/sex-scrape";
 import { formatPatch, structuredPatch } from "diff";
 
 type ChangeDiff = NonNullable<ChangeTrackingResult["diff"]>;

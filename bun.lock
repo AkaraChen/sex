@@ -29,7 +29,10 @@
         "@orpc/zod": "^1.16.1",
         "@searxng-js/sex-egress": "workspace:*",
         "@searxng-js/sex-errors": "workspace:*",
-        "@sex/core": "workspace:*",
+        "@searxng-js/sex-page": "workspace:*",
+        "@searxng-js/sex-scrape": "workspace:*",
+        "@searxng-js/sex-search": "workspace:*",
+        "@searxng-js/sex-server": "workspace:*",
         "ajv": "^8.20.0",
         "bunqueue": "2.9.20",
         "citty": "^0.2.2",
@@ -50,28 +53,10 @@
       },
       "dependencies": {
         "@modelcontextprotocol/server": "^2.4.0",
-        "@searxng-js/sex-errors": "workspace:*",
-        "@sex/core": "workspace:*",
+        "@searxng-js/sex-scrape": "workspace:*",
+        "@searxng-js/sex-search": "workspace:*",
+        "@searxng-js/sex-server": "workspace:*",
         "citty": "^0.2.2",
-        "zod": "^4.6.7",
-      },
-    },
-    "packages/core": {
-      "name": "@sex/core",
-      "version": "0.1.0",
-      "dependencies": {
-        "@modelcontextprotocol/server": "^2.4.0",
-        "@orpc/openapi": "^1.16.1",
-        "@orpc/server": "^1.16.1",
-        "@orpc/zod": "^1.16.1",
-        "@searxng-js/sex-egress": "workspace:*",
-        "@searxng-js/sex-errors": "workspace:*",
-        "@searxng-js/sex-page": "workspace:*",
-        "@searxng-js/sex-searxng": "workspace:*",
-        "citty": "^0.2.2",
-        "hono": "^4.13.14",
-        "p-limit": "^7.3.3",
-        "zod": "^4.6.7",
       },
     },
     "packages/egress": {
@@ -105,6 +90,28 @@
         "marked",
       ],
     },
+    "packages/scrape": {
+      "name": "@searxng-js/sex-scrape",
+      "version": "0.0.0",
+      "dependencies": {
+        "@searxng-js/sex-egress": "workspace:*",
+        "@searxng-js/sex-errors": "workspace:*",
+        "@searxng-js/sex-page": "workspace:*",
+        "p-limit": "^7.3.3",
+        "zod": "^4.6.7",
+      },
+    },
+    "packages/search": {
+      "name": "@searxng-js/sex-search",
+      "version": "0.0.0",
+      "dependencies": {
+        "@searxng-js/sex-errors": "workspace:*",
+        "@searxng-js/sex-scrape": "workspace:*",
+        "@searxng-js/sex-searxng": "workspace:*",
+        "p-limit": "^7.3.3",
+        "zod": "^4.6.7",
+      },
+    },
     "packages/searxng": {
       "name": "@searxng-js/sex-searxng",
       "version": "0.0.0",
@@ -121,6 +128,31 @@
       "optionalPeers": [
         "yaml",
       ],
+    },
+    "packages/server": {
+      "name": "@searxng-js/sex-server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@modelcontextprotocol/server": "^2.4.0",
+        "@orpc/openapi": "^1.16.1",
+        "@orpc/server": "^1.16.1",
+        "@orpc/zod": "^1.16.1",
+        "@searxng-js/sex-egress": "workspace:*",
+        "@searxng-js/sex-errors": "workspace:*",
+        "@searxng-js/sex-page": "workspace:*",
+        "@searxng-js/sex-scrape": "workspace:*",
+        "@searxng-js/sex-search": "workspace:*",
+        "@searxng-js/sex-searxng": "workspace:*",
+        "@searxng-js/sex-testing": "workspace:*",
+        "citty": "^0.2.2",
+        "hono": "^4.13.14",
+        "p-limit": "^7.3.3",
+        "zod": "^4.6.7",
+      },
+    },
+    "packages/testing": {
+      "name": "@searxng-js/sex-testing",
+      "version": "0.0.0",
     },
   },
   "packages": {
@@ -408,11 +440,17 @@
 
     "@searxng-js/sex-page": ["@searxng-js/sex-page@workspace:packages/page"],
 
+    "@searxng-js/sex-scrape": ["@searxng-js/sex-scrape@workspace:packages/scrape"],
+
+    "@searxng-js/sex-search": ["@searxng-js/sex-search@workspace:packages/search"],
+
     "@searxng-js/sex-searxng": ["@searxng-js/sex-searxng@workspace:packages/searxng"],
 
-    "@searxng-js/win32-x64": ["@searxng-js/win32-x64@0.1.0", "", { "os": "win32", "cpu": "x64" }, "sha512-Nj1pd13/PgAqiM1WosZSgNNNmak4fwQkiTfnQG8FaFbEcWuPbC3JwdUUfdBNfFYI55FpVw+n4eVi7srjltDuvQ=="],
+    "@searxng-js/sex-server": ["@searxng-js/sex-server@workspace:packages/server"],
 
-    "@sex/core": ["@sex/core@workspace:packages/core"],
+    "@searxng-js/sex-testing": ["@searxng-js/sex-testing@workspace:packages/testing"],
+
+    "@searxng-js/win32-x64": ["@searxng-js/win32-x64@0.1.0", "", { "os": "win32", "cpu": "x64" }, "sha512-Nj1pd13/PgAqiM1WosZSgNNNmak4fwQkiTfnQG8FaFbEcWuPbC3JwdUUfdBNfFYI55FpVw+n4eVi7srjltDuvQ=="],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 

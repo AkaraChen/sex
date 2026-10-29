@@ -1,5 +1,5 @@
-import type { CoreConfig } from "@sex/core/config.ts";
-import { BaseEngine } from "@sex/core/engine.ts";
+import type { CoreConfig } from "@searxng-js/sex-server/config";
+import { BaseEngine } from "@searxng-js/sex-server/engine";
 
 /** What the 501 errors for browser and LLM options say: sex-lite has neither. */
 const missingHints = {

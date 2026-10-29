@@ -3,11 +3,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { AppError } from "@searxng-js/sex-errors";
 import type { PdfPage } from "@searxng-js/sex-page";
-import type { DocsConvertOptions, DocsResult, DocsWarning, ScrapeDocs } from "@sex/core/capabilities.ts";
-import { log } from "@sex/core/log.ts";
+import type { DocsConvertOptions, DocsResult, DocsWarning, ScrapeDocs } from "@searxng-js/sex-scrape";
+import { log } from "@searxng-js/sex-server/log";
 import type { ConvertEngine } from "here-docs";
 import pLimit from "p-limit";
 import type { Config } from "../config.ts";
+import { Deadline } from "../deadline.ts";
 
 export type HereDocs = typeof import("here-docs");
 
@@ -81,7 +82,7 @@ export class DocsConverter implements ScrapeDocs {
   }
 
   async convert(bytes: Uint8Array, opts: DocsConvertOptions): Promise<DocsResult> {
-    const { deadline } = opts;
+    const deadline = Deadline.of(opts);
     // Waiting for a slot is part of the deadline; a request that gives up while queued never starts converting. Once it has
     // started, `run` keeps its own budget (a slice) so that pages converted before the end can still be returned.
     let started!: () => void;
@@ -91,15 +92,14 @@ export class DocsConverter implements ScrapeDocs {
     const result = this.limit(() => {
       started();
       deadline.throwIfAborted("while waiting to convert the document");
-      return this.run(bytes, opts);
+      return this.run(bytes, opts, deadline);
     });
     result.catch(() => {});
     await deadline.bound(begun, "while waiting to convert the document");
     return result;
   }
 
-  private async run(bytes: Uint8Array, opts: DocsConvertOptions): Promise<DocsResult> {
-    const { deadline } = opts;
+  private async run(bytes: Uint8Array, opts: DocsConvertOptions, deadline: Deadline): Promise<DocsResult> {
     const { mod, engine } = await deadline.bound(this.start(), "while starting the document converter");
     // Keep a tenth of what is left for the rest of the scrape, so pages converted before the time ran out can still be returned.
     const work = deadline.remaining() === Number.POSITIVE_INFINITY ? deadline : deadline.slice(Math.floor(deadline.remaining() * 0.9));

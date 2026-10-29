@@ -17,7 +17,7 @@ import {
   parseFields,
   str,
   urlField,
-} from "@sex/core/config.ts";
+} from "@searxng-js/sex-server/config";
 import { z } from "zod";
 
 export { DEFAULT_MAX_BODY_BYTES } from "@searxng-js/sex-egress";

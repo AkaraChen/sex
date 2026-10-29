@@ -1,6 +1,6 @@
 import { decodeBody } from "@searxng-js/sex-egress";
-import type { Deadline } from "@sex/core/deadline.ts";
-import { fetchWithin } from "@sex/core/fetch-within.ts";
+import type { Deadline } from "../deadline.ts";
+import { fetchWithin } from "../fetch-within.ts";
 import type { Engine } from "./engine.ts";
 
 interface Rule {

@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { AppError } from "@searxng-js/sex-errors";
-import { normalizeFormats, scrapeTimeout } from "@sex/core/scrape.ts";
+import { normalizeFormats, scrapeTimeout } from "@searxng-js/sex-scrape";
 import { startFixtureSite, testEngine } from "./helpers.ts";
 
 const hanging = () => Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Promise<Response>(() => {}) });

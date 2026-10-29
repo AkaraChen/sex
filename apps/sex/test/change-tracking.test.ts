@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Deadline } from "@sex/core/deadline.ts";
+import { Deadline } from "../src/deadline.ts";
 import { SqliteChangeTracker } from "../src/engine/change-tracker.ts";
 import type { Engine } from "../src/engine/engine.ts";
 import { startMockLlm, testEngine } from "./helpers.ts";

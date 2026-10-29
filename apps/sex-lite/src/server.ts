@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/server";
-import type { BaseEngine } from "@sex/core/engine.ts";
-import { coreRoutes } from "@sex/core/http/procedures.ts";
-import { type AppSpec, createHttpApp, serveHttpApp } from "@sex/core/http/server.ts";
-import { registerFetchAndSearch } from "@sex/core/mcp/tools.ts";
+import type { BaseEngine } from "@searxng-js/sex-server/engine";
+import { coreRoutes } from "@searxng-js/sex-server/http/procedures";
+import { type AppSpec, createHttpApp, serveHttpApp } from "@searxng-js/sex-server/http/server";
+import { registerFetchAndSearch } from "@searxng-js/sex-server/mcp/tools";
 import { VERSION } from "./version.ts";
 
 const INSTRUCTIONS =

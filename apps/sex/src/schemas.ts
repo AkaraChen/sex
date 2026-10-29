@@ -1,11 +1,12 @@
 /**
  * The Firecrawl v2 schemas of sex's own endpoints (map, crawl, batch scrape, extract); scrape and search are shared with
- * sex-lite and live in @sex/core.
+ * sex-lite and live in sex-scrape and sex-search.
  */
-import { Document, LocationConfig, ScrapeOptions } from "@sex/core/schemas.ts";
+import { Document, LocationConfig, ScrapeOptions } from "@searxng-js/sex-scrape";
 import { z } from "zod";
 
-export * from "@sex/core/schemas.ts";
+export * from "@searxng-js/sex-scrape";
+export * from "@searxng-js/sex-search";
 
 // ---------------------------------------------------------------- parse
 

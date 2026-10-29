@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { log } from "@sex/core/log.ts";
+import { log } from "@searxng-js/sex-server/log";
 import { Queue, shutdownManager, Worker } from "bunqueue/client";
 import type { QueuedTask, Task, TaskOutcome, TaskQueue } from "./types.ts";
 

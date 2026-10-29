@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import type { CachedPage, CacheKey, ScrapeCache } from "@sex/core/capabilities.ts";
-import { log } from "@sex/core/log.ts";
+import type { CachedPage, CacheKey, ScrapeCache } from "@searxng-js/sex-scrape";
+import { log } from "@searxng-js/sex-server/log";
 
 /** Bumped when the table changes; a cache is only a copy, so a different version is dropped, not migrated. */
 const SCHEMA_VERSION = 1;

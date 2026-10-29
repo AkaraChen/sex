@@ -10,7 +10,7 @@
  */
 
 import { AppError } from "@searxng-js/sex-errors";
-import { log } from "@sex/core/log.ts";
+import { log } from "@searxng-js/sex-server/log";
 import type { HTTPRequest, Page } from "puppeteer-core";
 import { type AdBlockList, siteOf } from "./adblock.ts";
 

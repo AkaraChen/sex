@@ -210,7 +210,7 @@ flowchart LR
 - [x] 2. **第三类 `sex-errors`**：`Symbol.for` 标记和 `isInstance`；11 处跨包的 `instanceof AppError` 换掉。（`log` 改成 `logger` 选项随各包抽出时做，不在本步。）
 - [x] 3. **`sex-egress`**：边界改为 `signal`。它不依赖别的包，先做。
 - [x] 4. **第二类 `sex-page`、`sex-searxng`**：Markdown、YAML 按运行时分支。
-- [ ] 5. **`sex-scrape`、`sex-search`、`sex-server`**：完成后 `apps/sex-lite` 完全基于新包，删除 `packages/core`。
+- [x] 5. **`sex-scrape`、`sex-search`、`sex-server`**：完成后 `apps/sex-lite` 完全基于新包，删除 `packages/core`。
 - [ ] 6. **能力插件 `sex-browser`、`sex-llm`、`sex-docs`、`sex-store`**：SQLite、zstd 换成 `node:` 内置，换之前先测 SQLite 在 Bun 上的性能。
 - [ ] 7. **`sex-map`、`sex-jobs`、第三类 `sex-documents-s3`**：bunqueue 队列移进 `apps/sex/src`。完成后 `apps/sex` 迁移完毕。
 - [ ] 8. **首次发布到 npm。**

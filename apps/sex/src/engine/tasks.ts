@@ -1,4 +1,4 @@
-import { log } from "@sex/core/log.ts";
+import { log } from "@searxng-js/sex-server/log";
 import { handleBatchPage } from "./batch.ts";
 import { handleCrawlPage, handleCrawlStart } from "./crawl.ts";
 import type { Engine } from "./engine.ts";

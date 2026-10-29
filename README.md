@@ -17,13 +17,16 @@
 
 | 目录 | 内容 |
 |---|---|
-| `packages/core`（`@sex/core`） | 两个产品共用的部分：SearXNG 搜索、HTTP 抓取 + Defuddle 提取、SSRF 防护、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` 两个 MCP 工具、CLI 的公共部分 |
+| `packages/scrape`（`@searxng-js/sex-scrape`，发布到 npm） | 抓一个 URL，得到 Markdown、HTML、links 等（Firecrawl 的 scrape），浏览器、LLM、文档转换、缓存、change tracking 以接口形式传入。Bun 和 Node 24 都能用；Node 上转 Markdown 需要装可选 peer `marked`，用法见 [packages/scrape/README.md](packages/scrape/README.md) |
+| `packages/search`（`@searxng-js/sex-search`，发布到 npm） | 用 SearXNG 搜索（Firecrawl 的 search），可以顺带抓取结果。Bun 和 Node 24 都能用，用法见 [packages/search/README.md](packages/search/README.md) |
+| `packages/server`（`@searxng-js/sex-server`，私有） | 两个产品共用的脚手架：`BaseEngine`、配置解析、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` 两个 MCP 工具、CLI 的公共部分。只跑在 Bun 上 |
+| `packages/testing`（`@searxng-js/sex-testing`，私有） | 测试夹具：fixture 站点、mock SearXNG、计数代理。只给测试用 |
 | `packages/egress`（`@searxng-js/sex-egress`，发布到 npm） | SSRF 安全的出站请求：`EgressPolicy`、`safeFetch`、`rewriteUrl`。Bun 和 Node 24 都能用，用法见 [packages/egress/README.md](packages/egress/README.md) |
 | `packages/page`（`@searxng-js/sex-page`，发布到 npm） | HTML 和 PDF 提取（Defuddle、unpdf、worker 线程池）、Markdown 转 HTML。Bun 和 Node 24 都能用；Node 上转 Markdown 需要装可选 peer `marked`，用法见 [packages/page/README.md](packages/page/README.md) |
 | `packages/searxng`（`@searxng-js/sex-searxng`，发布到 npm） | 连接外部 SearXNG，或把预编译的 SearXNG 作为子进程托管。Node 上给托管实例配代理需要装可选 peer `yaml`，用法见 [packages/searxng/README.md](packages/searxng/README.md) |
 | `packages/errors`（`@searxng-js/sex-errors`，私有） | `AppError` 和错误目录（`ERRORS`），打包进用到它的包；跨包判断错误用 `AppError.isInstance` |
-| `apps/sex` | 完整版：在 core 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
-| `apps/sex-lite` | 轻量版：只用 core |
+| `apps/sex` | 完整版：在 sex-server 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
+| `apps/sex-lite` | 轻量版：只用 sex-server、sex-scrape、sex-search |
 
 ## 快速开始
 
@@ -122,7 +125,7 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 
 **子进程的回收**：`SIGINT` / `SIGTERM` 时 sex 会先关掉子进程再退出，但 `SIGKILL` 无法被捕获。所以在 Linux 上，sex 用 `setpriv --pdeathsig TERM -- lightpanda serve ...` 启动子进程（`setpriv` 属于 util-linux ≥ 2.33，Debian / Ubuntu 和 Docker 镜像里都有）：sex 被 `kill -9` 后，内核会给子进程发 `SIGTERM`，不会留下孤儿。macOS 没有对应机制（pdeathsig 是 Linux 特有的），Linux 上没有 `setpriv` 时也一样，sex 只能直接 spawn，此时 `kill -9` sex 会留下孤儿 Lightpanda 进程，需要自己清理。`lightpanda started` 日志里的 `spawn=setpriv` / `spawn=direct` 标明了实际用的是哪种方式。
 
-**出站规则与执行点**：出站规则只有一份（core 的 `EgressPolicy`：解析域名，任何一个地址是内网、回环、link-local（含云元数据 `169.254.169.254`）就拒绝，通过后给出要固定连接的 IP，按 host 缓存 30 秒）。`safeFetch`、浏览器都问它；浏览器能在哪里执行这条规则，取决于浏览器本身：
+**出站规则与执行点**：出站规则只有一份（sex-egress 的 `EgressPolicy`：解析域名，任何一个地址是内网、回环、link-local（含云元数据 `169.254.169.254`）就拒绝，通过后给出要固定连接的 IP，按 host 缓存 30 秒）。`safeFetch`、浏览器都问它；浏览器能在哪里执行这条规则，取决于浏览器本身：
 
 | 浏览器 | SSRF 检查 | 广告拦截 | 凭据限定 / 媒体拦截 |
 |---|---|---|---|
@@ -361,7 +364,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - **一个 deadline**：一次 scrape 只有一个期限，由 `timeout`（默认 `SEX_TIMEOUT`，从开始抓取算起，排队不算）和调用方的取消共同决定；请求用到 LLM（LLM 格式 json / summary / question / highlights，或 `checkPromptInjection`）且没传 `timeout` 时，默认值是 `max(SEX_TIMEOUT, 60000)`（Firecrawl 对 json 同样把 30 秒改成 60 秒）。抓取或渲染、`waitFor`、`wait` action、`executeJavascript`、页面脚本、正文抽取和文档转换都在这个期限内；到期返回 `408 SCRAPE_TIMEOUT`，浏览器页面随即关闭并释放名额。客户端断开或任务被取消返回 `408 TIMEOUT`。
   - LLM 格式（json / summary / question / highlights）和 `checkPromptInjection` 的调用也在这个期限内，到期同样返回 `408 SCRAPE_TIMEOUT`；每次 LLM 调用的预算是 `min(SEX_LLM_TIMEOUT, 期限剩余时间)`。例外：extract 任务自己抓页面时开了 `checkPromptInjection`，它的 LLM 调用不受页面 `timeout` 约束，只受任务取消和 `SEX_LLM_TIMEOUT` 约束。
   - `waitFor` 加上所有 `wait` action 的 `milliseconds` 超过 60000 返回 `400`；`waitFor` 超过 `timeout` 的一半时不拒绝，只在 `warning` 里提醒。`wait` action 的 `milliseconds` 与 `selector` 必须二选一（以前两者都不给时默认等 1 秒）。
-- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `packages/core/src/schemas.ts` 和 `apps/sex/src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
+- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `packages/scrape/src/schemas.ts`、`packages/search/src/schemas.ts` 和 `apps/sex/src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
 - `includePaths` / `excludePaths` 的正则会被启发式检查：带无界量词的分组再被无界量词修饰（`(a+)+`）、或分支相互重叠的量词分组（`(a|a)*`）会返回 `400`；每条 ≤ 1000 字符、≤ 100 条，匹配前 URL 截到 2048 字符。look-around 和反向引用仍然允许。
 - LLM 相关的格式（json / summary / question / highlights）和 extract：
   - 带 JSON Schema 时，模型输出会按原始 schema 校验（Ajv，按 `$schema` 选择 draft-07 / 2019-09 / 2020-12，未写时按 2020-12；`format` 不校验）。输出不是合法 JSON 或不符合 schema 时，会把错误发回给模型修正一次，仍不符合才返回 `422 LLM_INVALID_OUTPUT`。schema 本身不合法时，在开始抓取之前就返回 `400 BAD_REQUEST`。根节点是数组的 schema 会包成 `{ items }` 发给模型（structured output 要求根节点是对象），返回时再拆开。

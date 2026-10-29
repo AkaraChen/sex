@@ -15,7 +15,7 @@ import {
   runSearch,
   searchArgs,
   warmupOrExit,
-} from "@sex/core/cli/common.ts";
+} from "@searxng-js/sex-server/cli";
 import { defineCommand, runMain } from "citty";
 import { defaultDataDir, resolveConfig } from "./config.ts";
 import { Engine } from "./engine/engine.ts";

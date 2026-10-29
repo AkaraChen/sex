@@ -7,6 +7,14 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": [],
-  "privatePackages": { "version": false, "tag": false }
+  "ignore": [
+    "sex",
+    "sex-lite",
+    "@searxng-js/sex-server",
+    "@searxng-js/sex-testing"
+  ],
+  "privatePackages": {
+    "version": true,
+    "tag": false
+  }
 }

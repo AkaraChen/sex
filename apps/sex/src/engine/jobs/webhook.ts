@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
-import { Deadline } from "@sex/core/deadline.ts";
-import { fetchWithin } from "@sex/core/fetch-within.ts";
-import { log } from "@sex/core/log.ts";
+import { log } from "@searxng-js/sex-server/log";
+import { Deadline } from "../../deadline.ts";
+import { fetchWithin } from "../../fetch-within.ts";
 import { WEBHOOK_SIGNATURE_HEADER, type WebhookConfig } from "../../schemas.ts";
 import type { Engine } from "../engine.ts";
 import type { JobRecord, Task, WebhookPayload } from "./types.ts";
