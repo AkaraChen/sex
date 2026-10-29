@@ -1,7 +1,7 @@
 // JobStore behaviour against every DocumentLog: memory, JSONL files, and S3 when SEX_TEST_S3_URL is set
 // (s3://bucket/prefix, with S3_ENDPOINT / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY / S3_REGION for Bun.S3Client).
 import { Database } from "bun:sqlite";
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   appendFileSync,
   closeSync,
@@ -46,6 +46,8 @@ async function allPages(store: SqliteJobStore, id: string, maxChars: number) {
 }
 
 const s3Url = process.env.SEX_TEST_S3_URL;
+// Against S3 a test makes dozens of sequential requests; a slow CI runner's SeaweedFS needs more than bun's 5 s default.
+if (s3Url) setDefaultTimeout(30_000);
 /** Each run writes under its own prefix and removes it afterwards. */
 const s3 = s3Url
   ? (() => {
