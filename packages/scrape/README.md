@@ -40,4 +40,4 @@ await extractPool.close();
 
 ## Node
 
-Works on Node 24 and Bun. On Node, Markdown to HTML (for PDFs and other converted documents when `html` / `rawHtml` is asked for) needs the optional peer dependency [`marked`](https://www.npmjs.com/package/marked), as in `sex-page`; proxies are Bun only (see `sex-egress`).
+Works on Node 24 and Bun. On Node, Markdown to HTML (for PDFs and other converted documents when `html` / `rawHtml` is asked for) needs the optional peer dependency [`marked`](https://www.npmjs.com/package/marked), as in `sex-page`. On Node, outbound requests go through [`undici`](https://www.npmjs.com/package/undici), an optional peer dependency of `sex-egress`: run `npm install undici` (without it a fetch fails with a `NOT_SUPPORTED` error that names the package). Proxies work on both runtimes.

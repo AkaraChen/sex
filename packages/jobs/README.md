@@ -39,5 +39,5 @@ const { job } = await startBatchScrape(ctx, { urls: ["https://example.com/a", "h
 ```
 
 ## Node
-
+ On Node, outbound requests go through [`undici`](https://www.npmjs.com/package/undici), an optional peer dependency of `sex-egress`: run `npm install undici` (without it a fetch fails with a `NOT_SUPPORTED` error that names the package).
 Works on Node 24 and Bun. The job store uses `node:sqlite`; on Bun it measured within noise of `bun:sqlite` on the hot path (per operation: scheduling a crawled URL 22–25 µs against 19–22, storing a document 71–79 µs against 68–70, settling a task 49–55 µs against 49–52). A `jobs.sqlite` written by the earlier `bun:sqlite` version opens as it is. `MemoryTaskQueue` keeps tasks in memory only: they are gone when the process ends. Tasks that must survive a restart need a persistent `TaskQueue` of your own; the sex app's is bunqueue (Bun only), in `apps/sex`.

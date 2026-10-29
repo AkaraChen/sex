@@ -38,5 +38,5 @@ await extractPool.close();
 ```
 
 ## Node
-
+ On Node, outbound requests go through [`undici`](https://www.npmjs.com/package/undici), an optional peer dependency of `sex-egress`: run `npm install undici` (without it a fetch fails with a `NOT_SUPPORTED` error that names the package).
 Works on Node 24 and Bun. Hosting the SearXNG process itself is `sex-searxng`; on Node, Markdown for scraped results follows the notes of `sex-scrape`.

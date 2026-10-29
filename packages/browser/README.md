@@ -34,5 +34,5 @@ await browser.close();
 ```
 
 ## Node
-
+ On Node, outbound requests go through [`undici`](https://www.npmjs.com/package/undici), an optional peer dependency of `sex-egress`: run `npm install undici` (without it a fetch fails with a `NOT_SUPPORTED` error that names the package).
 Works on Node 24 and Bun: the child process is `node:child_process` (with the same `setpriv --pdeathsig` wrapper on Linux), the executable lookup is a `PATH` walk, and the embedded Lightpanda is decompressed with `node:zlib`. Scripts for maintainers (`scripts/lightpanda.ts`, `scripts/adblock.ts`, `scripts/bench-*.ts`) run on Bun from a checkout and are not part of the published package.

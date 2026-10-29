@@ -3,9 +3,18 @@
   "version": "0.0.0",
   "type": "module",
   "description": "SSRF-safe outbound requests: EgressPolicy (where a server may connect to) and safeFetch (DNS-pinned fetch with a check on every redirect hop)",
-  "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/egress" },
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=24" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AkaraChen/sex.git",
+    "directory": "packages/egress"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "exports": {
     ".": {
       "sex-source": "./src/index.ts",
@@ -16,5 +25,16 @@
   "dependencies": {
     "@searxng-js/sex-errors": "workspace:*",
     "ipaddr.js": "^2"
+  },
+  "peerDependencies": {
+    "undici": "^8"
+  },
+  "peerDependenciesMeta": {
+    "undici": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "undici": "^8"
   }
 }

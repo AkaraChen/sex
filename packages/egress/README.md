@@ -12,6 +12,7 @@ Errors are `AppError`s from the private `sex-errors` library, bundled in; they c
 
 ```sh
 npm install @searxng-js/sex-egress
+npm install undici # Node only, optional peer
 ```
 
 ## Example
@@ -22,7 +23,7 @@ import { safeFetch } from "@searxng-js/sex-egress";
 const res = await safeFetch("https://example.com/", {
   signal: AbortSignal.timeout(10_000), // SCRAPE_TIMEOUT when it times out, TIMEOUT when you abort it
   allowPrivateNetwork: false,
-  proxy: undefined, // required, so a call site decides; Bun only
+  proxy: undefined, // required, so a call site decides
   userAgent: "my-bot/1.0",
 });
 console.log(res.status, res.contentType, res.body.byteLength);
@@ -34,5 +35,7 @@ A URL that points at a private address rejects with `code: "PRIVATE_NETWORK_BLOC
 
 Works on Node 24 and Bun. On Node:
 
-- Requests to a validated address go through `node:http(s)` (Node's `fetch` cannot set the TLS server name), with the original host in `Host` and SNI.
-- The `proxy` option is Bun only. Passing one on Node throws instead of connecting directly.
+- Requests go through [`undici`](https://www.npmjs.com/package/undici), an optional peer dependency: run `npm install undici`. Without it a request fails with a `NOT_SUPPORTED` error that names the package. (Bun uses its own `fetch` and needs nothing.)
+- A request to a validated address keeps its URL, so `Host`, SNI and the certificate check use the real host name; the dispatcher's `connect.lookup` answers with the validated address.
+- The `proxy` option goes through undici's `ProxyAgent` with the Bun semantics: the request is not pinned, the host is still resolved and checked first (a name that does not resolve locally is refused), a caller-set `Proxy-Authorization` / `Proxy-Connection` is dropped and the credentials in the proxy URL are used.
+- Each request has its own dispatcher, closed when the response body is read to the end, cancelled, fails or the signal aborts, so nothing keeps a process alive.

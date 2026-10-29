@@ -9,8 +9,9 @@ import { parseArgs } from "node:util";
 const root = join(import.meta.dir, "..", "..", "..");
 const { values } = parseArgs({ options: { target: { type: "string" }, outfile: { type: "string", default: "dist/sex-lite" } } });
 
+// --external undici: Node's transport of sex-egress, never imported on Bun.
 // --root: the sex-page extract pool finds the embedded worker at <root>/packages/page/src/extract-worker.ts.
-const args = ["build", "--compile", "--minify", "--conditions", "sex-source", "--root", root];
+const args = ["build", "--compile", "--minify", "--conditions", "sex-source", "--root", root, "--external", "undici"];
 if (values.target) args.push("--target", values.target);
 args.push(join(root, "apps/sex-lite/src/cli.ts"), join(root, "packages/page/src/extract-worker.ts"), "--outfile", values.outfile as string);
 const proc = Bun.spawnSync(["bun", ...args], { cwd: root, stdout: "inherit", stderr: "inherit" });

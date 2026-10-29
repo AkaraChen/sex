@@ -134,6 +134,9 @@ try {
     "sex-source",
     "--external",
     "here-docs",
+    // Node's transport of sex-egress; the binary runs on Bun and never imports it.
+    "--external",
+    "undici",
     "--root",
     root,
   ];

@@ -23,7 +23,7 @@
 | `sex-search` | 用 SearXNG 搜索，可以顺带抓取结果 | `sex-scrape`、`sex-searxng`；p-limit、zod |
 | `sex-map` | 找出一个站点的 URL（sitemap、页面链接、搜索） | `sex-scrape`、`sex-search`、`sex-egress`；zod |
 | `sex-jobs` | crawl、batch scrape、extract 任务，文档存文件或 S3 | `sex-scrape`、`sex-map`、`sex-egress`；zod。Node 上用 S3 需装可选 peer `@aws-sdk/client-s3` |
-| `sex-egress` | SSRF 安全的出站请求：`EgressPolicy`、`safeFetch` | ipaddr.js |
+| `sex-egress` | SSRF 安全的出站请求：`EgressPolicy`、`safeFetch` | ipaddr.js。Node 上请求走可选 peer `undici` |
 
 **`sex-scrape` 的能力插件**
 
@@ -142,17 +142,26 @@ flowchart TB
 | 情况 | 做法 | 例子 |
 |---|---|---|
 | 两边都有的 `node:` 内置模块 | 直接用，不设接口 | `node:sqlite`、`node:zlib` 的 zstd、`node:child_process`、`node:fs`、`node:timers/promises` |
-| 只有 Bun 有内置实现 | `typeof Bun` 分支：Bun 用内置 API，Node 动态 import 可选 peer，没装就报错 | Markdown、YAML、S3 |
+| 只有 Bun 有内置实现 | `typeof Bun` 分支：Bun 用内置 API，Node 动态 import 可选 peer，没装就报错 | Markdown、YAML、S3、出站 HTTP（`undici`） |
 | 部署选择 | 接口加单独实现 | `TaskQueue` |
 
 包里不能静态 import `bun:*` 或 `"bun"`。
 
+出站 HTTP（`sex-egress` 的 `sendRequest`）：Bun 分支不变（`fetch` 带 `proxy` 和 `tls` 选项，固定地址靠把 URL 改写成已验证的 IP）。Node 分支一律走 `undici`（动态 import，可选 peer，没装就抛 `NOT_SUPPORTED` 并写明 `undici`），不再手写 `node:http(s)`：
+
+- 固定地址：保留原 URL，dispatcher 的 `connect.lookup` 只回答已验证的地址，所以 `Host`、SNI 和证书检查用的都是真实域名。
+- `skipTlsVerification` 和 `ca` 放进 connect 选项。
+- 代理：`ProxyAgent`，语义和 Bun 一致：不固定地址，先用 `requireResolvable` 解析并检查主机，丢掉调用方设的 `Proxy-Authorization` 和 `Proxy-Connection`，用代理 URL 里的凭据。http 目标走转发（绝对地址请求），https 目标走 CONNECT 隧道。Node 上不再因为设了代理而报 `CONFIG_INVALID`。
+- 不留连接：每个请求一个 dispatcher，响应体读完、取消或出错（或信号中止）时关闭。没有做缓存池，因为 `safeFetch` 每一跳本来就要换固定的地址，复用连接的机会几乎没有。
+- `networkError` 从 undici 放在 `err.cause` 上的 `code` 取错误码。
+- 调用方设的 `Accept-Encoding: gzip` 现在会被解码（原来的 `node:http(s)` 路径不解码）。
+
 ```mermaid
 flowchart TD
-  call["包内调用 Markdown / YAML / S3"] --> isBun{"typeof Bun 存在？"}
-  isBun -->|是| bunApi["Bun.markdown / Bun.YAML / Bun.S3Client"]
+  call["包内调用 Markdown / YAML / S3 / 出站 HTTP"] --> isBun{"typeof Bun 存在？"}
+  isBun -->|是| bunApi["Bun.markdown / Bun.YAML / Bun.S3Client / Bun fetch"]
   isBun -->|否| imp["动态 import 可选 peer"]
-  imp -->|已安装| lib["Markdown 库 / yaml / @aws-sdk/client-s3"]
+  imp -->|已安装| lib["Markdown 库 / yaml / @aws-sdk/client-s3 / undici"]
   imp -->|未安装| err["抛错：告诉用户要装哪个包"]
 ```
 

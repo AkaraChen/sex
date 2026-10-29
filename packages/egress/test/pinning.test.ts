@@ -64,19 +64,17 @@ describe("a pinned request reaches the validated address", () => {
     https.close();
   });
 
-  const request = (target: string, address: string, ca?: string) => {
-    const pin = pinToAddress(new URL(target), address);
-    return sendRequest(pin.url, {
+  const request = (target: string, address: string, ca?: string) =>
+    sendRequest(new URL(target), {
       method: "GET",
       body: undefined,
-      headers: { host: pin.host },
+      headers: {},
       signal: AbortSignal.timeout(5000),
       proxy: undefined,
       skipTlsVerification: undefined,
-      serverName: pin.serverName,
+      address,
       ...(ca ? { ca } : {}),
     });
-  };
 
   test("http: connects to the address and sends the original Host", async () => {
     const res = await request(`http://example.test:${httpPort}/`, "127.0.0.1");
