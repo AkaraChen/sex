@@ -3,8 +3,10 @@
   "version": "0.1.0-rc.0",
   "type": "module",
   "description": "SQLite page cache (maxAge) and change tracking store for @searxng-js/sex-scrape",
+  "license": "MIT",
+  "author": "akarachen",
   "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/store" },
-  "files": ["dist", "README.md"],
+  "files": ["dist", "README.md", "LICENSE"],
   "engines": { "node": ">=24" },
   "exports": {
     ".": {

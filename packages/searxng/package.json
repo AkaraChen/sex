@@ -3,8 +3,10 @@
   "version": "0.1.0-rc.0",
   "type": "module",
   "description": "Connect to an external SearXNG, or run one as a managed child process (prebuilt binary), with restart and cooldown",
+  "license": "MIT",
+  "author": "akarachen",
   "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/searxng" },
-  "files": ["dist", "README.md"],
+  "files": ["dist", "README.md", "LICENSE"],
   "engines": { "node": ">=24" },
   "exports": {
     ".": {

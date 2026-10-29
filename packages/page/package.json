@@ -3,8 +3,10 @@
   "version": "0.1.0-rc.0",
   "type": "module",
   "description": "HTML and PDF content extraction (Defuddle, unpdf) with a worker-thread pool, and Markdown to HTML",
+  "license": "MIT",
+  "author": "akarachen",
   "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/page" },
-  "files": ["dist", "README.md"],
+  "files": ["dist", "README.md", "LICENSE"],
   "engines": { "node": ">=24" },
   "exports": {
     ".": {

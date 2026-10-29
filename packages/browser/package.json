@@ -3,8 +3,10 @@
   "version": "0.1.0-rc.0",
   "type": "module",
   "description": "Render pages in a browser (Lightpanda child process or any CDP browser) for @searxng-js/sex-scrape, with SSRF enforcement, ad blocking and the egress proxy",
+  "license": "MIT",
+  "author": "akarachen",
   "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/browser" },
-  "files": ["dist", "README.md"],
+  "files": ["dist", "README.md", "LICENSE"],
   "engines": { "node": ">=24" },
   "exports": {
     ".": {
