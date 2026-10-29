@@ -1,0 +1,29 @@
+{
+  "name": "@searxng-js/sex-searxng",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Connect to an external SearXNG, or run one as a managed child process (prebuilt binary), with restart and cooldown",
+  "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/searxng" },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=24" },
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@searxng-js/searxng": "0.1.0",
+    "@searxng-js/sex-errors": "workspace:*"
+  },
+  "peerDependencies": {
+    "yaml": "^2"
+  },
+  "peerDependenciesMeta": {
+    "yaml": { "optional": true }
+  },
+  "devDependencies": {
+    "yaml": "^2"
+  }
+}

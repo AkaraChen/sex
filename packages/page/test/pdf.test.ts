@@ -1,6 +1,7 @@
-import { expect, test } from "bun:test";
-import { joinPages, pdfToMarkdown } from "../src/pdf.ts";
-import { textPdf } from "./helpers.ts";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { joinPages, pdfToMarkdown } from "@searxng-js/sex-page";
+import { textPdf } from "./pdf-fixtures.ts";
 
 /** A one-page PDF with the text "Hello PDF", built by hand. */
 function minimalPdf(): Uint8Array {
@@ -27,22 +28,28 @@ function minimalPdf(): Uint8Array {
 test("extracts text from a PDF repeatedly (document proxy is destroyed each time)", async () => {
   for (let i = 0; i < 3; i++) {
     const pdf = await pdfToMarkdown(minimalPdf());
-    expect(pdf.markdown).toContain("Hello PDF");
-    expect(pdf.numPages).toBe(1);
+    assert.match(pdf.markdown, /Hello PDF/);
+    assert.equal(pdf.numPages, 1);
   }
 });
 
 test("a corrupt PDF is a 422", async () => {
   const err = await pdfToMarkdown(new TextEncoder().encode("%PDF-1.4 garbage")).catch((e: unknown) => e);
-  expect((err as { code?: string }).code).toBe("PDF_PARSE_FAILED");
+  assert.equal((err as { code?: string }).code, "PDF_PARSE_FAILED");
 });
 
 test("returns the pages one by one, empty ones included", async () => {
   const pdf = await pdfToMarkdown(textPdf(3));
-  expect(pdf.pages).toEqual([1, 2, 3].map((n) => ({ pageNumber: n, markdown: `Text page ${n}` })));
-  expect(pdf.markdown).toBe(joinPages(pdf.pages, false));
+  assert.deepEqual(
+    pdf.pages,
+    [1, 2, 3].map((n) => ({ pageNumber: n, markdown: `Text page ${n}` })),
+  );
+  assert.equal(pdf.markdown, joinPages(pdf.pages, false));
   const limited = await pdfToMarkdown(textPdf(3), 2);
-  expect(limited.pages.map((p) => p.pageNumber)).toEqual([1, 2]);
+  assert.deepEqual(
+    limited.pages.map((p) => p.pageNumber),
+    [1, 2],
+  );
 });
 
 test("joinPages: markers go between pages, empty pages are skipped when marking", () => {
@@ -51,7 +58,7 @@ test("joinPages: markers go between pages, empty pages are skipped when marking"
     { pageNumber: 2, markdown: "" },
     { pageNumber: 3, markdown: "three" },
   ];
-  expect(joinPages(pages, true)).toBe("one\n\n---\n\n<!-- page 3 -->\n\nthree");
-  expect(joinPages(pages, false)).toBe("one\n\n---\n\n\n\n---\n\nthree");
-  expect(joinPages([{ pageNumber: 4, markdown: "x" }], true)).toBe("x");
+  assert.equal(joinPages(pages, true), "one\n\n---\n\n<!-- page 3 -->\n\nthree");
+  assert.equal(joinPages(pages, false), "one\n\n---\n\n\n\n---\n\nthree");
+  assert.equal(joinPages([{ pageNumber: 4, markdown: "x" }], true), "x");
 });

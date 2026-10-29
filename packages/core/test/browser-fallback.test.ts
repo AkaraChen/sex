@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { AppError, ERRORS, type ErrorCode } from "@searxng-js/sex-errors";
+import type { PageExtractResult } from "@searxng-js/sex-page";
 import type { BrowserScrapeOptions, BrowserScrapeResult, ScrapeBrowser } from "../src/capabilities.ts";
-import type { PageExtractResult } from "../src/page.ts";
 import { type ScrapeContext, scrapeUrl } from "../src/scrape.ts";
 import { startFixtureSite, testCoreEngine } from "./helpers.ts";
 

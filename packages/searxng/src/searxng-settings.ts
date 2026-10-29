@@ -1,33 +1,61 @@
 import { DEFAULT_SETTINGS } from "@searxng-js/searxng";
-import type { CoreConfig as Config } from "./config.ts";
+import { AppError } from "@searxng-js/sex-errors";
 
 type Mapping = Record<string, unknown>;
+
+interface Yaml {
+  parse(text: string): unknown;
+  stringify(value: unknown, indent: number): string;
+}
+
+let yaml: Promise<Yaml> | undefined;
+
+/** Bun's built-in YAML; elsewhere the optional peer dependency `yaml`. */
+function loadYaml(): Promise<Yaml> {
+  if (typeof Bun !== "undefined")
+    return Promise.resolve({ parse: (t) => Bun.YAML.parse(t), stringify: (v, n) => Bun.YAML.stringify(v, null, n) });
+  yaml ??= import("yaml").then(
+    (lib) => ({ parse: (t) => lib.parse(t), stringify: (v, n) => lib.stringify(v, null, n) }),
+    (cause) => {
+      yaml = undefined;
+      throw new AppError(
+        "NOT_SUPPORTED",
+        "Generating SearXNG settings outside Bun needs the optional peer dependency `yaml`: run `npm install yaml`.",
+        {
+          cause: cause instanceof Error ? cause.message : String(cause),
+        },
+      );
+    },
+  );
+  return yaml;
+}
 
 const isMapping = (v: unknown): v is Mapping => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
- * The settings.yml sex writes for a managed SearXNG that has to go through `SEX_PROXY_URL`: `base` (the package's default
+ * The settings.yml written for a managed SearXNG that has to go through a proxy: `base` (the package's default
  * settings) parsed, `outgoing.proxies["all://"] = [url]` merged in (SearXNG's documented format: a pattern mapped to a list of
  * proxy URLs; whatever `base` already has under `outgoing` and `outgoing.proxies` stays), and written out again. Merging the
  * parsed document, not appending text, means a key the defaults gain later is never duplicated, and the serializer does the
  * quoting, so credentials with `:` `@` `#` or quotes survive.
  */
-export function proxiedSettings(proxyUrl: string, base: string = DEFAULT_SETTINGS): string {
-  const settings: unknown = Bun.YAML.parse(base);
+export async function proxiedSettings(proxyUrl: string, base: string = DEFAULT_SETTINGS): Promise<string> {
+  const { parse, stringify } = await loadYaml();
+  const settings: unknown = parse(base);
   const root: Mapping = isMapping(settings) ? settings : {};
   const outgoing = isMapping(root.outgoing) ? root.outgoing : {};
   const proxies = isMapping(outgoing.proxies) ? outgoing.proxies : {};
-  return Bun.YAML.stringify({ ...root, outgoing: { ...outgoing, proxies: { ...proxies, "all://": [proxyUrl] } } }, null, 2);
+  return stringify({ ...root, outgoing: { ...outgoing, proxies: { ...proxies, "all://": [proxyUrl] } } }, 2);
 }
 
 /**
- * The settings sex generates for the managed SearXNG, or undefined when the package's own default should be used.
- * Only a managed instance on sex's own settings gets the proxy: an external SearXNG (SEX_SEARXNG_URL) is not ours to configure,
- * and a settings file the operator wrote (SEX_SEARXNG_SETTINGS) keeps its own `outgoing`.
+ * The settings generated for the managed SearXNG, or undefined when the package's own default should be used.
+ * Only a managed instance on the default settings gets the proxy: an external SearXNG (`url`) is not ours to configure,
+ * and a settings file the operator wrote (`settingsPath`) keeps its own `outgoing`.
  */
-export function generatedSettings(config: Pick<Config, "searxngUrl" | "searxngSettings" | "proxyUrl">): string | undefined {
-  if (config.searxngUrl || config.searxngSettings || !config.proxyUrl) return undefined;
-  return proxiedSettings(config.proxyUrl);
+export async function generatedSettings(options: { url?: string; settingsPath?: string; proxyUrl?: string }): Promise<string | undefined> {
+  if (options.url || options.settingsPath || !options.proxyUrl) return undefined;
+  return proxiedSettings(options.proxyUrl);
 }
 
 /** `text` with the proxy URL and its credentials replaced, for server output that goes to a log or an error message. */

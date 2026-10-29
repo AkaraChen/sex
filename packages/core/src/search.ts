@@ -1,11 +1,11 @@
 import { AppError, badRequest, toAppError, unsupported } from "@searxng-js/sex-errors";
+import type { SearxngService } from "@searxng-js/sex-searxng";
 import type { LimitFunction } from "p-limit";
 import { Deadline } from "./deadline.ts";
 import { log } from "./log.ts";
 import { matchesQueryOperators, planOperatorQuery } from "./operators.ts";
 import type { Document, SearchData, SearchRequest } from "./schemas.ts";
 import { assertScrapeCapabilities, type ScrapeContext, scrapeUrl } from "./scrape.ts";
-import type { SearxngService } from "./searxng.ts";
 
 /** What a search runs on: SearXNG, plus everything a scrape needs for `scrapeOptions`. */
 export interface SearchContext extends ScrapeContext {

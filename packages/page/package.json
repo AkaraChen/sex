@@ -1,0 +1,31 @@
+{
+  "name": "@searxng-js/sex-page",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "HTML and PDF content extraction (Defuddle, unpdf) with a worker-thread pool, and Markdown to HTML",
+  "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/page" },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=24" },
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@searxng-js/sex-errors": "workspace:*",
+    "defuddle": "^0.19.6",
+    "linkedom": "^0.18.14",
+    "unpdf": "^1.9.1"
+  },
+  "peerDependencies": {
+    "marked": "^18"
+  },
+  "peerDependenciesMeta": {
+    "marked": { "optional": true }
+  },
+  "devDependencies": {
+    "marked": "^18"
+  }
+}

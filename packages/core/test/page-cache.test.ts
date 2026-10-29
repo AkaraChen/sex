@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { AppError } from "@searxng-js/sex-errors";
+import { extractFromHtmlInline } from "@searxng-js/sex-page";
 import type { BrowserScrapeOptions, BrowserScrapeResult, CachedPage, CacheKey, ScrapeBrowser, ScrapeCache } from "../src/capabilities.ts";
-import { extractFromHtmlInline } from "../src/page.ts";
 import { testCoreEngine, textPdf } from "./helpers.ts";
 
 /** A cache in a Map with a clock the test moves; the same age rules as the real one. */

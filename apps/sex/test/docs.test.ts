@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { MARKUP_TYPE } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
+import { markdownToHtml } from "@searxng-js/sex-page";
 import { Deadline } from "@sex/core/deadline.ts";
-import { markdownToHtml } from "@sex/core/markdown-html.ts";
 import { DocsConverter, type HereDocs } from "../src/engine/docs.ts";
 import { testEngine, textPdf } from "./helpers.ts";
 
@@ -215,7 +215,7 @@ describe("without SEX_DOCS", () => {
     expect(doc.html).toContain("<p>Text page 1</p>");
     expect(doc.html).toContain("<hr");
     expect(doc.rawHtml).toBe(doc.html);
-    expect(markdownToHtml("<script>alert(1)</script> and <img src=x onerror=y>")).not.toContain("<script");
+    expect(await markdownToHtml("<script>alert(1)</script> and <img src=x onerror=y>")).not.toContain("<script");
   });
 
   test("a PDF is returned as base64 when the parsers list leaves out pdf", async () => {

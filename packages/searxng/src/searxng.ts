@@ -3,8 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type SearxngServer, StartServerError, startServer } from "@searxng-js/searxng";
 import { AppError } from "@searxng-js/sex-errors";
-import type { CoreConfig as Config } from "./config.ts";
-import { log } from "./log.ts";
+import type { Logger } from "./logger.ts";
 import { generatedSettings, proxyHost, redactProxy } from "./searxng-settings.ts";
 
 /** How long a managed SearXNG gets to answer /healthz; the first start unpacks the binary. */
@@ -13,6 +12,22 @@ const STARTUP_TIMEOUT_MS = 60_000;
 const START_FAILURE_LIMIT = 3;
 const START_FAILURE_WINDOW_MS = 60_000;
 const START_COOLDOWN_MS = 30_000;
+
+export interface SearxngOptions {
+  /** An external SearXNG (a base URL). Without one the service runs a SearXNG child process. */
+  url?: string;
+  /** The SearXNG executable to run (default: the prebuilt binary of `@searxng-js/searxng`). */
+  binaryPath?: string;
+  /** A settings.yml of your own for the child process (default: the package's minimal settings). */
+  settingsPath?: string;
+  /**
+   * Outgoing proxy URL (it may carry credentials). Applied to a managed instance on the default settings only: an external
+   * SearXNG is not ours to configure and a `settingsPath` file keeps its own `outgoing`.
+   */
+  proxyUrl?: string;
+  /** Log lines; silent without one. Proxy credentials never reach it. */
+  logger?: Logger;
+}
 
 const unavailable = (message: string) => new AppError("SEARCH_BACKEND_UNAVAILABLE", message);
 
@@ -26,10 +41,10 @@ const tail = (output: string, lines = 5) =>
     .join(" | ");
 
 /**
- * The SearXNG instance searches go to: the external one at SEX_SEARXNG_URL, or else a SearXNG child process
- * (the prebuilt binary from @searxng-js/searxng, embedded in `dist/sex`). The child is started on first use (or by
+ * The SearXNG instance searches go to: the external one at `options.url`, or else a SearXNG child process
+ * (the prebuilt binary from @searxng-js/searxng). The child is started on first use (or by
  * `serve` warmup), started again after it exits, and not restarted for a cooldown after repeated failed starts.
- * It exits with sex even on SIGKILL: it watches its stdin pipe.
+ * It exits with its parent even on SIGKILL: it watches its stdin pipe.
  */
 export class SearxngService {
   private server?: Promise<SearxngServer>;
@@ -38,11 +53,11 @@ export class SearxngService {
   private cooldownUntil = 0;
   private lastStartError = "";
 
-  constructor(private readonly config: Config) {}
+  constructor(private readonly options: SearxngOptions = {}) {}
 
-  /** True when sex runs SearXNG itself (no SEX_SEARXNG_URL). */
+  /** True when this service runs SearXNG itself (no `url`). */
   get managed(): boolean {
-    return !this.config.searxngUrl;
+    return !this.options.url;
   }
 
   /** PID of the managed SearXNG process, while there is one. */
@@ -52,7 +67,7 @@ export class SearxngService {
 
   /** Base URL without a trailing slash; starts the managed instance if needed. */
   async url(): Promise<string> {
-    if (this.config.searxngUrl) return this.config.searxngUrl;
+    if (this.options.url) return this.options.url;
     return (await this.getServer()).url;
   }
 
@@ -62,7 +77,7 @@ export class SearxngService {
   }
 
   describe(): string {
-    if (this.config.searxngUrl) return this.config.searxngUrl;
+    if (this.options.url) return this.options.url;
     return this.running ? `managed (${this.running.url}, pid ${this.running.pid})` : "managed (not started)";
   }
 
@@ -85,33 +100,33 @@ export class SearxngService {
       );
     }
     const started = performance.now();
-    const { proxyUrl } = this.config;
-    const generated = generatedSettings(this.config);
+    const { proxyUrl, logger } = this.options;
+    const generated = await generatedSettings(this.options);
     if (proxyUrl && !generated && this.managed) {
-      log.info("SEX_PROXY_URL is not applied to SearXNG: SEX_SEARXNG_SETTINGS is the operator's file; set outgoing.proxies in it");
+      logger?.info("The proxy is not applied to SearXNG: the settings file is the operator's own; set outgoing.proxies in it");
     }
     let server: SearxngServer;
     let settingsDir: string | undefined;
     try {
-      let settingsPath = this.config.searxngSettings;
+      let settingsPath = this.options.settingsPath;
       if (generated !== undefined) {
         // The file holds the proxy's credentials: private directory and mode, and gone as soon as SearXNG has read it.
         settingsDir = await mkdtemp(join(tmpdir(), "sex-searxng-"));
         settingsPath = join(settingsDir, "settings.yml");
         await writeFile(settingsPath, generated, { mode: 0o600 });
-        log.info("searxng outgoing requests go through the proxy", { proxy: proxyHost(this.config.proxyUrl as string) });
+        this.options.logger?.info("searxng outgoing requests go through the proxy", { proxy: proxyHost(this.options.proxyUrl as string) });
       }
       server = await startServer({
-        binaryPath: this.config.searxngPath,
+        binaryPath: this.options.binaryPath,
         settingsPath,
         timeoutMs: STARTUP_TIMEOUT_MS,
-        onOutput: (chunk) => log.debug("searxng", { output: redactProxy(chunk.trimEnd(), proxyUrl) }),
+        onOutput: (chunk) => this.options.logger?.debug("searxng", { output: redactProxy(chunk.trimEnd(), proxyUrl) }),
       });
     } catch (err) {
       const output = err instanceof StartServerError ? redactProxy(tail(err.output), proxyUrl) : "";
       const reason = redactProxy((err instanceof Error ? err.message : String(err)).split("\n--- server output ---")[0] ?? "", proxyUrl);
       const failure = unavailable(
-        `SearXNG did not start: ${reason}${output ? ` (output: ${output})` : ""}. Set SEX_SEARXNG_URL to use a running SearXNG instead.`,
+        `SearXNG did not start: ${reason}${output ? ` (output: ${output})` : ""}. Use a running SearXNG instead (the url option).`,
       );
       this.recordStartFailure(failure.message);
       throw failure;
@@ -120,10 +135,10 @@ export class SearxngService {
     }
     this.startFailures = [];
     this.running = server;
-    log.info("searxng started", { url: server.url, pid: server.pid, ms: Math.round(performance.now() - started) });
+    this.options.logger?.info("searxng started", { url: server.url, pid: server.pid, ms: Math.round(performance.now() - started) });
     void server.exited.then((code) => {
       if (this.running !== server) return;
-      log.warn("searxng exited", { code });
+      this.options.logger?.warn("searxng exited", { code });
       this.running = undefined;
       this.server = undefined;
     });
@@ -137,7 +152,7 @@ export class SearxngService {
     if (this.startFailures.length < START_FAILURE_LIMIT) return;
     this.startFailures = [];
     this.cooldownUntil = now + START_COOLDOWN_MS;
-    log.error("searxng keeps failing to start; pausing restarts", {
+    this.options.logger?.error("searxng keeps failing to start; pausing restarts", {
       failures: START_FAILURE_LIMIT,
       pauseMs: START_COOLDOWN_MS,
       error: message,

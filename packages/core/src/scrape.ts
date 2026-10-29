@@ -18,6 +18,7 @@ import {
   toAppError,
   unsupported,
 } from "@searxng-js/sex-errors";
+import { type ExtractPool, joinPages, markdownToHtml, type PageExtractResult, type PdfPage } from "@searxng-js/sex-page";
 import type { LimitFunction } from "p-limit";
 import {
   type BrowserScrapeResult,
@@ -33,12 +34,9 @@ import {
 import { type ChangeTrackingRequest, trackChanges } from "./change-tracking.ts";
 import type { CoreConfig } from "./config.ts";
 import { Deadline } from "./deadline.ts";
-import type { ExtractPool } from "./extract-pool.ts";
+import { extractHtmlWithin, extractPdfWithin } from "./extract-within.ts";
 import { fetchWithin } from "./fetch-within.ts";
 import { log } from "./log.ts";
-import { markdownToHtml } from "./markdown-html.ts";
-import type { PageExtractResult } from "./page.ts";
-import { joinPages, type PdfPage } from "./pdf.ts";
 import type { Document, FormatOption, ScrapeOptions } from "./schemas.ts";
 
 /** What a scrape runs on. The optional capabilities are used only when present and `enabled`. */
@@ -496,9 +494,9 @@ async function scrapeInner(
     const res = await fetchBody(opts);
     const out: FetchedPage = { url: res.url, status: res.status, contentType: res.contentType, rawHtml: "", proxyUsed: fetchedVia };
     /** A converted document's `html` and `rawHtml` are its Markdown rendered; only worked out when asked for. */
-    const setMarkdown = (markdown: string) => {
+    const setMarkdown = async (markdown: string) => {
       out.plainMarkdown = markdown;
-      if (formats.html || formats.rawHtml) out.rawHtml = markdownToHtml(markdown);
+      if (formats.html || formats.rawHtml) out.rawHtml = await markdownToHtml(markdown);
     };
     const isPdf = /application\/pdf/i.test(out.contentType) || startsWith(res.body, "%PDF-");
     if (isPdf) {
@@ -514,34 +512,34 @@ async function scrapeInner(
       if (docs) {
         const doc = await convertDocument(docs, res.body, out.url, parsers.maxPages, deadline, warns);
         out.pdfPages = doc.pages;
-        setMarkdown(pageMarkers(doc.markdown, doc.pages, warns));
+        await setMarkdown(pageMarkers(doc.markdown, doc.pages, warns));
         // `numPages` is what was converted, `totalPages` what the file has.
         const converted =
           doc.pagesConverted ?? (doc.numPages === undefined ? undefined : Math.min(doc.numPages, parsers.maxPages ?? doc.numPages));
         out.pdfMeta = { numPages: converted, totalPages: doc.numPages };
       } else {
-        const pdf = await ctx.extractPool.pdf(res.body, parsers.maxPages, deadline);
+        const pdf = await extractPdfWithin(ctx.extractPool, res.body, parsers.maxPages, deadline);
         out.pdfPages = pdf.pages;
-        setMarkdown(pageMarkers(pdf.markdown, pdf.pages, warns));
+        await setMarkdown(pageMarkers(pdf.markdown, pdf.pages, warns));
         out.pdfMeta = { title: pdf.title, numPages: pdf.numPages, totalPages: pdf.totalPages };
         if (pdf.numPages < pdf.totalPages) warns.push(`Extracted the first ${pdf.numPages} of ${pdf.totalPages} pages (parsers maxPages)`);
       }
       out.contentType ||= "application/pdf";
     } else if (!out.contentType && docs && isConvertibleByExtension(out.url, parsers.image)) {
-      setMarkdown((await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown);
+      await setMarkdown((await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown);
     } else if (docs && /^text\/csv/i.test(out.contentType)) {
       // The URL need not say it is CSV (a Google Sheets export does not), so the content type becomes the file name.
-      setMarkdown((await convertDocument(docs, res.body, out.url, undefined, deadline, warns, "data.csv")).markdown);
+      await setMarkdown((await convertDocument(docs, res.body, out.url, undefined, deadline, warns, "data.csv")).markdown);
     } else if (!out.contentType || MARKUP_TYPE.test(out.contentType)) {
       out.rawHtml = decodeBody(res.body, out.contentType);
-      out.extracted = await ctx.extractPool.html(out.rawHtml, { ...extractOpts, url: out.url }, deadline);
+      out.extracted = await extractHtmlWithin(ctx.extractPool, out.rawHtml, { ...extractOpts, url: out.url }, deadline);
     } else if (/^(text\/|application\/(json|javascript|x-ndjson))/i.test(out.contentType)) {
       const text = decodeBody(res.body, out.contentType);
       out.plainMarkdown = /json/i.test(out.contentType) ? `\`\`\`json\n${text}\n\`\`\`` : text;
       out.rawHtml = text;
     } else if (docs && (parsers.image || !/^image\//i.test(out.contentType))) {
       // Office documents, EPUB, RTF and (with the "image" parser) raster images; here-docs detects the format from the bytes.
-      setMarkdown((await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown);
+      await setMarkdown((await convertDocument(docs, res.body, out.url, undefined, deadline, warns)).markdown);
     } else {
       throw new AppError("UNSUPPORTED_FILE", `Unsupported content type: ${out.contentType}`);
     }

@@ -64,15 +64,13 @@
         "@orpc/openapi": "^1.16.1",
         "@orpc/server": "^1.16.1",
         "@orpc/zod": "^1.16.1",
-        "@searxng-js/searxng": "0.1.0",
         "@searxng-js/sex-egress": "workspace:*",
         "@searxng-js/sex-errors": "workspace:*",
+        "@searxng-js/sex-page": "workspace:*",
+        "@searxng-js/sex-searxng": "workspace:*",
         "citty": "^0.2.2",
-        "defuddle": "^0.19.6",
         "hono": "^4.13.14",
-        "linkedom": "^0.18.14",
         "p-limit": "^7.3.3",
-        "unpdf": "^1.9.1",
         "zod": "^4.6.7",
       },
     },
@@ -87,6 +85,42 @@
     "packages/errors": {
       "name": "@searxng-js/sex-errors",
       "version": "0.0.0",
+    },
+    "packages/page": {
+      "name": "@searxng-js/sex-page",
+      "version": "0.0.0",
+      "dependencies": {
+        "@searxng-js/sex-errors": "workspace:*",
+        "defuddle": "^0.19.6",
+        "linkedom": "^0.18.14",
+        "unpdf": "^1.9.1",
+      },
+      "devDependencies": {
+        "marked": "^18",
+      },
+      "peerDependencies": {
+        "marked": "^18",
+      },
+      "optionalPeers": [
+        "marked",
+      ],
+    },
+    "packages/searxng": {
+      "name": "@searxng-js/sex-searxng",
+      "version": "0.0.0",
+      "dependencies": {
+        "@searxng-js/searxng": "0.1.0",
+        "@searxng-js/sex-errors": "workspace:*",
+      },
+      "devDependencies": {
+        "yaml": "^2",
+      },
+      "peerDependencies": {
+        "yaml": "^2",
+      },
+      "optionalPeers": [
+        "yaml",
+      ],
     },
   },
   "packages": {
@@ -371,6 +405,10 @@
     "@searxng-js/sex-egress": ["@searxng-js/sex-egress@workspace:packages/egress"],
 
     "@searxng-js/sex-errors": ["@searxng-js/sex-errors@workspace:packages/errors"],
+
+    "@searxng-js/sex-page": ["@searxng-js/sex-page@workspace:packages/page"],
+
+    "@searxng-js/sex-searxng": ["@searxng-js/sex-searxng@workspace:packages/searxng"],
 
     "@searxng-js/win32-x64": ["@searxng-js/win32-x64@0.1.0", "", { "os": "win32", "cpu": "x64" }, "sha512-Nj1pd13/PgAqiM1WosZSgNNNmak4fwQkiTfnQG8FaFbEcWuPbC3JwdUUfdBNfFYI55FpVw+n4eVi7srjltDuvQ=="],
 
@@ -724,6 +762,8 @@
 
     "lodash.startcase": ["lodash.startcase@4.4.0", "", {}, "sha512-+WKqsK294HMSc2jEbNgpHpd0JfIBhp7rEV4aqXWqFr6AlXov+SlcgB1Fv01y2kGe3Gc8nMW7VA0SrGuSkRfIEg=="],
 
+    "marked": ["marked@18.1.2", "", { "bin": { "marked": "bin/marked.js" } }, "sha512-DfOnvLAQ6WYeWxWO1u4RyFOeqyHup6dks5PPqnoFiooU7ipRvidO/2j8plhAHIiZg574E9ZlzSjUiPMLAzFkgg=="],
+
     "math-intrinsics": ["math-intrinsics@1.1.0", "", {}, "sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g=="],
 
     "mathml-to-latex": ["mathml-to-latex@1.8.0", "", { "dependencies": { "@xmldom/xmldom": "^0.9.10" } }, "sha512-gQ0uK3zqB8HwlfaXJkEL5rgaZNbKUiBMmBP/B/W+b+t6KcseLSuYb1b0BjLgS9ZiQa24ePkqTX8/6FaQuDL7wQ=="],
@@ -949,6 +989,8 @@
     "xsai": ["xsai@1.0.0-beta.3", "", { "dependencies": { "@xsai/audio": "1.0.0-beta.3", "@xsai/decide": "1.0.0-beta.3", "@xsai/embed": "1.0.0-beta.3", "@xsai/image": "1.0.0-beta.3", "@xsai/model": "1.0.0-beta.3", "@xsai/shared": "1.0.0-beta.3", "@xsai/text": "1.0.0-beta.3", "@xsai/text-chat": "1.0.0-beta.3", "@xsai/text-messages": "1.0.0-beta.3", "@xsai/text-responses": "1.0.0-beta.3" } }, "sha512-imNKVlF2hXlPtjJwMQpMlUU0lVyB5TojKUt8EArArCLyp0z9+HhdOPpgvb7G5GhF/RIfGwxhhtkWSI4il38rWw=="],
 
     "y18n": ["y18n@5.0.8", "", {}, "sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA=="],
+
+    "yaml": ["yaml@2.9.1", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw=="],
 
     "yargs": ["yargs@18.2.0", "", { "dependencies": { "cliui": "^9.0.1", "escalade": "^3.1.1", "get-caller-file": "^2.0.5", "string-width": "^8.2.1", "y18n": "^5.0.5", "yargs-parser": "^22.0.0" } }, "sha512-9OpKOLeaoNFecEp7P6iYbzze/5CqWoH7N3SMs/6y1XF4nMvFMspEGZzJ6uFi9MmQwXhyzqYoSEKO3tvA3Z/o2w=="],
 

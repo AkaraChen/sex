@@ -1,14 +1,15 @@
 // Measures where Defuddle spends its time on big pages, and what the large-page fast path (page-script.js) saves.
 //
-//   bun packages/core/scripts/bench-extract.ts [stages|compare] [--runs 3]
+//   bun --conditions sex-source packages/page/scripts/bench-extract.ts [stages|compare] [--runs 3]
 //
 // `stages`: Defuddle's own per-step profile (`profile: true`) for default extraction, at growing page sizes.
 // `compare`: the whole page script with the fast path off (threshold Infinity) and on, plus a normal page to show it is unaffected.
 // The pages are synthetic: a feed of cards (nested divs, links, images, lists) around one article, which is what makes
 // real 2-3 MB pages slow. Sizes are bytes of HTML; "nodes" are elements.
+
+import { extractFromHtmlInline } from "@searxng-js/sex-page";
 import { Defuddle } from "defuddle/node";
 import { parseHTML } from "linkedom";
-import { extractFromHtmlInline } from "../src/page.ts";
 
 export function bigPage(cards: number, articleParagraphs = 6): string {
   const card = (i: number) =>

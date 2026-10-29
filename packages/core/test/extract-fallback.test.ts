@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractFromHtmlInline, type PageExtractOptions } from "../src/page.ts";
+import { extractFromHtmlInline, type PageExtractOptions } from "@searxng-js/sex-page";
 import { scrapeUrl } from "../src/scrape.ts";
 import { testCoreEngine } from "./helpers.ts";
 

@@ -1,6 +1,5 @@
+import type { PageExtractOptions, PageExtractResult, PdfPage } from "@searxng-js/sex-page";
 import type { Deadline } from "./deadline.ts";
-import type { PageExtractOptions, PageExtractResult } from "./page.ts";
-import type { PdfPage } from "./pdf.ts";
 import type { Action, ChangeTrackingResult } from "./schemas.ts";
 
 /**

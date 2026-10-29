@@ -124,7 +124,7 @@ console.log(
   `embedding here-docs for ${platform.os}-${platform.cpu}${platform.libc ? `-${platform.libc}` : ""}: ${packages.size} packages, ${files.length} files, ${(bytes / 2 ** 20).toFixed(0)} MiB (digest ${digest})`,
 );
 try {
-  // --root: the core extract-pool finds the embedded worker at <root>/packages/core/src/extract-worker.ts.
+  // --root: the sex-page extract pool finds the embedded worker at <root>/packages/page/src/extract-worker.ts.
   const args = [
     "build",
     "--compile",
@@ -138,7 +138,7 @@ try {
     root,
   ];
   if (values.target) args.push("--target", values.target);
-  args.push(entry, join(root, "packages/core/src/extract-worker.ts"), "--outfile", values.outfile as string);
+  args.push(entry, join(root, "packages/page/src/extract-worker.ts"), "--outfile", values.outfile as string);
   const proc = Bun.spawnSync(["bun", ...args], { cwd: root, stdout: "inherit", stderr: "inherit" });
   if (proc.exitCode !== 0) process.exit(proc.exitCode ?? 1);
 } finally {

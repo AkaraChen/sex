@@ -1,14 +1,19 @@
+import { Worker } from "node:worker_threads";
 import { AppError, isErrorCode } from "@searxng-js/sex-errors";
-import type { Deadline } from "./deadline.ts";
-import { log } from "./log.ts";
+import type { Logger } from "./logger.ts";
 import { extractFromHtmlInline, type PageExtractOptions, type PageExtractResult } from "./page.ts";
 import { type PdfText, pdfToMarkdown } from "./pdf.ts";
 
-// In a compiled binary, extra entrypoints are embedded relative to the build's --root (the repo root), so the worker sits under
-// packages/core/src/; the build scripts of sex and sex-lite both pass that root.
-const WORKER_URL = import.meta.url.includes("$bunfs")
-  ? new URL("./packages/core/src/extract-worker.ts", import.meta.url).href
-  : new URL("./extract-worker.ts", import.meta.url).href;
+/**
+ * Where the worker module is. Next to this file in `dist/` (built as a second entry) and in `src/`; in a compiled Bun binary
+ * extra entrypoints are embedded relative to the build's --root (the repo root), so it sits under packages/page/src/ (the
+ * build scripts of sex and sex-lite both pass that root).
+ */
+function defaultWorkerUrl(): URL {
+  const here = import.meta.url;
+  if (here.includes("$bunfs")) return new URL("./packages/page/src/extract-worker.ts", here);
+  return new URL(here.endsWith(".ts") ? "./extract-worker.ts" : "./extract-worker.js", here);
+}
 
 type JobMsg = { kind: "html"; html: string; opts: PageExtractOptions } | { kind: "pdf"; pdf: Uint8Array; maxPages?: number };
 
@@ -27,6 +32,48 @@ interface Slot {
   job?: Job;
 }
 
+export interface ExtractPoolOptions {
+  /** Worker threads; 0 runs everything on the calling thread. */
+  size: number;
+  /** A job that a worker has had this long is abandoned (`EXTRACT_TIMEOUT`) and its worker replaced. */
+  taskTimeoutMs: number;
+  logger?: Logger;
+  /** The worker module; by default `extract-worker.js` next to this file (`.ts` when running from source). */
+  workerUrl?: URL | string;
+}
+
+/** The error for an aborted `signal`: time ran out (`TimeoutError`) or the caller cancelled. */
+function abortError(signal: AbortSignal, what: string): AppError {
+  const reason = signal.reason as { name?: string } | undefined;
+  if (reason?.name === "TimeoutError") return new AppError("SCRAPE_TIMEOUT", `Timed out ${what}`);
+  return new AppError("TIMEOUT", `Request cancelled ${what}`);
+}
+
+/** Settles with `promise`, or with the abort error as soon as `signal` aborts, even though the work behind `promise` cannot be interrupted. */
+function bound<T>(promise: Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
+  promise.catch(() => {});
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const done = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      done();
+      reject(abortError(signal, what));
+    };
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => {
+        done();
+        resolve(v);
+      },
+      (e) => {
+        done();
+        reject(signal.aborted ? abortError(signal, what) : e);
+      },
+    );
+  });
+}
+
 const closedError = () => new AppError("EXTRACT_FAILED", "Extraction pool is closed");
 
 /**
@@ -39,20 +86,30 @@ export class ExtractPool {
   private nextId = 1;
   private closed = false;
 
-  constructor(
-    readonly size: number,
-    readonly taskTimeoutMs: number,
-  ) {}
+  readonly size: number;
+  readonly taskTimeoutMs: number;
+  private readonly logger?: Logger;
+  private readonly workerUrl: URL | string;
 
-  /** Extraction stops waiting when `deadline` ends (a job already handed to a worker is abandoned and its worker replaced). */
-  html(html: string, opts: PageExtractOptions, deadline: Deadline): Promise<PageExtractResult> {
-    if (this.size === 0) return deadline.bound(extractFromHtmlInline(html, opts), "while extracting the page content");
-    return this.run({ kind: "html", html, opts }, deadline) as Promise<PageExtractResult>;
+  constructor(options: ExtractPoolOptions) {
+    this.size = options.size;
+    this.taskTimeoutMs = options.taskTimeoutMs;
+    this.logger = options.logger;
+    this.workerUrl = options.workerUrl ?? defaultWorkerUrl();
   }
 
-  pdf(bytes: Uint8Array, maxPages: number | undefined, deadline: Deadline): Promise<PdfText> {
-    if (this.size === 0) return deadline.bound(pdfToMarkdown(bytes, maxPages), "while extracting the PDF text");
-    return this.run({ kind: "pdf", pdf: bytes, maxPages }, deadline) as Promise<PdfText>;
+  /**
+   * Extraction stops waiting when `signal` aborts (a job already handed to a worker is abandoned and its worker replaced).
+   * An abort is `SCRAPE_TIMEOUT` when the signal's reason is a `TimeoutError`, `TIMEOUT` (cancelled) otherwise.
+   */
+  html(html: string, opts: PageExtractOptions, signal?: AbortSignal): Promise<PageExtractResult> {
+    if (this.size === 0) return bound(extractFromHtmlInline(html, opts), signal, "while extracting the page content");
+    return this.run({ kind: "html", html, opts }, signal) as Promise<PageExtractResult>;
+  }
+
+  pdf(bytes: Uint8Array, maxPages?: number, signal?: AbortSignal): Promise<PdfText> {
+    if (this.size === 0) return bound(pdfToMarkdown(bytes, maxPages), signal, "while extracting the PDF text");
+    return this.run({ kind: "pdf", pdf: bytes, maxPages }, signal) as Promise<PdfText>;
   }
 
   async close(): Promise<void> {
@@ -69,21 +126,21 @@ export class ExtractPool {
     }
   }
 
-  private run(msg: JobMsg, deadline: Deadline): Promise<unknown> {
+  private run(msg: JobMsg, signal: AbortSignal | undefined): Promise<unknown> {
     if (this.closed) return Promise.reject(closedError());
     const what = msg.kind === "pdf" ? "while extracting the PDF text" : "while extracting the page content";
     return new Promise((resolve, reject) => {
-      if (deadline.signal.aborted) return reject(deadline.translate(undefined, what));
-      const onAbort = () => this.abort(job, deadline.translate(undefined, what) as AppError);
+      if (signal?.aborted) return reject(abortError(signal, what));
+      const onAbort = () => this.abort(job, abortError(signal as AbortSignal, what));
       // Whichever way the job ends, it stops listening.
       const settle =
         <T>(fn: (value: T) => void) =>
         (value: T) => {
-          deadline.signal.removeEventListener("abort", onAbort);
+          signal?.removeEventListener("abort", onAbort);
           fn(value);
         };
       const job: Job = { id: this.nextId++, msg, resolve: settle(resolve), reject: settle(reject) };
-      deadline.signal.addEventListener("abort", onAbort, { once: true });
+      signal?.addEventListener("abort", onAbort, { once: true });
       this.queue.push(job);
       this.dispatch();
     });
@@ -120,12 +177,13 @@ export class ExtractPool {
   }
 
   private spawn(): Slot {
-    const worker = new Worker(WORKER_URL);
+    const worker = new Worker(this.workerUrl);
     const slot: Slot = { worker };
     this.slots.push(slot);
-    worker.onmessage = (e: MessageEvent<WorkerReply>) => this.onReply(slot, e.data);
-    worker.onerror = (e: ErrorEvent) =>
-      this.drop(slot, new AppError("EXTRACT_FAILED", `Extraction worker failed: ${e.message || "unknown error"}`));
+    worker.on("message", (reply: WorkerReply) => this.onReply(slot, reply));
+    worker.on("error", (e: Error) =>
+      this.drop(slot, new AppError("EXTRACT_FAILED", `Extraction worker failed: ${e.message || "unknown error"}`)),
+    );
     return slot;
   }
 
@@ -152,7 +210,7 @@ export class ExtractPool {
     if (!this.slots.includes(slot)) return;
     this.slots = this.slots.filter((s) => s !== slot);
     slot.worker.terminate();
-    log.warn("extraction worker replaced", { code: err.code, reason: err.message });
+    this.logger?.warn("extraction worker replaced", { code: err.code, reason: err.message });
     const job = slot.job;
     slot.job = undefined;
     if (job) {

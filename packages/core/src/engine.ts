@@ -1,11 +1,12 @@
+import { ExtractPool } from "@searxng-js/sex-page";
+import { SearxngService } from "@searxng-js/sex-searxng";
 import pLimit from "p-limit";
 import type { ChangeTracker, ScrapeBrowser, ScrapeCache, ScrapeDocs, ScrapeLlm } from "./capabilities.ts";
 import type { CoreConfig } from "./config.ts";
-import { ExtractPool } from "./extract-pool.ts";
+import { log } from "./log.ts";
 import type { Document, ScrapeRequest, SearchData, SearchRequest } from "./schemas.ts";
 import { type MissingHints, scrapeUrl } from "./scrape.ts";
 import { type SearchContext, search } from "./search.ts";
-import { SearxngService } from "./searxng.ts";
 
 /**
  * Search and fetch, shared by every front-end (HTTP, MCP, CLI). sex-lite uses it as is; sex extends it with a browser,
@@ -31,9 +32,15 @@ export class BaseEngine<C extends CoreConfig = CoreConfig> implements SearchCont
     opts: { missingHints?: MissingHints } = {},
   ) {
     this.missingHints = opts.missingHints;
-    this.searxng = new SearxngService(config);
+    this.searxng = new SearxngService({
+      url: config.searxngUrl,
+      binaryPath: config.searxngPath,
+      settingsPath: config.searxngSettings,
+      proxyUrl: config.proxyUrl,
+      logger: log,
+    });
     this.scrapeLimit = pLimit(config.concurrency);
-    this.extractPool = new ExtractPool(config.extractWorkers, Math.max(10_000, config.timeout));
+    this.extractPool = new ExtractPool({ size: config.extractWorkers, taskTimeoutMs: Math.max(10_000, config.timeout), logger: log });
   }
 
   async scrape(req: ScrapeRequest, signal?: AbortSignal): Promise<Document> {

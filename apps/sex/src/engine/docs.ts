@@ -2,9 +2,9 @@ import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:f
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { AppError } from "@searxng-js/sex-errors";
+import type { PdfPage } from "@searxng-js/sex-page";
 import type { DocsConvertOptions, DocsResult, DocsWarning, ScrapeDocs } from "@sex/core/capabilities.ts";
 import { log } from "@sex/core/log.ts";
-import type { PdfPage } from "@sex/core/pdf.ts";
 import type { ConvertEngine } from "here-docs";
 import pLimit from "p-limit";
 import type { Config } from "../config.ts";

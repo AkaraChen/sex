@@ -19,6 +19,8 @@
 |---|---|
 | `packages/core`（`@sex/core`） | 两个产品共用的部分：SearXNG 搜索、HTTP 抓取 + Defuddle 提取、SSRF 防护、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` 两个 MCP 工具、CLI 的公共部分 |
 | `packages/egress`（`@searxng-js/sex-egress`，发布到 npm） | SSRF 安全的出站请求：`EgressPolicy`、`safeFetch`、`rewriteUrl`。Bun 和 Node 24 都能用，用法见 [packages/egress/README.md](packages/egress/README.md) |
+| `packages/page`（`@searxng-js/sex-page`，发布到 npm） | HTML 和 PDF 提取（Defuddle、unpdf、worker 线程池）、Markdown 转 HTML。Bun 和 Node 24 都能用；Node 上转 Markdown 需要装可选 peer `marked`，用法见 [packages/page/README.md](packages/page/README.md) |
+| `packages/searxng`（`@searxng-js/sex-searxng`，发布到 npm） | 连接外部 SearXNG，或把预编译的 SearXNG 作为子进程托管。Node 上给托管实例配代理需要装可选 peer `yaml`，用法见 [packages/searxng/README.md](packages/searxng/README.md) |
 | `packages/errors`（`@searxng-js/sex-errors`，私有） | `AppError` 和错误目录（`ERRORS`），打包进用到它的包；跨包判断错误用 `AppError.isInstance` |
 | `apps/sex` | 完整版：在 core 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
 | `apps/sex-lite` | 轻量版：只用 core |
@@ -461,7 +463,7 @@ bun run test      # 即 bun test --conditions sex-source（monorepo 内的包经
 
 ```bash
 SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test --conditions sex-source apps/sex/test/browser.test.ts apps/sex/test/egress-browser.test.ts   # 需要一个正在运行的 CDP 浏览器（Chrome）；egress-browser 是真浏览器经 EgressProxy 的 SSRF 用例
-SEX_TEST_SEARXNG=1 bun test --conditions sex-source packages/core/test/searxng.test.ts                   # 启动真的 SearXNG 二进制（可用 SEX_TEST_SEARXNG_PATH 指定），需要外网
+SEX_TEST_SEARXNG=1 bun test --conditions sex-source packages/searxng/test/searxng.test.ts                   # 启动真的 SearXNG 二进制（可用 SEX_TEST_SEARXNG_PATH 指定），需要外网
 SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test --conditions sex-source apps/sex/test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
 ```
 
