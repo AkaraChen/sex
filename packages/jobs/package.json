@@ -23,10 +23,7 @@
     }
   },
   "dependencies": {
-    "@searxng-js/sex-diagnostics": "workspace:*",
-    "@searxng-js/sex-documents-s3": "workspace:*",
     "@searxng-js/sex-egress": "workspace:*",
-    "@searxng-js/sex-errors": "workspace:*",
     "@searxng-js/sex-map": "workspace:*",
     "@searxng-js/sex-scrape": "workspace:*",
     "p-limit": "^7.3.3",
@@ -42,6 +39,9 @@
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3",
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-documents-s3": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
     "@searxng-js/sex-page": "workspace:*"
   }
 }

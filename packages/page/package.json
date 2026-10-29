@@ -14,8 +14,6 @@
     }
   },
   "dependencies": {
-    "@searxng-js/sex-diagnostics": "workspace:*",
-    "@searxng-js/sex-errors": "workspace:*",
     "defuddle": "^0.19.6",
     "linkedom": "^0.18.14",
     "unpdf": "^1.9.1"
@@ -27,6 +25,8 @@
     "marked": { "optional": true }
   },
   "devDependencies": {
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
     "marked": "^18"
   }
 }

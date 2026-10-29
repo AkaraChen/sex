@@ -14,9 +14,7 @@
     }
   },
   "dependencies": {
-    "@searxng-js/searxng": "0.1.0",
-    "@searxng-js/sex-diagnostics": "workspace:*",
-    "@searxng-js/sex-errors": "workspace:*"
+    "@searxng-js/searxng": "0.1.0"
   },
   "peerDependencies": {
     "yaml": "^2"
@@ -25,6 +23,8 @@
     "yaml": { "optional": true }
   },
   "devDependencies": {
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
     "yaml": "^2"
   }
 }

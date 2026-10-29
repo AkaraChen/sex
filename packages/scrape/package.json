@@ -14,12 +14,14 @@
     }
   },
   "dependencies": {
-    "@searxng-js/sex-deadline": "workspace:*",
-    "@searxng-js/sex-diagnostics": "workspace:*",
     "@searxng-js/sex-egress": "workspace:*",
-    "@searxng-js/sex-errors": "workspace:*",
     "@searxng-js/sex-page": "workspace:*",
     "p-limit": "^7.3.3",
     "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@searxng-js/sex-deadline": "workspace:*",
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*"
   }
 }

@@ -23,7 +23,6 @@
     }
   },
   "dependencies": {
-    "@searxng-js/sex-errors": "workspace:*",
     "ipaddr.js": "^2"
   },
   "peerDependencies": {
@@ -35,6 +34,7 @@
     }
   },
   "devDependencies": {
+    "@searxng-js/sex-errors": "workspace:*",
     "undici": "^8"
   }
 }

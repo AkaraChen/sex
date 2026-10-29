@@ -23,9 +23,6 @@
     }
   },
   "dependencies": {
-    "@searxng-js/sex-deadline": "workspace:*",
-    "@searxng-js/sex-diagnostics": "workspace:*",
-    "@searxng-js/sex-errors": "workspace:*",
     "here-docs": "github:AkaraChen/here-docs#40febc7",
     "p-limit": "^7.3.3"
   },
@@ -33,6 +30,9 @@
     "@searxng-js/sex-scrape": "workspace:^"
   },
   "devDependencies": {
+    "@searxng-js/sex-deadline": "workspace:*",
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
     "@searxng-js/sex-scrape": "workspace:*"
   }
 }

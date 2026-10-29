@@ -1,3 +1,4 @@
+import { setTimeout as wait } from "node:timers/promises";
 import { AppError, type ErrorCode } from "@searxng-js/sex-errors";
 
 /**
@@ -157,22 +158,11 @@ export class Deadline {
 
   /** Waits `ms`, or until the deadline is over (then throws like `throwIfAborted`). */
   async sleep(ms: number, what?: string): Promise<void> {
-    this.throwIfAborted(what);
-    await new Promise<void>((resolve, reject) => {
-      const done = () => {
-        clearTimeout(timer);
-        this.signal.removeEventListener("abort", onAbort);
-      };
-      const onAbort = () => {
-        done();
-        reject(this.abortError(what));
-      };
-      const timer = setTimeout(() => {
-        done();
-        resolve();
-      }, ms);
-      this.signal.addEventListener("abort", onAbort, { once: true });
-    });
+    try {
+      await wait(ms, undefined, { signal: this.signal });
+    } catch (err) {
+      throw this.translate(err, what);
+    }
   }
 
   /**
@@ -181,25 +171,14 @@ export class Deadline {
    */
   bound<T>(promise: Promise<T>, what?: string): Promise<T> {
     promise.catch(() => {});
-    return new Promise<T>((resolve, reject) => {
-      const done = () => this.signal.removeEventListener("abort", onAbort);
-      const onAbort = () => {
-        done();
-        reject(this.abortError(what));
-      };
-      if (this.signal.aborted) return onAbort();
-      this.signal.addEventListener("abort", onAbort, { once: true });
-      promise.then(
-        (v) => {
-          done();
-          resolve(v);
-        },
-        (e) => {
-          done();
-          reject(this.translate(e, what));
-        },
-      );
+    if (this.signal.aborted) return Promise.reject(this.abortError(what));
+    const over = Promise.withResolvers<never>();
+    const onAbort = () => over.reject(this.abortError(what));
+    this.signal.addEventListener("abort", onAbort, { once: true });
+    const settled = promise.catch((err) => {
+      throw this.translate(err, what);
     });
+    return Promise.race([settled, over.promise]).finally(() => this.signal.removeEventListener("abort", onAbort));
   }
 
   /** The deadline (this one or an ancestor) whose own time ran out. */

@@ -14,9 +14,6 @@
     }
   },
   "dependencies": {
-    "@searxng-js/sex-deadline": "workspace:*",
-    "@searxng-js/sex-diagnostics": "workspace:*",
-    "@searxng-js/sex-errors": "workspace:*",
     "ajv": "^8.20.0",
     "xsai": "^1.0.0-beta.3"
   },
@@ -24,6 +21,9 @@
     "@searxng-js/sex-scrape": "workspace:^"
   },
   "devDependencies": {
+    "@searxng-js/sex-deadline": "workspace:*",
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
     "@searxng-js/sex-scrape": "workspace:*"
   }
 }
