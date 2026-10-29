@@ -6,7 +6,7 @@ import { AppError } from "@searxng-js/sex-errors";
 import type { DocsConvertOptions, DocsResult, DocsWarning, ScrapeDocs } from "@searxng-js/sex-scrape";
 import type { ConvertEngine } from "here-docs";
 import pLimit from "p-limit";
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 
 type PdfPage = NonNullable<DocsResult["pages"]>[number];
 
@@ -23,7 +23,7 @@ export function registerEmbeddedDocs(digest: string, files: Record<string, strin
 }
 
 /** Writes the embedded node_modules tree to $XDG_CACHE_HOME/sex/docs-<digest> (once) and returns that directory. */
-async function extractEmbedded(bundle: { digest: string; files: Record<string, string> }, logger?: Logger): Promise<string> {
+async function extractEmbedded(bundle: { digest: string; files: Record<string, string> }): Promise<string> {
   const root = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "sex", `docs-${bundle.digest}`);
   if (existsSync(join(root, ".complete"))) return root;
   const t0 = performance.now();
@@ -43,15 +43,15 @@ async function extractEmbedded(bundle: { digest: string; files: Record<string, s
     rmSync(tmp, { recursive: true, force: true });
     if (!existsSync(join(root, ".complete"))) throw err;
   }
-  logger?.info("here-docs extracted", { dir: root, files: Object.keys(bundle.files).length, ms: Math.round(performance.now() - t0) });
+  log.info("here-docs extracted", { dir: root, files: Object.keys(bundle.files).length, ms: Math.round(performance.now() - t0) });
   return root;
 }
 
-async function loadHereDocs(logger?: Logger): Promise<HereDocs> {
+async function loadHereDocs(): Promise<HereDocs> {
   if (!embedded) return import("here-docs");
   // Only a compiled Bun binary registers an embedded copy; Bun resolves the extracted package the way its runtime does.
   if (typeof Bun === "undefined") throw new Error("the embedded here-docs can only be loaded by Bun");
-  return import(Bun.resolveSync("here-docs", `${await extractEmbedded(embedded, logger)}/`));
+  return import(Bun.resolveSync("here-docs", `${await extractEmbedded(embedded)}/`));
 }
 
 export interface DocsConverterOptions {
@@ -59,8 +59,6 @@ export interface DocsConverterOptions {
   enabled: boolean;
   /** Conversions at once. light-ocr runs on one thread per engine, so more than a couple only pile up pages and memory. */
   concurrency: number;
-  /** Where "extracted" and "ready" lines go; silent without one. */
-  logger?: Logger;
 }
 
 /** Warnings that mean nothing could be converted at all, not a partial result. */
@@ -81,7 +79,7 @@ export class DocsConverter implements ScrapeDocs {
   /** `load` is where here-docs comes from; tests pass a controllable stand-in. */
   constructor(
     private readonly options: DocsConverterOptions,
-    private readonly load: () => Promise<HereDocs> = () => loadHereDocs(options.logger),
+    private readonly load: () => Promise<HereDocs> = () => loadHereDocs(),
   ) {
     this.enabled = options.enabled;
     this.limit = pLimit(options.concurrency);
@@ -178,7 +176,7 @@ export class DocsConverter implements ScrapeDocs {
       }
       try {
         const engine = await mod.createEngine();
-        this.options.logger?.info("document converter ready", { ms: Math.round(performance.now() - t0) });
+        log.info("document converter ready", { ms: Math.round(performance.now() - t0) });
         return { mod, engine };
       } catch (err) {
         throw new AppError("DOCS_UNAVAILABLE", `here-docs could not start: ${(err as Error).message}`);

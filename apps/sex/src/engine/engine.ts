@@ -21,7 +21,6 @@ import {
 import { Llm } from "@searxng-js/sex-llm";
 import { type MapRequest, type MapResult, mapSite } from "@searxng-js/sex-map";
 import { BaseEngine } from "@searxng-js/sex-server/engine";
-import { log } from "@searxng-js/sex-server/log";
 import { SqliteChangeTracker, SqliteScrapeCache } from "@searxng-js/sex-store";
 import type { Config } from "../config.ts";
 import { createJobBackend } from "./jobs/index.ts";
@@ -36,7 +35,6 @@ export function browserOptions(config: Config): BrowserPoolOptions {
     lightpandaPath: config.lightpandaPath,
     cdpUrl: config.cdpUrl,
     blockMedia: config.blockMedia,
-    logger: log,
   };
 }
 
@@ -66,14 +64,13 @@ export class Engine extends BaseEngine<Config> {
         defaultMaxAge: config.cacheMaxAgeMs,
         ttlMs: config.cacheTtlMs,
         maxBytes: config.cacheMaxBytes,
-        logger: log,
       });
       this.changeTracker = new SqliteChangeTracker(join(config.dataDir, "change-tracking.sqlite"));
     }
     // The plugins take their own options; this is where the app's settings become them.
     this.browser = new BrowserPool(browserOptions(config));
-    this.llm = new Llm({ endpoint: config.llm, maxInputChars: config.llmMaxInputChars, timeoutMs: config.llmTimeout, logger: log });
-    this.docs = new DocsConverter({ enabled: config.docs, concurrency: config.docsConcurrency, logger: log });
+    this.llm = new Llm({ endpoint: config.llm, maxInputChars: config.llmMaxInputChars, timeoutMs: config.llmTimeout });
+    this.docs = new DocsConverter({ enabled: config.docs, concurrency: config.docsConcurrency });
   }
 
   private backend?: JobBackend;

@@ -1,6 +1,6 @@
 import { Worker } from "node:worker_threads";
 import { AppError, isErrorCode } from "@searxng-js/sex-errors";
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 import { extractFromHtmlInline, type PageExtractOptions, type PageExtractResult } from "./page.ts";
 import { type PdfText, pdfToMarkdown } from "./pdf.ts";
 
@@ -37,7 +37,6 @@ export interface ExtractPoolOptions {
   size: number;
   /** A job that a worker has had this long is abandoned (`EXTRACT_TIMEOUT`) and its worker replaced. */
   taskTimeoutMs: number;
-  logger?: Logger;
   /** The worker module; by default `extract-worker.js` next to this file (`.ts` when running from source). */
   workerUrl?: URL | string;
 }
@@ -88,13 +87,11 @@ export class ExtractPool {
 
   readonly size: number;
   readonly taskTimeoutMs: number;
-  private readonly logger?: Logger;
   private readonly workerUrl: URL | string;
 
   constructor(options: ExtractPoolOptions) {
     this.size = options.size;
     this.taskTimeoutMs = options.taskTimeoutMs;
-    this.logger = options.logger;
     this.workerUrl = options.workerUrl ?? defaultWorkerUrl();
   }
 
@@ -210,7 +207,7 @@ export class ExtractPool {
     if (!this.slots.includes(slot)) return;
     this.slots = this.slots.filter((s) => s !== slot);
     slot.worker.terminate();
-    this.logger?.warn("extraction worker replaced", { code: err.code, reason: err.message });
+    log.warn("extraction worker replaced", { code: err.code, reason: err.message });
     const job = slot.job;
     slot.job = undefined;
     if (job) {

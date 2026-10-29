@@ -4,6 +4,7 @@ import { assertPublicUrl, decodeBody, parseHttpUrl } from "@searxng-js/sex-egres
 import { scrapeUrl } from "@searxng-js/sex-scrape";
 import { clean, type SearchContext, searxng } from "@searxng-js/sex-search";
 import { fetchWithin } from "./fetch-within.ts";
+import { log } from "./log.ts";
 import { fetchRobots, type Robots } from "./robots.ts";
 import type { MapLink, MapRequest, MapResult } from "./schemas.ts";
 import { basePathOf, compilePatterns, matchesPatterns } from "./url-filter.ts";
@@ -91,7 +92,7 @@ export async function sitemapUrls(
         else if (urls.size < max && (!opts.accept || opts.accept(loc))) urls.add(loc);
       }
     } catch (err) {
-      ctx.logger?.debug("sitemap fetch failed", { sitemap: sm, error: err instanceof Error ? err.message : String(err) });
+      log.debug("sitemap fetch failed", { sitemap: sm, error: err instanceof Error ? err.message : String(err) });
     }
   }
   return [...urls];
@@ -142,13 +143,13 @@ export async function mapSite(ctx: MapContext, req: MapRequest, signal?: AbortSi
     // HEAD where the server allows it; either way only the headers are read, the page itself is scraped below.
     const head = await fetchWithin(start.href, resolveDeadline, { ...resolveOpts, method: "HEAD" }).catch((err) => {
       deadline.signal.throwIfAborted();
-      ctx.logger?.debug("map: HEAD on the start URL failed", { error: err instanceof Error ? err.message : String(err) });
+      log.debug("map: HEAD on the start URL failed", { error: err instanceof Error ? err.message : String(err) });
       return undefined;
     });
     const res = head && head.status < 400 ? head : await fetchWithin(start.href, resolveDeadline, resolveOpts);
     start = parseHttpUrl(res.url);
   } catch (err) {
-    ctx.logger?.debug("map: resolving the start URL failed", { error: err instanceof Error ? err.message : String(err) });
+    log.debug("map: resolving the start URL failed", { error: err instanceof Error ? err.message : String(err) });
     deadline.signal.throwIfAborted();
   }
   const baseHost = stripWww(start.hostname);
@@ -179,7 +180,7 @@ export async function mapSite(ctx: MapContext, req: MapRequest, signal?: AbortSi
             return links ?? [];
           })
           .catch((err) => {
-            ctx.logger?.debug("map: page scrape failed", { error: err instanceof Error ? err.message : String(err) });
+            log.debug("map: page scrape failed", { error: err instanceof Error ? err.message : String(err) });
             return [] as string[];
           });
   const fromSearch =

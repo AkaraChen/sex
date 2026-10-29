@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -101,14 +102,19 @@ describe("managed SearXNG", () => {
     await searxng.close();
   });
 
-  test("log lines go to the logger option, and nowhere without one", async () => {
+  test("log lines are published on the searxng channel", async () => {
     const lines: string[] = [];
-    const log = (level: string) => (message: string) => void lines.push(`${level} ${message}`);
-    const searxng = managed(okSettings, { logger: { debug: log("debug"), info: log("info"), warn: log("warn"), error: log("error") } });
+    const onMessage = (m: unknown) => {
+      const { level, msg } = m as { level: string; msg: string };
+      lines.push(`${level} ${msg}`);
+    };
+    subscribe("searxng-js:sex:searxng", onMessage);
+    const searxng = managed(okSettings);
     try {
       await searxng.warmup();
     } finally {
       await searxng.close();
+      unsubscribe("searxng-js:sex:searxng", onMessage);
     }
     assert.ok(lines.includes("info searxng started"));
   });

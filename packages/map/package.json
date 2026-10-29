@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@searxng-js/sex-deadline": "workspace:*",
+    "@searxng-js/sex-diagnostics": "workspace:*",
     "@searxng-js/sex-egress": "workspace:*",
     "@searxng-js/sex-errors": "workspace:*",
     "@searxng-js/sex-scrape": "workspace:*",

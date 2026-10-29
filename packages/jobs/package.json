@@ -23,6 +23,7 @@
     }
   },
   "dependencies": {
+    "@searxng-js/sex-diagnostics": "workspace:*",
     "@searxng-js/sex-documents-s3": "workspace:*",
     "@searxng-js/sex-egress": "workspace:*",
     "@searxng-js/sex-errors": "workspace:*",

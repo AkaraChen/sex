@@ -1,3 +1,5 @@
+import { subscribeAll } from "@searxng-js/sex-diagnostics";
+
 // All logs go to stderr so stdout stays clean for CLI output.
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40, silent: 100 } as const;
 type Level = keyof typeof LEVELS;
@@ -39,3 +41,9 @@ export const log = {
   warn: (msg: string, fields?: Record<string, unknown>) => emit("warn", msg, fields),
   error: (msg: string, fields?: Record<string, unknown>) => emit("error", msg, fields),
 };
+
+// The packages publish on their diagnostics channels (node:diagnostics_channel) instead of taking a logger; every
+// message is written here, in the same format as the app's own lines, and cut at the same level.
+subscribeAll(({ level, msg, fields }) => {
+  if (Object.hasOwn(LEVELS, level)) emit(level, msg, fields);
+});

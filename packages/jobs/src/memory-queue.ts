@@ -1,10 +1,9 @@
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 import type { Lane, QueuedTask, Task, TaskOutcome, TaskQueue } from "./types.ts";
 
 export interface MemoryTaskQueueOptions {
   /** Tasks running at once over all lanes. Defaults to 4. */
   concurrency?: number;
-  logger?: Logger;
 }
 
 interface Entry {
@@ -28,7 +27,6 @@ interface Entry {
  */
 export class MemoryTaskQueue implements TaskQueue {
   private readonly concurrency: number;
-  private readonly logger?: Logger;
   /** Tasks without a lane, in the order they were added. */
   private readonly urgent: Entry[] = [];
   /** Waiting tasks per lane. A lane exists only while it has some. */
@@ -47,7 +45,6 @@ export class MemoryTaskQueue implements TaskQueue {
 
   constructor(options: MemoryTaskQueueOptions = {}) {
     this.concurrency = Math.max(1, Math.floor(options.concurrency ?? 4));
-    this.logger = options.logger;
   }
 
   async add(tasks: QueuedTask[]): Promise<void> {
@@ -166,7 +163,7 @@ export class MemoryTaskQueue implements TaskQueue {
     const done: Promise<void> = Promise.resolve()
       .then(() => handler(task))
       .catch((err: unknown) => {
-        this.logger?.error("task failed", { type: task.type, job: task.jobId, error: String(err) });
+        log.error("task failed", { type: task.type, job: task.jobId, error: String(err) });
       })
       .then((outcome) => {
         this.active--;

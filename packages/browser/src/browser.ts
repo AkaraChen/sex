@@ -17,7 +17,7 @@ import { type AdBlockList, loadAdBlockList } from "./adblock.ts";
 import { type BrowserKind, browserKind, type EgressPlan, planEgress } from "./browser-egress.ts";
 import { applyRequestPolicies } from "./browser-policy.ts";
 import { EGRESS_HEADER, type EgressLease, EgressProxy, type EgressSessionOptions } from "./egress-proxy.ts";
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 
 const MOBILE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
@@ -48,7 +48,7 @@ export function registerEmbeddedLightpanda(version: string, sha256: string, file
 }
 
 /** Decompresses the embedded Lightpanda to $XDG_CACHE_HOME/sex/lightpanda-<version>-<hash>/ (once) and returns its path. */
-async function extractEmbeddedLightpanda(bundle: { version: string; sha256: string; file: string }, logger?: Logger): Promise<string> {
+async function extractEmbeddedLightpanda(bundle: { version: string; sha256: string; file: string }): Promise<string> {
   const dir = join(
     process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
     "sex",
@@ -69,13 +69,13 @@ async function extractEmbeddedLightpanda(bundle: { version: string; sha256: stri
     rmSync(tmp, { force: true });
     if (!existsSync(bin)) throw err;
   }
-  logger?.info("lightpanda extracted", { bin, version: bundle.version, ms: Math.round(performance.now() - t0) });
+  log.info("lightpanda extracted", { bin, version: bundle.version, ms: Math.round(performance.now() - t0) });
   return bin;
 }
 
 /** An explicit path, else the Lightpanda embedded in this binary, else one on PATH or in the usual install locations. */
-async function findLightpanda(explicit?: string, logger?: Logger): Promise<string> {
-  if (!explicit && embedded) return extractEmbeddedLightpanda(embedded, logger);
+async function findLightpanda(explicit?: string): Promise<string> {
+  if (!explicit && embedded) return extractEmbeddedLightpanda(embedded);
   const candidates = [
     explicit,
     which("lightpanda"),
@@ -164,8 +164,6 @@ export interface BrowserPoolOptions {
   cdpUrl?: string;
   /** Refuse image and media requests (needs a browser that can intercept). */
   blockMedia: boolean;
-  /** Where the pool logs (spawns, restarts, failures); silent without one. */
-  logger?: Logger;
   /** The ad list; by default the embedded table or the one derived from the pinned EasyList (see adblock.ts). */
   adBlockList?: () => Promise<AdBlockList>;
   /** The egress rule; by default the shared one for `allowPrivateNetwork`. For tests. */
@@ -195,7 +193,7 @@ export class BrowserPool implements ScrapeBrowser {
 
   constructor(private readonly config: BrowserPoolOptions) {
     this.limit = pLimit(config.concurrency);
-    this.adBlockList = config.adBlockList ?? (() => loadAdBlockList(config.logger));
+    this.adBlockList = config.adBlockList ?? (() => loadAdBlockList());
     this.policy = config.policy ?? egressFor(config.allowPrivateNetwork);
     this.route = config.kind ?? browserKind(config);
   }
@@ -244,7 +242,7 @@ export class BrowserPool implements ScrapeBrowser {
         `Not starting Lightpanda for another ${Math.ceil((this.cooldownUntil - now) / 1000)}s after ${START_FAILURE_LIMIT} failed starts. Last error: ${this.lastStartError}`,
       );
     }
-    const bin = await findLightpanda(this.config.lightpandaPath, this.config.logger);
+    const bin = await findLightpanda(this.config.lightpandaPath);
     try {
       const endpoint = await this.startLightpanda(bin);
       this.startFailures = [];
@@ -263,7 +261,7 @@ export class BrowserPool implements ScrapeBrowser {
     if (this.startFailures.length < START_FAILURE_LIMIT) return;
     this.startFailures = [];
     this.cooldownUntil = now + START_COOLDOWN_MS;
-    this.config.logger?.error("lightpanda keeps failing to start; pausing restarts", {
+    log.error("lightpanda keeps failing to start; pausing restarts", {
       failures: START_FAILURE_LIMIT,
       pauseMs: START_COOLDOWN_MS,
       error: message,
@@ -274,7 +272,7 @@ export class BrowserPool implements ScrapeBrowser {
     const port = await freePort();
     const wrapper = pdeathsigWrapper();
     const argv = lightpandaArgv(bin, port, this.config, wrapper);
-    this.config.logger?.debug("spawning lightpanda", { argv });
+    log.debug("spawning lightpanda", { argv });
     // spawn reports a binary that cannot be executed (missing, not executable) through an 'error' event, not by throwing.
     let spawnError: Error | undefined;
     const proc = spawn(argv[0] as string, argv.slice(1), {
@@ -292,7 +290,7 @@ export class BrowserPool implements ScrapeBrowser {
     this.procExited = exited;
     void exited.then(() => {
       if (this.proc === proc) {
-        if (!spawnError) this.config.logger?.warn("lightpanda exited", { code: proc.exitCode, signal: proc.signalCode });
+        if (!spawnError) log.warn("lightpanda exited", { code: proc.exitCode, signal: proc.signalCode });
         this.proc = undefined;
         this.procExited = undefined;
         this.endpoint = undefined;
@@ -308,7 +306,7 @@ export class BrowserPool implements ScrapeBrowser {
       try {
         const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(2_000) });
         if (res.ok) {
-          this.config.logger?.info("lightpanda started", { bin, endpoint, spawn: wrapper ? "setpriv" : "direct" });
+          log.info("lightpanda started", { bin, endpoint, spawn: wrapper ? "setpriv" : "direct" });
           return endpoint;
         }
       } catch {
@@ -339,7 +337,7 @@ export class BrowserPool implements ScrapeBrowser {
   }
 
   private egress(): EgressProxy {
-    this.egressProxy ??= new EgressProxy(this.policy, undefined, this.config.logger);
+    this.egressProxy ??= new EgressProxy(this.policy);
     return this.egressProxy;
   }
 
@@ -435,7 +433,6 @@ export class BrowserPool implements ScrapeBrowser {
           requestGuard: plan.requestGuard ? (origin) => this.policy.allows(new URL(origin), !!this.config.proxyUrl) : undefined,
           adBlockList: plan.adsInCdp ? adList : undefined,
           blockMedia: this.config.blockMedia,
-          logger: this.config.logger,
           // Whatever a proxy sits in front of the page, a Proxy-Authorization header can only be addressed to that proxy.
           viaProxy: !!(plan.proxy || plan.direct),
         });

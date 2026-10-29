@@ -8,6 +8,5 @@ export {
   type LlmOptions,
   TokenMeter,
 } from "./llm.ts";
-export type { Logger } from "./logger.ts";
 export { escapeTags, RELEVANCE_FIELD_DESCRIPTION } from "./prompts.ts";
 export { splitSegments } from "./segments.ts";

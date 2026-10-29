@@ -3,6 +3,7 @@ import { AppError, badRequest, toAppError, unsupported } from "@searxng-js/sex-e
 import { assertScrapeCapabilities, type CallTime, type Document, type ScrapeContext, scrapeUrl } from "@searxng-js/sex-scrape";
 import type { SearxngService } from "@searxng-js/sex-searxng";
 import type { LimitFunction } from "p-limit";
+import { log } from "./log.ts";
 import { matchesQueryOperators, planOperatorQuery } from "./operators.ts";
 import type { SearchData, SearchRequest } from "./schemas.ts";
 
@@ -113,7 +114,7 @@ export async function searxng(
     return await searxngOnce(engine, query, pageno, time, unresponsive);
   } catch (err) {
     if (!AppError.isInstance(err) || !err.retryable) throw err;
-    engine.logger?.debug("retrying SearXNG request", { error: err.message });
+    log.debug("retrying SearXNG request", { error: err.message });
     await pause(time, RETRY_DELAY_MS, "before retrying the SearXNG request");
     return searxngOnce(engine, query, pageno, time, unresponsive);
   }
@@ -364,7 +365,7 @@ export async function search(
         return { ...item, ...document };
       } catch (err) {
         const e = toAppError(err);
-        engine.logger?.debug("search result scrape failed", { url: item.url, error: e.message });
+        log.debug("search result scrape failed", { url: item.url, error: e.message });
         return { ...item, metadata: { sourceURL: item.url, statusCode: e.status, error: e.message } };
       }
     };

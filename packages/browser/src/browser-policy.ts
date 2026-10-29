@@ -12,7 +12,7 @@
 import { AppError } from "@searxng-js/sex-errors";
 import type { HTTPRequest, Page } from "puppeteer-core";
 import { type AdBlockList, siteOf } from "./adblock.ts";
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 
 /** What a policy gets to see. `headers` are lowercase and already include the changes of earlier policies. */
 export interface PolicyRequest {
@@ -240,8 +240,6 @@ export interface RequestPolicyOptions {
    * own credentials (as in `safeFetch` behind `SEX_PROXY_URL`), so the caller's is dropped instead of sent to the target.
    */
   viaProxy?: boolean;
-  /** Where "cannot intercept" is said; silent without one. */
-  logger?: Logger;
 }
 
 export type PolicyPage = Pick<Page, "setExtraHTTPHeaders" | "setCookie" | "setRequestInterception" | "on" | "mainFrame">;
@@ -301,7 +299,7 @@ export async function applyRequestPolicies(page: PolicyPage, opts: RequestPolicy
   if (!interceptable) {
     const required = policies.filter((p) => !p.optional);
     if (!required.length) {
-      opts.logger?.debug("browser cannot intercept requests; ad and media blocking skipped");
+      log.debug("browser cannot intercept requests; ad and media blocking skipped");
       return applied;
     }
     const remedies = required.flatMap((p) => (p.remedy ? [p.remedy] : []));

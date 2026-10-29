@@ -19,7 +19,7 @@ import {
   toAppError,
   unsupported,
 } from "@searxng-js/sex-errors";
-import { type ExtractPool, joinPages, type Logger, markdownToHtml, type PageExtractResult, type PdfPage } from "@searxng-js/sex-page";
+import { type ExtractPool, joinPages, markdownToHtml, type PageExtractResult, type PdfPage } from "@searxng-js/sex-page";
 import type { LimitFunction } from "p-limit";
 import {
   type BrowserScrapeResult,
@@ -35,6 +35,7 @@ import {
 import { type ChangeTrackingRequest, trackChanges } from "./change-tracking.ts";
 import { extractHtmlWithin, extractPdfWithin } from "./extract-within.ts";
 import { fetchWithin } from "./fetch-within.ts";
+import { log } from "./log.ts";
 import type { Document, FormatOption, ScrapeOptions } from "./schemas.ts";
 
 /** How scrapes fetch pages. The package reads nothing from the environment: whoever composes the context fills this in. */
@@ -81,14 +82,10 @@ export interface ScrapeCapabilities {
 export interface ScrapeExtras {
   /** How to get a missing browser or LLM, for the 501 errors; defaults to sex's flags. */
   readonly missingHints?: MissingHints;
-  /** Without one the package logs nothing. */
-  readonly logger?: Logger;
 }
 
 /** What a scrape runs on: a plain object, so a missing piece is a type error and an engine class is not required. */
 export type ScrapeContext = Fetcher & Extractor & ScrapeCapabilities & ScrapeExtras;
-
-const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
 export interface MissingHints {
   browser?: string;
@@ -379,7 +376,6 @@ async function scrapeInner(
   internal: ScrapeInternalOptions,
 ): Promise<ScrapeOutcome> {
   const config = ctx.settings;
-  const log = ctx.logger ?? quiet;
   // The stealth proxy: `proxy: "stealth"` fetches through it from the start (so no browser, which has one fixed proxy); otherwise a
   // fetch the site blocked is retried through it once, unless the request said "basic" (or both proxies are the same).
   const stealthProxy = config.stealthProxyUrl;
@@ -759,7 +755,6 @@ async function scrapeInner(
       status,
       deadline: llmDeadline,
       warnings,
-      logger: log,
     });
     if (changes) doc.changeTracking = changes;
   }

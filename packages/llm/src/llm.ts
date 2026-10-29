@@ -5,7 +5,7 @@ import { AppError, llmRequired } from "@searxng-js/sex-errors";
 import type { CallTime, ScrapeLlm } from "@searxng-js/sex-scrape";
 import { type CollectResult, chat, generateText, HttpError, type JSONSchema7, type LanguageModel, type Message, XSAIError } from "xsai";
 import { compileJsonSchema, describeSchemaErrors } from "./json-schema.ts";
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 import * as P from "./prompts.ts";
 import { splitSegments } from "./segments.ts";
 
@@ -86,8 +86,6 @@ export interface LlmOptions {
   maxInputChars: number;
   /** The most one LLM call may take, retries and rate-limit waits included, out of what the caller's time leaves (ms). */
   timeoutMs: number;
-  /** Debug lines, the 429 retry warning and guard failures; silent without one. */
-  logger?: Logger;
 }
 
 /** Client for any OpenAI-compatible /chat/completions endpoint, built on xsai. */
@@ -163,7 +161,6 @@ export class Llm implements ScrapeLlm {
       result = await withRateLimitRetries(
         () => generateText(model, { instructions, input, outputFormat: outputFormat as JSONSchema7 | undefined, signal: call.signal }),
         call,
-        this.options.logger,
       );
     } catch (err) {
       call.throwIfAborted("while waiting for the LLM");
@@ -194,7 +191,7 @@ export class Llm implements ScrapeLlm {
       } catch (err) {
         // Some OpenAI-compatible servers reject json_schema; the prompt asks for JSON anyway.
         if (!outputFormat || !AppError.isInstance(err) || (err.details as { status?: number })?.status !== 400) throw err;
-        this.options.logger?.debug("json_schema response_format rejected, retrying without it");
+        log.debug("json_schema response_format rejected, retrying without it");
         outputFormat = undefined;
         raw = await this.complete(what, system, messages, undefined, opts.deadline, opts.small);
       }
@@ -207,7 +204,7 @@ export class Llm implements ScrapeLlm {
           errors: problems,
         });
       }
-      this.options.logger?.debug("LLM reply rejected, asking for a correction", { what, problems });
+      log.debug("LLM reply rejected, asking for a correction", { what, problems });
       messages.push({ role: "assistant", content: raw }, { role: "user", content: P.extractRetry(problems) });
     }
   }
@@ -330,7 +327,7 @@ export class Llm implements ScrapeLlm {
       return v as { isInjection: boolean; reason: string };
     } catch (err) {
       if (deadline.signal.aborted) throw deadline.translate(err, "while checking for prompt injection");
-      this.options.logger?.warn("prompt injection guard failed; continuing without a verdict for this chunk", {
+      log.warn("prompt injection guard failed; continuing without a verdict for this chunk", {
         error: err instanceof Error ? err.message : String(err),
       });
       return undefined;
@@ -427,7 +424,7 @@ function lineIndices(v: unknown): number[] | undefined {
 }
 
 /** Runs `request`, waiting out 429s (and 503s with retry-after) as long as the wait fits in what `deadline` has left. */
-async function withRateLimitRetries<T>(request: () => Promise<T>, deadline: Deadline, logger?: Logger): Promise<T> {
+async function withRateLimitRetries<T>(request: () => Promise<T>, deadline: Deadline): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await request();
@@ -438,7 +435,7 @@ async function withRateLimitRetries<T>(request: () => Promise<T>, deadline: Dead
       const wait = retryAfter ?? RATE_LIMIT_BACKOFF_MS * 2 ** attempt;
       if (wait >= deadline.remaining()) throw err;
       const id = requestId(err.headers);
-      logger?.warn(`LLM returned ${err.status}${id ? ` (request id ${id})` : ""}, retrying in ${wait}ms`);
+      log.warn(`LLM returned ${err.status}${id ? ` (request id ${id})` : ""}, retrying in ${wait}ms`);
       await deadline.sleep(wait, "while waiting out the LLM rate limit");
     }
   }

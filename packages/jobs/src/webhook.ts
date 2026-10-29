@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { safeFetch } from "@searxng-js/sex-egress";
 import type { JobsContext } from "./context.ts";
+import { log } from "./log.ts";
 import { WEBHOOK_SIGNATURE_HEADER, type WebhookConfig } from "./schemas.ts";
 import type { JobRecord, Task, WebhookPayload } from "./types.ts";
 
@@ -49,7 +50,7 @@ export async function sendWebhook(
   try {
     await ctx.jobs.scheduler.add([{ task: { type: "webhook", jobId: job.id, taskId: crypto.randomUUID(), attempt: 1, payload } }]);
   } catch (err) {
-    ctx.logger?.warn("webhook could not be queued", { url: hook.url, error: String(err) });
+    log.warn("webhook could not be queued", { url: hook.url, error: String(err) });
   }
 }
 
@@ -91,10 +92,10 @@ export async function deliverWebhook(ctx: JobsContext, task: WebhookTask): Promi
 
   const context = { url: hook.url, job: task.jobId, event: task.payload.type, attempt: task.attempt, error: failure.message };
   if (!failure.retry || task.attempt >= WEBHOOK_MAX_ATTEMPTS) {
-    ctx.logger?.warn("webhook delivery failed", context);
+    log.warn("webhook delivery failed", context);
     return;
   }
-  ctx.logger?.debug("webhook delivery failed, retrying", context);
+  log.debug("webhook delivery failed, retrying", context);
   await scheduler.add([
     {
       task: { ...task, taskId: crypto.randomUUID(), attempt: task.attempt + 1 },

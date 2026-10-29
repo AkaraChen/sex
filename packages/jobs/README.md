@@ -7,7 +7,7 @@ Long-running scrape work behind Firecrawl v2's job endpoints: **crawl**, **batch
 - Parts, each behind a small interface you can replace: `JobStore` (`SqliteJobStore`, on `node:sqlite`), `TaskQueue` (`MemoryTaskQueue` here; the Bun app uses bunqueue for tasks that survive a restart), `DocumentLog` (`FsDocumentLog`, `S3DocumentLog`, `MemoryDocumentLog`; `createDocumentLog` picks one from a `file://` or `s3://` URL), and `JobScheduler`, which decides order and pace (lanes served in turn, per-job caps and cooldowns, a shared webhook lane).
 - The request and response shapes (`CrawlRequest`, `BatchScrapeRequest`, `ExtractRequest`, `WebhookConfig`, the status responses, `ParseRequest`) are zod schemas and types.
 
-The context (`JobsContext`) is a [`sex-map`](../map/README.md) context (a `sex-scrape` context plus SearXNG) with `jobs` (store, queue and scheduler: `createJobBackend({ store, queue })`), `jobSettings` (`concurrency`, `extractWildcardPages`, `webhookSecret`), a `search` function and, for extract and crawl `prompt`s, an `llm`. [`sex-llm`](../llm/README.md)'s `Llm` is one; anything with the same methods works. The package reads no environment variables and logs nothing unless the context has a `logger`.
+The context (`JobsContext`) is a [`sex-map`](../map/README.md) context (a `sex-scrape` context plus SearXNG) with `jobs` (store, queue and scheduler: `createJobBackend({ store, queue })`), `jobSettings` (`concurrency`, `extractWildcardPages`, `webhookSecret`), a `search` function and, for extract and crawl `prompt`s, an `llm`. [`sex-llm`](../llm/README.md)'s `Llm` is one; anything with the same methods works. The package reads no environment variables. Log lines go to its [diagnostics channel](#diagnostics).
 
 ## Install
 
@@ -41,3 +41,13 @@ const { job } = await startBatchScrape(ctx, { urls: ["https://example.com/a", "h
 ## Node
  On Node, outbound requests go through [`undici`](https://www.npmjs.com/package/undici), an optional peer dependency of `sex-egress`: run `npm install undici` (without it a fetch fails with a `NOT_SUPPORTED` error that names the package).
 Works on Node 24 and Bun. The job store uses `node:sqlite`; on Bun it measured within noise of `bun:sqlite` on the hot path (per operation: scheduling a crawled URL 22–25 µs against 19–22, storing a document 71–79 µs against 68–70, settling a task 49–55 µs against 49–52). A `jobs.sqlite` written by the earlier `bun:sqlite` version opens as it is. `MemoryTaskQueue` keeps tasks in memory only: they are gone when the process ends. Tasks that must survive a restart need a persistent `TaskQueue` of your own; the sex app's is bunqueue (Bun only), in `apps/sex`.
+
+## Diagnostics
+
+The package writes no log output itself. It publishes `{ level, msg, fields? }` on the [`node:diagnostics_channel`](https://nodejs.org/api/diagnostics_channel.html) channel `searxng-js:sex:jobs`, where `level` is `"debug" | "info" | "warn" | "error"`, `msg` a string and `fields` a plain object (absent when there are none). Nothing is built or published while the channel has no subscriber. The channel name and the message shape are part of the package's public interface. Works on Node and Bun.
+
+```ts
+import { subscribe } from "node:diagnostics_channel";
+
+subscribe("searxng-js:sex:jobs", ({ level, msg, fields }: any) => console.error(level, msg, fields));
+```

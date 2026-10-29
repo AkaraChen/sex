@@ -7,6 +7,7 @@ import { validateWebhook } from "./backend.ts";
 import { type JobsContext, requireLlm } from "./context.ts";
 import { taskEffects } from "./effects.ts";
 import { arrayKeys, conflictingFields, entitySources, mergeAll, splitSchema, withProperty } from "./extract-merge.ts";
+import { log } from "./log.ts";
 import type { ExtractRequest } from "./schemas.ts";
 import type { JobRecord } from "./types.ts";
 import { sendWebhook } from "./webhook.ts";
@@ -89,7 +90,7 @@ export async function handleExtract(ctx: JobsContext, job: JobRecord, taskId?: s
     // Cancelled jobs were already finished by cancelJob; do not overwrite that.
     if (controller.signal.aborted) return;
     const e = toAppError(err);
-    ctx.logger?.error("extract failed", { id: job.id, error: e.message });
+    log.error("extract failed", { id: job.id, error: e.message });
     await fail(e.message);
   } finally {
     clearInterval(timer);
@@ -191,7 +192,7 @@ async function expandWildcard(
     );
   } catch (err) {
     if (signal.aborted) throw err;
-    ctx.logger?.warn("could not select the relevant pages of a /* URL; using the site map order", { error: toAppError(err).message });
+    log.warn("could not select the relevant pages of a /* URL; using the site map order", { error: toAppError(err).message });
     warnings.push(
       `${base}*: choosing relevant pages with the LLM failed (${toAppError(err).message}), so the first ${Math.min(limit, links.length)} pages of the site map were used`,
     );
@@ -235,10 +236,10 @@ async function extractFromPages(
   if (!schema && req.prompt) {
     try {
       schema = await llm.generateSchema(req.prompt, deadline);
-      ctx.logger?.debug("generated extract schema", { schema });
+      log.debug("generated extract schema", { schema });
     } catch (err) {
       if (signal.aborted) throw err;
-      ctx.logger?.warn("could not generate a schema for the extract; extracting without one", { error: toAppError(err).message });
+      log.warn("could not generate a schema for the extract; extracting without one", { error: toAppError(err).message });
     }
   }
 
@@ -250,11 +251,11 @@ async function extractFromPages(
   } else if (schema && arrayKeys(schema).length) {
     try {
       const plan = await llm.planExtract(schema, req.prompt, opts.urls, deadline);
-      ctx.logger?.debug("extract plan", { ...plan });
+      log.debug("extract plan", { ...plan });
       if (plan.isMultiEntity) ({ multi, single } = splitSchema(schema, plan.multiEntityKeys));
     } catch (err) {
       if (signal.aborted) throw err;
-      ctx.logger?.warn("could not classify the extract; treating it as a single answer", { error: toAppError(err).message });
+      log.warn("could not classify the extract; treating it as a single answer", { error: toAppError(err).message });
     }
   }
 

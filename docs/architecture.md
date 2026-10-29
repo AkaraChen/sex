@@ -53,6 +53,7 @@
 |---|---|---|
 | `sex-errors` | 所有发布包 | `AppError`、错误目录、`badRequest` 等辅助函数。类上带 `Symbol.for` 标记，见下方「错误」 |
 | `sex-deadline` | `sex-scrape`、`sex-map`、`sex-browser`、`sex-llm`、`sex-docs` | `Deadline`：一次操作剩下的时间加调用方的取消。包的边界只传 `signal` 和可选的 `deadlineAt`，收到的包用它重建自己的 `Deadline` |
+| `sex-diagnostics` | 除 `sex-egress` 外的所有发布包 | 日志通道名单 `CHANNELS`、控制台形状的 `diagnostics(name)`、`subscribeAll`，见下方「日志」 |
 | `sex-documents-s3` | `sex-jobs` | S3 胶水：Bun 上用 `Bun.S3Client`，Node 上动态 import `@aws-sdk/client-s3`，没装就报错 |
 | `sex-server` | `apps/sex`、`apps/sex-lite` | 两个 app 共用的脚手架：Hono + oRPC、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` MCP 工具、`BaseEngine`、citty 的公共 flag。只跑在 Bun 上，直接用 `Bun.serve` |
 
@@ -84,6 +85,7 @@ flowchart TB
   end
   subgraph T3["第三类：私有库"]
     errors["sex-errors<br/>打包进所有发布包"]
+    diagnostics["sex-diagnostics<br/>打包进有日志的发布包"]
     s3["sex-documents-s3"]
     server["sex-server<br/>只给 apps 用"]
   end
@@ -133,9 +135,15 @@ flowchart TB
 - 超时还是取消，看 `signal.reason`：`TimeoutError` 是超时，`AbortError` 是取消。每个包翻译成自己的错误码。
 - `sex-scrape` 内部要不要留一个 `Deadline` 小工具由它决定，不导出。
 
-### 日志（待确认）
+### 日志
 
-每个包接一个可选的 `logger` 选项，接口是 `debug`、`info`、`warn`、`error`，`console` 直接满足。不传时库不输出。原因：模块级的日志级别打包成多份后，app 设的级别传不到各个包。
+包不输出日志，也没有 `logger` 选项；日志走 `node:diagnostics_channel`（Bun 和 Node 都有）。原因：模块级的日志级别打包成多份后，app 设的级别传不到各个包；通道按名字取，打包成多份也还是同一个通道。
+
+- 每个发布包一个通道，名字 `searxng-js:sex:<包名去掉 sex- 前缀>`，例如 `searxng-js:sex:scrape`。每个包只在自己的通道上发布。`sex-egress` 目前没有日志，没有通道。
+- 消息是 `{ level, msg, fields? }`：`level` 是 `"debug" | "info" | "warn" | "error"`，`msg` 是字符串，`fields` 是普通对象，没有字段时不带这个键。**通道名和消息形状是公开契约**，改动要按破坏性变更处理；每个发布包的 README 有「Diagnostics」一节写明通道名、形状和订阅示例。
+- 私有库 `sex-diagnostics` 打包进各包：`CHANNELS` 是通道名的唯一名单；`diagnostics(name)` 返回绑在一个通道上的控制台形状对象（`debug` / `info` / `warn` / `error`），名字只能取自名单；通道没有订阅者时（先查 `hasSubscribers`）什么都不做，不构造消息。每个包的 `src/log.ts` 是 `export const log = diagnostics("searxng-js:sex:<包名>")`。
+- app 一侧：`sex-server` 的 `log.ts` 在加载时对名单里的所有通道调 `subscribeAll`，把每条消息按原来的格式写到 stderr，级别门槛仍是 `SEX_LOG_LEVEL` / `--log-level`，所以 CLI 和服务的输出不变。日志仍然只写 stderr。
+- 测试：`sex-diagnostics` 的测试检查每个发布包的源码里出现的通道名都在名单里、而且是它自己的，名单里的每个通道都有对应的发布包；检查日志调用的包测试直接订阅通道。
 
 ### Bun 和 Node
 
@@ -234,7 +242,7 @@ flowchart LR
   - `tsconfig: "../tsconfig.build.json"`：tsgo 生成 `.d.ts` 时，rolldown-plugin-dts 以 tsconfig 所在目录为根去找每个源文件的声明，所以 tsconfig 必须在包含所有被内联的包的目录里（`packages/tsconfig.build.json`，include `*/src`），不能用发布包自己目录里的。
   - `fixedExtension: false`，输出 `dist/index.js` 和 `dist/index.d.ts`，不是 `.mjs` / `.d.mts`；`format: "esm"`、`dts: true`。
   - 私有库自己也有 `tsdown.config.ts`，并设 `"sexNodeTests": true`：Node 测试按包名 import，Node 读 dist，所以 `build:packages` 也构建它。
-- **日志**：`logger` 选项的方案待确认。
+- **日志**：已定，见「日志」一节。
 
 ## 要改的现有约定
 
@@ -252,5 +260,5 @@ flowchart LR
 - 任务队列：`MemoryTaskQueue` 在 `sex-jobs` 里（之前没有），规则和 bunqueue 那份一样（无 lane 的任务先走、lane 轮流、上限、冷却、延迟），但进程结束任务就没了，也没有重新投递；bunqueue 的 `BunqueueTaskQueue` 在 `apps/sex/src/engine/jobs/queue.ts`。
 - SQLite：jobs 存储用 `node:sqlite`（数字见上面的风险一条），旧的 `jobs.sqlite` 原样可用。
 - 测试：`packages/map`、`packages/jobs`、`packages/documents-s3` 的测试是 `node:test`，Bun 和 Node（对 dist）都跑；要整个 `Engine`、`Bun.serve` 或 bunqueue 的任务测试（`scheduling`、`settlement`、`dead-letter`、`webhook`、`store-contract`、`durability`、`batch-*`、`crawl-semantics`、`robots-rfc`、`map-hardening` 等）留在 `apps/sex/test`，用 `bun:test`。
-- 日志：包只接可选的 `logger`，apps 把 stderr 的 `log` 传进去；`logger` 选项的方案仍等用户确认，没有做全局的日志重构。
+- 日志：`logger` 选项和各包重复的 `Logger` 接口都删了，改用 `sex-diagnostics`（私有库，打包进 10 个发布包）的 `node:diagnostics_channel` 通道；`sex-server` 的 `log.ts` 订阅所有通道写 stderr，输出不变。
 - 分支 `wip/package-split-v1` 上有一版按旧方案做的尝试（公开的 `sex-kit`、`sex-schemas`），只供参考 `apps/` 搬迁等机械步骤，不按它的包划分。

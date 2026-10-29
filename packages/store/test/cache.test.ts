@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -96,14 +97,20 @@ describe("SqliteScrapeCache", () => {
     cache.close();
   });
 
-  test("a file that is not a database is replaced, and the logger hears of it", async () => {
+  test("a file that is not a database is replaced, and the store channel hears of it", async () => {
     clock = 1_000_000;
     writeFileSync(join(dir, "broken.sqlite"), "this is not a database, but it is long enough to be taken for one by sqlite".repeat(100));
     const warnings: string[] = [];
-    const cache = open({ logger: { debug() {}, info() {}, error() {}, warn: (m) => warnings.push(m) } }, "broken.sqlite");
+    const onMessage = (m: unknown) => {
+      const { level, msg } = m as { level: string; msg: string };
+      if (level === "warn") warnings.push(msg);
+    };
+    subscribe("searxng-js:sex:store", onMessage);
+    const cache = open({}, "broken.sqlite");
     assert.equal(await cache.get(key("https://a.test/"), { maxAge: 1000 }), undefined);
     await cache.put(key("https://a.test/"), page("x"));
     assert.ok(await cache.get(key("https://a.test/"), { maxAge: 1000 }));
+    unsubscribe("searxng-js:sex:store", onMessage);
     assert.deepEqual(warnings, ["page cache file is unusable and is recreated"]);
     cache.close();
   });

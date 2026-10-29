@@ -39,3 +39,7 @@ Works on Node 24 and Bun. On Node:
 - A request to a validated address keeps its URL, so `Host`, SNI and the certificate check use the real host name; the dispatcher's `connect.lookup` answers with the validated address.
 - The `proxy` option goes through undici's `ProxyAgent` with the Bun semantics: the request is not pinned, the host is still resolved and checked first (a name that does not resolve locally is refused), a caller-set `Proxy-Authorization` / `Proxy-Connection` is dropped and the credentials in the proxy URL are used.
 - Each request has its own dispatcher, closed when the response body is read to the end, cancelled, fails or the signal aborts, so nothing keeps a process alive.
+
+## Diagnostics
+
+The package publishes no log messages. The `searxng-js:sex:*` diagnostics channels of the other sex packages are listed in their READMEs.

@@ -4,6 +4,7 @@ import type { JobsContext } from "./context.ts";
 import { handleCrawlPage, handleCrawlStart } from "./crawl.ts";
 import { taskEffects } from "./effects.ts";
 import { handleExtract } from "./extract.ts";
+import { log } from "./log.ts";
 import type { Task, TaskOutcome } from "./types.ts";
 import { deliverWebhook, sendWebhook } from "./webhook.ts";
 
@@ -13,7 +14,7 @@ import { deliverWebhook, sendWebhook } from "./webhook.ts";
  */
 export async function runTask(ctx: JobsContext, task: Task): Promise<TaskOutcome> {
   const { store } = ctx.jobs;
-  ctx.logger?.debug("task", { type: task.type, job: task.jobId, ...("url" in task ? { url: task.url } : {}) });
+  log.debug("task", { type: task.type, job: task.jobId, ...("url" in task ? { url: task.url } : {}) });
   if (task.type === "webhook") {
     // Not settled: webhooks are not part of the job's `pending`.
     await deliverWebhook(ctx, task);

@@ -8,7 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import { zstdDecompressSync } from "node:zlib";
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 
 export class AdBlockList {
   private constructor(
@@ -101,15 +101,15 @@ let loaded: Promise<AdBlockList> | undefined;
  * The list, decompressed and parsed on first use and shared afterwards. A table that cannot be had (a source checkout without
  * network) logs a warning once and means no blocking, not failed scrapes.
  */
-export function loadAdBlockList(logger?: Logger): Promise<AdBlockList> {
+export function loadAdBlockList(): Promise<AdBlockList> {
   loaded ??= (async () => {
     const t0 = performance.now();
     try {
       const list = AdBlockList.parse(await readTable());
-      logger?.info("ad block list loaded", { domains: list.size, ms: Math.round(performance.now() - t0) });
+      log.info("ad block list loaded", { domains: list.size, ms: Math.round(performance.now() - t0) });
       return list;
     } catch (err) {
-      logger?.warn("ad block list unavailable; blockAds has no effect", { error: err instanceof Error ? err.message : String(err) });
+      log.warn("ad block list unavailable; blockAds has no effect", { error: err instanceof Error ? err.message : String(err) });
       return AdBlockList.empty;
     }
   })();

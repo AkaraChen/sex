@@ -2,7 +2,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import type { CachedPage, CacheKey, ScrapeCache } from "@searxng-js/sex-scrape";
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 import { Sqlite } from "./sqlite.ts";
 
 /** Bumped when the table changes; a cache is only a copy, so a different version is dropped, not migrated. */
@@ -22,8 +22,6 @@ export interface PageCacheOptions {
   /** Most bytes the entries may take together (stored, i.e. compressed). */
   maxBytes: number;
   now?: () => number;
-  /** Where the cache says it recreated a broken file or failed to read or write; silent without one. */
-  logger?: Logger;
 }
 
 /**
@@ -58,7 +56,7 @@ export class SqliteScrapeCache implements ScrapeCache {
       db = this.connect();
     } catch (err) {
       // It is only a copy of pages that can be fetched again: a file that is not a database is replaced, not reported forever.
-      this.opts.logger?.warn("page cache file is unusable and is recreated", {
+      log.warn("page cache file is unusable and is recreated", {
         path: this.path,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -135,7 +133,7 @@ export class SqliteScrapeCache implements ScrapeCache {
       };
     } catch (err) {
       // A damaged file or entry is a miss; the page is fetched.
-      this.opts.logger?.warn("page cache read failed", { url: key.url, error: err instanceof Error ? err.message : String(err) });
+      log.warn("page cache read failed", { url: key.url, error: err instanceof Error ? err.message : String(err) });
       return undefined;
     }
   }
@@ -170,7 +168,7 @@ export class SqliteScrapeCache implements ScrapeCache {
       });
       if (now - this.lastSweep > SWEEP_EVERY_MS) this.sweep();
     } catch (err) {
-      this.opts.logger?.warn("page cache write failed", { url: key.url, error: err instanceof Error ? err.message : String(err) });
+      log.warn("page cache write failed", { url: key.url, error: err instanceof Error ? err.message : String(err) });
     }
   }
 

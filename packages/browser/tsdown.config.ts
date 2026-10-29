@@ -18,6 +18,6 @@ export default defineConfig({
   tsconfig: "../tsconfig.build.json",
   clean: true,
   plugins: [textImport],
-  deps: { alwaysBundle: [/^@searxng-js\/sex-(errors|deadline)/, "defuddle/full"] },
+  deps: { alwaysBundle: [/^@searxng-js\/sex-(errors|deadline|diagnostics)/, "defuddle/full"] },
   inputOptions: { resolve: { conditionNames: ["sex-source", "import", "default"] } },
 });

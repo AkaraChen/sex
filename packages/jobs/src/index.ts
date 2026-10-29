@@ -16,7 +16,6 @@ export {
 export { type TaskEffects, taskEffects } from "./effects.ts";
 export { startExtract } from "./extract.ts";
 export * from "./extract-merge.ts";
-export type { Logger } from "./logger.ts";
 export { MemoryTaskQueue, type MemoryTaskQueueOptions } from "./memory-queue.ts";
 export { JobScheduler, type PageLimits, pageLimits, WEBHOOK_CONCURRENCY, WEBHOOK_LANE } from "./scheduler.ts";
 export * from "./schemas.ts";

@@ -13,7 +13,7 @@ import { BunqueueTaskQueue } from "./queue.ts";
 export function createJobBackend(config: Config): JobBackend {
   if (config.dataDir) mkdirSync(config.dataDir, { recursive: true });
   const path = (file: string) => (config.dataDir ? join(config.dataDir, file) : ":memory:");
-  const store = new SqliteJobStore(path("jobs.sqlite"), config.jobTtlMs, createDocumentLog(config), log);
+  const store = new SqliteJobStore(path("jobs.sqlite"), config.jobTtlMs, createDocumentLog(config));
   const queue = new BunqueueTaskQueue(path("queue.sqlite"), config.concurrency);
   return composeJobBackend({ store, queue });
 }

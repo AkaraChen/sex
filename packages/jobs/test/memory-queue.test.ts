@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { describe, test } from "node:test";
 import { MemoryTaskQueue, type Task } from "@searxng-js/sex-jobs";
 
@@ -102,7 +103,12 @@ describe("MemoryTaskQueue", () => {
 
   test("a handler that throws is logged and the queue carries on", async () => {
     const errors: string[] = [];
-    const q = new MemoryTaskQueue({ logger: { debug() {}, info() {}, warn() {}, error: (m) => void errors.push(m) } });
+    const onMessage = (m: unknown) => {
+      const { level, msg } = m as { level: string; msg: string };
+      if (level === "error") errors.push(msg);
+    };
+    subscribe("searxng-js:sex:jobs", onMessage);
+    const q = new MemoryTaskQueue();
     const done: string[] = [];
     q.startWorker(async (task) => {
       if (task.taskId === "j-1") throw new Error("boom");
@@ -112,6 +118,7 @@ describe("MemoryTaskQueue", () => {
     await q.add([1, 2].map((n) => ({ task: page("j", n), lane: { id: "j" } })));
     await idle();
     assert.deepEqual(done, ["j-2"]);
+    unsubscribe("searxng-js:sex:jobs", onMessage);
     assert.deepEqual(errors, ["task failed"]);
     await q.close();
   });

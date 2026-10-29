@@ -18,6 +18,7 @@ import type { z } from "zod";
 import { validateWebhook } from "./backend.ts";
 import { type JobsContext, requireLlm } from "./context.ts";
 import { type TaskEffects, taskEffects } from "./effects.ts";
+import { log } from "./log.ts";
 import { CrawlRequest } from "./schemas.ts";
 import type { JobRecord, JobStore, OutboxTask } from "./types.ts";
 import { sendWebhook } from "./webhook.ts";
@@ -37,19 +38,19 @@ const DERIVABLE_KEYS = Object.keys(Derivable.shape);
 const derivableFieldSchemas = Derivable.shape as Record<string, z.ZodType>;
 
 /** Keeps only derived options that have the right type; drops invalid regexes and logs what was discarded. */
-function validateDerived(out: Record<string, unknown>, logger: JobsContext["logger"]): Record<string, unknown> {
+function validateDerived(out: Record<string, unknown>): Record<string, unknown> {
   const valid: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(out)) {
     if (!DERIVABLE_KEYS.includes(key)) continue;
     const parsed = derivableFieldSchemas[key]?.safeParse(value);
     if (!parsed?.success) {
-      logger?.debug("dropped prompt-derived crawl option", { key, reason: "invalid type" });
+      log.debug("dropped prompt-derived crawl option", { key, reason: "invalid type" });
       continue;
     }
     if (key === "includePaths" || key === "excludePaths") {
       const patterns = (parsed.data as string[]).filter(isAcceptablePattern);
       if (patterns.length !== (parsed.data as string[]).length)
-        logger?.debug("dropped invalid or unsafe regex from prompt-derived crawl option", { key });
+        log.debug("dropped invalid or unsafe regex from prompt-derived crawl option", { key });
       valid[key] = patterns;
     } else {
       valid[key] = parsed.data;
@@ -81,12 +82,12 @@ export async function crawlParamsFromPrompt(ctx: JobsContext, url: string, promp
     // The start URL alone says nothing about the site's structure.
     if (links.length > 1) siteUrls = links.map((l) => l.url);
   } catch (err) {
-    ctx.logger?.debug("crawl prompt: mapping the site failed, continuing without its structure", {
+    log.debug("crawl prompt: mapping the site failed, continuing without its structure", {
       error: err instanceof Error ? err.message : String(err),
     });
   }
   const out = await llm.crawlOptions(url, prompt, {}, siteUrls);
-  return validateDerived(out ?? {}, ctx.logger);
+  return validateDerived(out ?? {});
 }
 
 const stripWww = (host: string) => host.replace(/^www\./, "");

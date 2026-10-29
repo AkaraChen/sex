@@ -20,7 +20,7 @@ const shared: UserConfig = {
   tsconfig: "../tsconfig.build.json",
   clean: false,
   plugins: [textImport],
-  deps: { alwaysBundle: [/^@searxng-js\/sex-errors/] },
+  deps: { alwaysBundle: [/^@searxng-js\/sex-(errors|diagnostics)/] },
   inputOptions: { resolve: { conditionNames: ["sex-source", "import", "default"] } },
 };
 

@@ -3,7 +3,7 @@ import type { Document } from "@searxng-js/sex-scrape";
 import pLimit from "p-limit";
 import { Db, type SQLInputValue } from "./db.ts";
 import { type DocumentLog, READ_CONCURRENCY } from "./documents.ts";
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 import type {
   CounterName,
   JobError,
@@ -192,7 +192,6 @@ export class SqliteJobStore implements JobStore {
     path: string,
     private readonly ttlMs: number,
     private readonly docs: DocumentLog,
-    private readonly logger?: Logger,
   ) {
     this.db = new Db(path);
     this.db.exec("PRAGMA journal_mode = WAL");
@@ -230,7 +229,7 @@ export class SqliteJobStore implements JobStore {
       }
     }
     this.sweep();
-    this.recovery = this.repair().catch((err) => this.logger?.warn("document repair failed", { error: errorText(err) }));
+    this.recovery = this.repair().catch((err) => log.warn("document repair failed", { error: errorText(err) }));
     // A log that appends in place must be repaired before the next append or read.
     this.ready = this.recovery;
     this.sweeper = setInterval(() => this.sweep(), 10 * 60 * 1000);
@@ -256,7 +255,7 @@ export class SqliteJobStore implements JobStore {
       const size = await truncate(id, end);
       if (size < end) {
         const lost = this.exec("DELETE FROM documents WHERE job_id = ? AND offset + length > ?", id, size).changes;
-        this.logger?.warn("documents lost their bytes; dropped from the index", { job: id, count: lost });
+        log.warn("documents lost their bytes; dropped from the index", { job: id, count: lost });
         // Cut off what is left of the last, partly lost document too.
         const r = this.db.get<{ end: number }>("SELECT coalesce(max(offset + length), 0) AS end FROM documents WHERE job_id = ?", id);
         await truncate(id, r?.end ?? 0);
@@ -432,7 +431,7 @@ export class SqliteJobStore implements JobStore {
         else missing.push(r.seq);
       }
     }
-    if (missing.length > 0) this.logger?.warn("documents unreadable; left out of the page", { job: id, seqs: missing.join(",") });
+    if (missing.length > 0) log.warn("documents unreadable; left out of the page", { job: id, seqs: missing.join(",") });
     return { data, nextSkip: more ? last.seq + 1 : null, cursor: last.seq + 1 };
   }
 
@@ -570,7 +569,7 @@ export class SqliteJobStore implements JobStore {
         () => {
           if (this.dropping.get(id) === drop) this.exec("DELETE FROM dropped_jobs WHERE job_id = ?", id);
         },
-        (err) => this.logger?.warn("dropping documents failed; retried by the next sweep", { job: id, error: errorText(err) }),
+        (err) => log.warn("dropping documents failed; retried by the next sweep", { job: id, error: errorText(err) }),
       )
       .finally(() => {
         if (this.dropping.get(id) === drop) this.dropping.delete(id);

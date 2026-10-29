@@ -1,7 +1,7 @@
 import type { Deadline } from "@searxng-js/sex-deadline";
 import { toAppError } from "@searxng-js/sex-errors";
-import type { Logger } from "@searxng-js/sex-page";
 import { type ChangeTracker, GUARD_MAX_CHARS, type ScrapeLlm } from "./capabilities.ts";
+import { log } from "./log.ts";
 import type { ChangeTrackingResult } from "./schemas.ts";
 
 /** The `changeTracking` format of a request, normalized. */
@@ -29,7 +29,6 @@ export interface TrackInput {
   /** Bounds the diff and the LLM calls. */
   deadline: Deadline;
   warnings: string[];
-  logger: Logger;
 }
 
 /** The text with iframe embeds removed and every run of whitespace turned into one space (and trimmed). */
@@ -66,7 +65,7 @@ export function compareExtracted(previous: unknown, current: unknown): Record<st
  * written costs a warning, not the scrape. Returns undefined when nothing could be compared.
  */
 export async function trackChanges(input: TrackInput): Promise<ChangeTrackingResult | undefined> {
-  const { tracker, request, url, markdown, deadline, warnings, logger: log } = input;
+  const { tracker, request, url, markdown, deadline, warnings } = input;
   let previous: Awaited<ReturnType<ChangeTracker["get"]>>;
   try {
     previous = await tracker.get(url, request.tag);
@@ -106,7 +105,7 @@ export async function trackChanges(input: TrackInput): Promise<ChangeTrackingRes
 
 /** The `json` mode. A failed LLM call costs the mode, not the scrape; time running out and configuration errors do not. */
 async function describeChanges(input: TrackInput, previous: string, result: ChangeTrackingResult): Promise<void> {
-  const { request, deadline, warnings, logger: log } = input;
+  const { request, deadline, warnings } = input;
   const llm = input.llm as ScrapeLlm;
   const url = input.url;
   const time = deadline.time();

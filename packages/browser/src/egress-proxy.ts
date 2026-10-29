@@ -24,7 +24,7 @@ import { pipeline } from "node:stream";
 import { type EgressPolicy, MAX_PINNED_ADDRESSES } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
 import { type AdBlockList, siteOf } from "./adblock.ts";
-import type { Logger } from "./logger.ts";
+import { log } from "./log.ts";
 
 const CONNECT_TIMEOUT_MS = 10_000;
 /** No byte in either direction for this long: the connection is dropped. */
@@ -117,7 +117,6 @@ export class EgressProxy {
     private readonly policy: EgressPolicy,
     /** Tests shorten the idle timeout. */
     private readonly idleMs = IDLE_TIMEOUT_MS,
-    private readonly logger?: Logger,
   ) {}
 
   /** Starts listening on first use. */
@@ -129,7 +128,7 @@ export class EgressProxy {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {
         server.off("error", reject);
-        server.on("error", (err) => this.logger?.warn("egress proxy error", { error: err.message }));
+        server.on("error", (err) => log.warn("egress proxy error", { error: err.message }));
         this.server = server;
         const addr = server.address();
         if (addr && typeof addr === "object") resolve(addr.port);
@@ -214,7 +213,7 @@ export class EgressProxy {
       if (!AppError.isInstance(err)) throw err;
       const kind = err.code === "PRIVATE_NETWORK_BLOCKED" ? "refused" : "dns";
       session.failures.set(host.toLowerCase(), kind);
-      this.logger?.debug("egress proxy refused", { host, kind });
+      log.debug("egress proxy refused", { host, kind });
       return { ok: false, status: kind === "refused" ? 403 : 502, kind, message: err.message };
     }
   }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { after, describe, test } from "node:test";
 import { Llm } from "@searxng-js/sex-llm";
 import { type ChatBody, chatCompletionStream, type Handler, matches, startLlm, within } from "./support.ts";
@@ -109,18 +110,26 @@ describe("rate limits", () => {
     assert.equal(s.bodies.length, 2);
   });
 
-  test("the retry warning goes to the logger when there is one", async () => {
+  test("the retry warning is published on the llm channel", async () => {
     const s = await serve((_b, n) =>
       n === 1 ? new Response("slow down", { status: 429, headers: { "retry-after": "0" } }) : chatCompletionStream("ok"),
     );
     const warnings: string[] = [];
+    const onMessage = (m: unknown) => {
+      const { level, msg } = m as { level: string; msg: string };
+      if (level === "warn") warnings.push(msg);
+    };
+    subscribe("searxng-js:sex:llm", onMessage);
     const llm = new Llm({
       endpoint: { baseUrl: s.url, model: "m" },
       maxInputChars: 200_000,
       timeoutMs: 10_000,
-      logger: { debug() {}, info() {}, error() {}, warn: (m) => warnings.push(m) },
     });
-    await llm.summarize("page", NO_LIMIT);
+    try {
+      await llm.summarize("page", NO_LIMIT);
+    } finally {
+      unsubscribe("searxng-js:sex:llm", onMessage);
+    }
     assert.equal(warnings.length, 1);
     assert.match(warnings[0] as string, /LLM returned 429/);
   });

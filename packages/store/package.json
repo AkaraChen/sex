@@ -14,6 +14,7 @@
     }
   },
   "dependencies": {
+    "@searxng-js/sex-diagnostics": "workspace:*",
     "diff": "^9.0.0"
   },
   "peerDependencies": {

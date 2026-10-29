@@ -15,7 +15,8 @@ import { type SearchContext, type SearchData, type SearchRequest, search } from 
 import { SearxngService } from "@searxng-js/sex-searxng";
 import pLimit from "p-limit";
 import type { CoreConfig } from "./config.ts";
-import { log } from "./log.ts";
+// The packages publish their log lines on diagnostics channels; this module subscribes to them and writes them to stderr.
+import "./log.ts";
 
 /**
  * Search and fetch, shared by every front-end (HTTP, MCP, CLI). sex-lite uses it as is; sex extends it with a browser,
@@ -26,8 +27,6 @@ export class BaseEngine<C extends CoreConfig = CoreConfig> implements SearchCont
   readonly searxng: SearxngService;
   /** What the scrape and search packages read of the config. */
   readonly settings: ScrapeSettings;
-  /** The stderr logger, handed to the packages (they are silent without one). */
-  readonly logger = log;
   readonly scrapeLimit: ReturnType<typeof pLimit>;
   /** Caps the per-domain SearXNG queries of includeDomains across all concurrent searches, so they cannot get the upstream engines banned. */
   readonly searchDomainLimit = pLimit(4);
@@ -58,10 +57,9 @@ export class BaseEngine<C extends CoreConfig = CoreConfig> implements SearchCont
       binaryPath: config.searxngPath,
       settingsPath: config.searxngSettings,
       proxyUrl: config.proxyUrl,
-      logger: log,
     });
     this.scrapeLimit = pLimit(config.concurrency);
-    this.extractPool = new ExtractPool({ size: config.extractWorkers, taskTimeoutMs: Math.max(10_000, config.timeout), logger: log });
+    this.extractPool = new ExtractPool({ size: config.extractWorkers, taskTimeoutMs: Math.max(10_000, config.timeout) });
   }
 
   async scrape(req: ScrapeRequest, signal?: AbortSignal): Promise<Document> {

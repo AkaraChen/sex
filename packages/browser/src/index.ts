@@ -26,4 +26,3 @@ export {
   EgressProxy,
   type EgressSessionOptions,
 } from "./egress-proxy.ts";
-export type { Logger } from "./logger.ts";
