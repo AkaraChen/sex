@@ -4,10 +4,10 @@ import { log } from "./log.ts";
 import { extractFromHtmlInline, type PageExtractOptions, type PageExtractResult } from "./page.ts";
 import { type PdfText, pdfToMarkdown } from "./pdf.ts";
 
-// In a compiled binary, extra entrypoints are embedded relative to the build's --root (packages/), so the worker sits under
-// core/src/; the build scripts of sex and sex-lite both pass that root.
+// In a compiled binary, extra entrypoints are embedded relative to the build's --root (the repo root), so the worker sits under
+// packages/core/src/; the build scripts of sex and sex-lite both pass that root.
 const WORKER_URL = import.meta.url.includes("$bunfs")
-  ? new URL("./core/src/extract-worker.ts", import.meta.url).href
+  ? new URL("./packages/core/src/extract-worker.ts", import.meta.url).href
   : new URL("./extract-worker.ts", import.meta.url).href;
 
 type JobMsg = { kind: "html"; html: string; opts: PageExtractOptions } | { kind: "pdf"; pdf: Uint8Array; maxPages?: number };

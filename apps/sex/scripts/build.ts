@@ -111,7 +111,7 @@ const adblockImport = `import { registerEmbeddedAdblock } from "./engine/adblock
 console.log(`embedding ad block table ${adblock.commit.slice(0, 12)} (${(statSync(adblock.path).size / 2 ** 10).toFixed(0)} KiB zstd)`);
 
 // Next to cli.ts so its relative imports resolve; the embedded worker's path comes from --root below, not from this file.
-const entry = join(root, "packages", "sex", "src", "cli.embedded.gen.ts");
+const entry = join(root, "apps", "sex", "src", "cli.embedded.gen.ts");
 const imports = files.map((f, i) => `import f${i} from ${JSON.stringify(f)} with { type: "file" };`).join("\n");
 const table = files.map((f, i) => `  ${JSON.stringify(relative(nodeModules, f))}: f${i},`).join("\n");
 writeFileSync(
@@ -124,8 +124,19 @@ console.log(
   `embedding here-docs for ${platform.os}-${platform.cpu}${platform.libc ? `-${platform.libc}` : ""}: ${packages.size} packages, ${files.length} files, ${(bytes / 2 ** 20).toFixed(0)} MiB (digest ${digest})`,
 );
 try {
-  // --root: the core extract-pool finds the embedded worker at <root>/core/src/extract-worker.ts.
-  const args = ["build", "--compile", "--minify", "--compile-autoload-package-json", "--external", "here-docs", "--root", "packages"];
+  // --root: the core extract-pool finds the embedded worker at <root>/packages/core/src/extract-worker.ts.
+  const args = [
+    "build",
+    "--compile",
+    "--minify",
+    "--compile-autoload-package-json",
+    "--conditions",
+    "sex-source",
+    "--external",
+    "here-docs",
+    "--root",
+    root,
+  ];
   if (values.target) args.push("--target", values.target);
   args.push(entry, join(root, "packages/core/src/extract-worker.ts"), "--outfile", values.outfile as string);
   const proc = Bun.spawnSync(["bun", ...args], { cwd: root, stdout: "inherit", stderr: "inherit" });

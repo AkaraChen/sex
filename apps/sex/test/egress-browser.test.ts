@@ -6,7 +6,7 @@ import { resolveConfig } from "../src/config.ts";
 import { AdBlockList } from "../src/engine/adblock.ts";
 import { BrowserPool } from "../src/engine/browser.ts";
 
-// Opt-in, needs Chrome on this machine (the CI chrome job): SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test packages/sex/test/egress-browser.test.ts
+// Opt-in, needs Chrome on this machine (the CI chrome job): SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test apps/sex/test/egress-browser.test.ts
 // The page is fetched through sex's EgressProxy, so these are the rules as a real browser meets them: documents, redirects,
 // subresources, fetch(), WebSocket, over http and over CONNECT. Every case asserts the internal service saw no connection at all.
 const CDP = process.env.SEX_TEST_CDP_URL;

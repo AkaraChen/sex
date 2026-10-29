@@ -13,19 +13,19 @@
 
 只要搜索和抓取的话，还有一个轻量版 [sex-lite](#sex-lite)。
 
-仓库是 Bun workspace，三个包：
+仓库是 Bun workspace，`packages/` 放库，`apps/` 放两个产品（架构和拆分计划见 [docs/architecture.md](docs/architecture.md)）：
 
-| 包 | 内容 |
+| 目录 | 内容 |
 |---|---|
 | `packages/core`（`@sex/core`） | 两个产品共用的部分：SearXNG 搜索、HTTP 抓取 + Defuddle 提取、SSRF 防护、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` 两个 MCP 工具、CLI 的公共部分 |
-| `packages/sex` | 完整版：在 core 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
-| `packages/sex-lite` | 轻量版：只用 core |
+| `apps/sex` | 完整版：在 core 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
+| `apps/sex-lite` | 轻量版：只用 core |
 
 ## 快速开始
 
 ```bash
 bun install                          # 同时装上本平台的 SearXNG 二进制
-bun run dev search "defuddle"        # 即 bun packages/sex/src/cli.ts；sex 自己启动 SearXNG 子进程，用完即停
+bun run dev search "defuddle"        # 即 bun apps/sex/src/cli.ts；sex 自己启动 SearXNG 子进程，用完即停
 bun run dev fetch https://stephango.com/saw
 bun run dev serve                    # HTTP API: http://127.0.0.1:3002/docs，MCP: http://127.0.0.1:3002/mcp
 
@@ -37,7 +37,7 @@ bun run build                        # 单文件可执行：dist/sex（内置 Se
 只有 `web_search` 和 `web_fetch`：没有浏览器、LLM、here-docs，也没有 map / crawl / batch / extract 和任务存储。CLI、HTTP API 和 MCP 都有，用法和 sex 一样：
 
 ```bash
-bun run dev:lite search "defuddle"   # 即 bun packages/sex-lite/src/cli.ts
+bun run dev:lite search "defuddle"   # 即 bun apps/sex-lite/src/cli.ts
 bun run dev:lite fetch https://stephango.com/saw -f markdown,links
 bun run dev:lite serve               # POST /v2/search、POST /v2/scrape（兼容 Firecrawl），/docs，/health，MCP 在 /mcp
 
@@ -99,7 +99,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*`、`SEX_DOCS` 和 `SEX_SEARXNG_URL`。�
 - **超时和取消**：转换受请求的 `timeout`（默认 `SEX_TIMEOUT`）约束，超时时已转换出若干页就返回这部分，`warning` 里写明只转换到第几页；一页都没转换出来才返回 `408 SCRAPE_TIMEOUT`（转换最多用掉剩余时间的 90%，留一点给后面的步骤）；排队等待转换的时间也算在 `timeout` 里；客户端断开或任务被取消时立即停止，返回 408。OCR 一页大约几百毫秒，长扫描件需要调大 `timeout` 或用 `maxPages`。
 - **资源**：引擎在 `serve` 启动时加载（约 1–3 秒），每个进程一份，空闲时大约 200 MB 内存；OCR 吃 CPU，但跑在原生线程里，不阻塞事件循环。light-ocr 每个引擎只有一个识别线程，所以同时转换的文档数由 `SEX_DOCS_CONCURRENCY` 限制，超出的排队。加载失败时 `serve` 直接以 `error: DOCS_UNAVAILABLE: ...` 退出。
 
-**运行方式**：`bun run build` 把 here-docs 和当前平台的原生引擎（约 160 MiB）一起打进 `dist/sex`（约 260 MiB）。原生库只能从磁盘上的真实文件加载，所以开了 `--docs` 后，第一次用到时会把它们解压到 `$XDG_CACHE_HOME/sex/docs-<hash>`（默认 `~/.cache/sex`，约 0.3–0.6 秒，之后复用；换版本自动换目录）。从源码运行（`bun run dev`）时直接用 `node_modules` 里的 here-docs。`bun packages/sex/scripts/build.ts --target bun-linux-arm64` 等可以构建其它平台，前提是 `node_modules` 里装了那个平台的原生包。支持的平台：Linux x64 / arm64（glibc 和 musl）、macOS arm64、Windows x64；Intel Mac 不支持。
+**运行方式**：`bun run build` 把 here-docs 和当前平台的原生引擎（约 160 MiB）一起打进 `dist/sex`（约 260 MiB）。原生库只能从磁盘上的真实文件加载，所以开了 `--docs` 后，第一次用到时会把它们解压到 `$XDG_CACHE_HOME/sex/docs-<hash>`（默认 `~/.cache/sex`，约 0.3–0.6 秒，之后复用；换版本自动换目录）。从源码运行（`bun run dev`）时直接用 `node_modules` 里的 here-docs。`bun apps/sex/scripts/build.ts --target bun-linux-arm64` 等可以构建其它平台，前提是 `node_modules` 里装了那个平台的原生包。支持的平台：Linux x64 / arm64（glibc 和 musl）、macOS arm64、Windows x64；Intel Mac 不支持。
 
 ### 浏览器
 
@@ -107,7 +107,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*`、`SEX_DOCS` 和 `SEX_SEARXNG_URL`。�
 - **`--cdp-url ws://...`**（`SEX_CDP_URL`）：连接已经在运行的 CDP 浏览器，比如 Chrome。sex 不启动任何进程；地址是回环时按“本机的外部浏览器”处理（Chrome 专用，见下面的表），要用 Lightpanda 请用 `--lightpanda`；和 `--lightpanda` 同时设置时以 `--cdp-url` 为准。
 - 都不设：不用浏览器。
 
-`dist/sex`（以及 Docker 镜像）内置了 Lightpanda，`--lightpanda` 开箱即用：第一次用到时解压到 `$XDG_CACHE_HOME/sex/lightpanda-<版本>-<hash>/`（约 76 MB），之后复用。版本和每个平台的 SHA-256 固定在 `packages/sex/scripts/lightpanda.ts`（目前是 1.0.2），`bun run build` 第一次会从 GitHub Releases 下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`，压缩后让 `dist/sex` 增大约 23 MB。预编译版本只有 Linux x64 / arm64（glibc ≥ 2.35）和 macOS x64 / arm64，Windows 和 musl 没有。
+`dist/sex`（以及 Docker 镜像）内置了 Lightpanda，`--lightpanda` 开箱即用：第一次用到时解压到 `$XDG_CACHE_HOME/sex/lightpanda-<版本>-<hash>/`（约 76 MB），之后复用。版本和每个平台的 SHA-256 固定在 `apps/sex/scripts/lightpanda.ts`（目前是 1.0.2），`bun run build` 第一次会从 GitHub Releases 下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`，压缩后让 `dist/sex` 增大约 23 MB。预编译版本只有 Linux x64 / arm64（glibc ≥ 2.35）和 macOS x64 / arm64，Windows 和 musl 没有。
 
 从源码运行（`bun run dev`）时没有内置的二进制，需要自己放到 PATH 上，或用 `--lightpanda-path`（`SEX_LIGHTPANDA_PATH`）指定；`--lightpanda-path` 也会覆盖内置的版本：
 
@@ -157,11 +157,11 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 - 数据：EasyList 和 EasyPrivacy 里的域名规则，也就是 `||domain^`（可带 `$third-party`）和例外规则 `@@||domain^`，约 9 万条。带路径、通配符、其它选项的规则和页面元素隐藏规则不用。
 - 匹配：按域名的 label 从后往前做后缀匹配（`ads.example.com` 命中 `cdn.ads.example.com`，不命中 `badads.example.com`），不是子串匹配；例外规则优先于拦截规则。`$third-party` 规则只在请求离开目标页所在的可注册域名时生效（没有 public suffix list，用“两段或 `co.uk` 式三段”近似）。
 - 范围：子资源和 iframe 被拦截时直接中止；目标页本身的导航（包括重定向）永远不拦（`EgressProxy` 上的差别见上）。浏览器不支持 request interception（部分 `--cdp-url` 浏览器）且没有别的策略需要它时，静默不拦截，不报错。
-- 数据怎么来：`packages/sex/scripts/adblock.ts` 固定了 EasyList 仓库的一个提交，按它的模板拉取各个子列表，提取域名后得到一个纯文本表，并固定该表的 SHA-256。`bun run build` 把它 zstd 压缩（约 600 KB）嵌入 `dist/sex`；第一次用到浏览器时解压并建 `Set`（约 30 ms，常驻内存增加约 10 MiB），之后每次查询不到 1 µs。从源码运行时，第一次用到会下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`；下载失败只打一条警告，不拦截，不影响抓取。升级规则：改 `EASYLIST_COMMIT`，运行 `bun packages/sex/scripts/adblock.ts` 取新 hash 填进 `ADBLOCK_TABLE_SHA256`。
-- 开销：CDP 路径要让浏览器把每个请求交给 sex 决定，这一步（CDP 往返）才是成本，查表本身可以忽略；本机的外部浏览器上广告在 `EgressProxy` 里按 host 拒绝，不需要 CDP 拦截。开了 `--allow-private-network`（`search` / `fetch` 默认就开）且没有其它策略时，Lightpanda 和远程浏览器上的 `blockAds` 会把 CDP 拦截打开。在 Lightpanda 上，一个有 50 个子资源且没有一个命中广告表的页面，实测增加约 2–5%（约 80 µs / 请求）；真实的广告多的新闻页面里，被拦掉 4–13 个请求，页面反而更快，正文不变。复测：`bun packages/sex/scripts/bench-adblock.ts`。
+- 数据怎么来：`apps/sex/scripts/adblock.ts` 固定了 EasyList 仓库的一个提交，按它的模板拉取各个子列表，提取域名后得到一个纯文本表，并固定该表的 SHA-256。`bun run build` 把它 zstd 压缩（约 600 KB）嵌入 `dist/sex`；第一次用到浏览器时解压并建 `Set`（约 30 ms，常驻内存增加约 10 MiB），之后每次查询不到 1 µs。从源码运行时，第一次用到会下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`；下载失败只打一条警告，不拦截，不影响抓取。升级规则：改 `EASYLIST_COMMIT`，运行 `bun apps/sex/scripts/adblock.ts` 取新 hash 填进 `ADBLOCK_TABLE_SHA256`。
+- 开销：CDP 路径要让浏览器把每个请求交给 sex 决定，这一步（CDP 往返）才是成本，查表本身可以忽略；本机的外部浏览器上广告在 `EgressProxy` 里按 host 拒绝，不需要 CDP 拦截。开了 `--allow-private-network`（`search` / `fetch` 默认就开）且没有其它策略时，Lightpanda 和远程浏览器上的 `blockAds` 会把 CDP 拦截打开。在 Lightpanda 上，一个有 50 个子资源且没有一个命中广告表的页面，实测增加约 2–5%（约 80 µs / 请求）；真实的广告多的新闻页面里，被拦掉 4–13 个请求，页面反而更快，正文不变。复测：`bun apps/sex/scripts/bench-adblock.ts`。
 - **`SEX_BLOCK_MEDIA`**（`--block-media`）：另外拦截图片和音视频请求（按资源类型，不是扩展名），默认关。文本抓取不需要这些字节；`screenshot` 本来就不支持。
 
-**EasyList 的出处与许可**：广告域名表来自 [EasyList](https://easylist.to/) 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0。sex 只取其中的域名，派生出的域名表随 `dist/sex` 一起分发；具体的提交和校验和见 `packages/sex/scripts/adblock.ts`。
+**EasyList 的出处与许可**：广告域名表来自 [EasyList](https://easylist.to/) 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0。sex 只取其中的域名，派生出的域名表随 `dist/sex` 一起分发；具体的提交和校验和见 `apps/sex/scripts/adblock.ts`。
 
 ### 出站代理
 
@@ -330,7 +330,7 @@ const fc = new Firecrawl({ apiUrl: "http://localhost:3002", apiKey: "anything" }
 await fc.scrape("https://example.com", { formats: ["markdown"] });
 ```
 
-`bun packages/sex/test/sdk-smoke.ts http://localhost:3002` 会用官方 JS SDK 把主要接口跑一遍。
+`bun apps/sex/test/sdk-smoke.ts http://localhost:3002` 会用官方 JS SDK 把主要接口跑一遍。
 
 **和 Firecrawl 的差异**
 
@@ -357,7 +357,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - **一个 deadline**：一次 scrape 只有一个期限，由 `timeout`（默认 `SEX_TIMEOUT`，从开始抓取算起，排队不算）和调用方的取消共同决定；请求用到 LLM（LLM 格式 json / summary / question / highlights，或 `checkPromptInjection`）且没传 `timeout` 时，默认值是 `max(SEX_TIMEOUT, 60000)`（Firecrawl 对 json 同样把 30 秒改成 60 秒）。抓取或渲染、`waitFor`、`wait` action、`executeJavascript`、页面脚本、正文抽取和文档转换都在这个期限内；到期返回 `408 SCRAPE_TIMEOUT`，浏览器页面随即关闭并释放名额。客户端断开或任务被取消返回 `408 TIMEOUT`。
   - LLM 格式（json / summary / question / highlights）和 `checkPromptInjection` 的调用也在这个期限内，到期同样返回 `408 SCRAPE_TIMEOUT`；每次 LLM 调用的预算是 `min(SEX_LLM_TIMEOUT, 期限剩余时间)`。例外：extract 任务自己抓页面时开了 `checkPromptInjection`，它的 LLM 调用不受页面 `timeout` 约束，只受任务取消和 `SEX_LLM_TIMEOUT` 约束。
   - `waitFor` 加上所有 `wait` action 的 `milliseconds` 超过 60000 返回 `400`；`waitFor` 超过 `timeout` 的一半时不拒绝，只在 `warning` 里提醒。`wait` action 的 `milliseconds` 与 `selector` 必须二选一（以前两者都不给时默认等 1 秒）。
-- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `packages/core/src/schemas.ts` 和 `packages/sex/src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
+- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `packages/core/src/schemas.ts` 和 `apps/sex/src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
 - `includePaths` / `excludePaths` 的正则会被启发式检查：带无界量词的分组再被无界量词修饰（`(a+)+`）、或分支相互重叠的量词分组（`(a|a)*`）会返回 `400`；每条 ≤ 1000 字符、≤ 100 条，匹配前 URL 截到 2048 字符。look-around 和反向引用仍然允许。
 - LLM 相关的格式（json / summary / question / highlights）和 extract：
   - 带 JSON Schema 时，模型输出会按原始 schema 校验（Ajv，按 `$schema` 选择 draft-07 / 2019-09 / 2020-12，未写时按 2020-12；`format` 不校验）。输出不是合法 JSON 或不符合 schema 时，会把错误发回给模型修正一次，仍不符合才返回 `422 LLM_INVALID_OUTPUT`。schema 本身不合法时，在开始抓取之前就返回 `400 BAD_REQUEST`。根节点是数组的 schema 会包成 `{ items }` 发给模型（structured output 要求根节点是对象），返回时再拆开。
@@ -450,17 +450,17 @@ HTTP 传输（`serve`，端点 `/mcp`）始终是无状态的（SDK v2 的行为
 ## 开发
 
 ```bash
-bun run verify    # bun check && bun run lint && bun test
+bun run verify    # bun check && bun run lint && bun run test
 bun run format    # biome --write
-bun test          # 单元 + 集成测试（本地 fixture 站点、mock SearXNG、mock LLM，不依赖外网；packages/sex/test/docs.test.ts 会真的跑 here-docs，平台不支持时自动跳过）
+bun run test      # 即 bun test --conditions sex-source（monorepo 内的包经 sex-source 条件解析到 src/）；单元 + 集成测试（本地 fixture 站点、mock SearXNG、mock LLM，不依赖外网；apps/sex/test/docs.test.ts 会真的跑 here-docs，平台不支持时自动跳过）
 ```
 
 可选的集成测试需要外部服务，没有设置对应变量时会跳过：
 
 ```bash
-SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test packages/sex/test/browser.test.ts packages/sex/test/egress-browser.test.ts   # 需要一个正在运行的 CDP 浏览器（Chrome）；egress-browser 是真浏览器经 EgressProxy 的 SSRF 用例
-SEX_TEST_SEARXNG=1 bun test packages/core/test/searxng.test.ts                   # 启动真的 SearXNG 二进制（可用 SEX_TEST_SEARXNG_PATH 指定），需要外网
-SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test packages/sex/test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
+SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test --conditions sex-source apps/sex/test/browser.test.ts apps/sex/test/egress-browser.test.ts   # 需要一个正在运行的 CDP 浏览器（Chrome）；egress-browser 是真浏览器经 EgressProxy 的 SSRF 用例
+SEX_TEST_SEARXNG=1 bun test --conditions sex-source packages/core/test/searxng.test.ts                   # 启动真的 SearXNG 二进制（可用 SEX_TEST_SEARXNG_PATH 指定），需要外网
+SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test --conditions sex-source apps/sex/test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
 ```
 
-其它检查：`bun check`（类型检查），`bun run lint`（Biome）。
+其它检查：`bun check`（类型检查），`bun run lint`（Biome）。`bun run build:packages` 用 tsdown 构建要发布的包，`bun run test:node` 在 Node 上对 dist 跑它们的测试（目前还没有发布包，两者都是空操作）；版本用 changesets 管理（`bun run changeset`）。

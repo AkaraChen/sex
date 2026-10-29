@@ -1,8 +1,8 @@
 // Page time with the outbound rules on (SSRF checks, ad blocking), measured through `Engine.scrape` so the same script runs
 // unchanged on any commit: run it on origin/main and on this branch, compare the tables.
 //
-//   bun packages/sex/scripts/bench-egress.ts --browser lightpanda --lightpanda <path> [--runs 30] [--label main]
-//   bun packages/sex/scripts/bench-egress.ts --browser chrome --cdp-url http://127.0.0.1:9222 [--runs 30]
+//   bun apps/sex/scripts/bench-egress.ts --browser lightpanda --lightpanda <path> [--runs 30] [--label main]
+//   bun apps/sex/scripts/bench-egress.ts --browser chrome --cdp-url http://127.0.0.1:9222 [--runs 30]
 //   --raw <file> writes the samples as JSON, to pool several runs (alternate the commits to cancel drift).
 //
 // Pages: a local fixture with 50 and with 200 subresources (scripts; served on this machine's public address, because the

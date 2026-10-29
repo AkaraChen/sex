@@ -558,7 +558,7 @@ test("the proxy works from a minified bundle", async () => {
     writeFileSync(
       entry,
       `export { EgressProxy } from ${JSON.stringify(join(import.meta.dir, "../src/engine/egress-proxy.ts"))};\n` +
-        `export { EgressPolicy } from ${JSON.stringify(join(import.meta.dir, "../../core/src/egress.ts"))};\n`,
+        `export { EgressPolicy } from ${JSON.stringify(join(import.meta.dir, "../../../packages/core/src/egress.ts"))};\n`,
     );
     const built = await Bun.build({ entrypoints: [entry], minify: true, target: "bun" });
     expect(built.success).toBe(true);

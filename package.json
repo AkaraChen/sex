@@ -3,23 +3,28 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.3",
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "apps/*"],
   "scripts": {
-    "dev": "bun packages/sex/src/cli.ts",
-    "dev:lite": "bun packages/sex-lite/src/cli.ts",
+    "dev": "bun --conditions sex-source apps/sex/src/cli.ts",
+    "dev:lite": "bun --conditions sex-source apps/sex-lite/src/cli.ts",
     "typecheck": "bun check",
-    "lint": "biome check packages",
-    "format": "biome check --write packages",
-    "test": "bun test",
-    "verify": "bun check && bun run lint && bun test",
-    "build": "bun packages/sex/scripts/build.ts",
-    "build:lite": "bun packages/sex-lite/scripts/build.ts"
+    "lint": "biome check packages apps scripts",
+    "format": "biome check --write packages apps scripts",
+    "test": "bun test --conditions sex-source",
+    "verify": "bun check && bun run lint && bun run test",
+    "build": "bun apps/sex/scripts/build.ts",
+    "build:lite": "bun apps/sex-lite/scripts/build.ts",
+    "build:packages": "bun scripts/build-packages.ts",
+    "test:node": "bun scripts/test-node.ts",
+    "changeset": "changeset"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.3",
+    "@changesets/cli": "^2",
     "@mendable/firecrawl-js": "^4.51.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@types/bun": "^1.4.4"
+    "@types/bun": "^1.4.4",
+    "tsdown": "^0"
   },
   "peerDependencies": {
     "typescript": "^7.0.2"
