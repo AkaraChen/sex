@@ -12,7 +12,7 @@ for (const name of readdirSync(dir)) {
   const tests = join(dir, name, "test");
   if (!existsSync(manifest) || !existsSync(tests)) continue;
   const pkg = JSON.parse(readFileSync(manifest, "utf8"));
-  if (pkg.sexNodeTests !== true) continue;
+  if (pkg.private === true && pkg.sexNodeTests !== true) continue;
   for (const f of readdirSync(tests)) if (f.endsWith(".test.ts")) files.push(join(tests, f));
 }
 

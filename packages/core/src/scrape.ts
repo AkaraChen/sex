@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
+  assertPublicUrl,
+  decodeBody,
+  type FetchedResponse,
+  fileKindOf,
+  MARKUP_TYPE,
+  parseHttpUrl,
+  rewriteUrl,
+} from "@searxng-js/sex-egress";
+import {
   AppError,
   badRequest,
   browserRequired,
@@ -25,12 +34,11 @@ import { type ChangeTrackingRequest, trackChanges } from "./change-tracking.ts";
 import type { CoreConfig } from "./config.ts";
 import { Deadline } from "./deadline.ts";
 import type { ExtractPool } from "./extract-pool.ts";
+import { fetchWithin } from "./fetch-within.ts";
 import { log } from "./log.ts";
 import { markdownToHtml } from "./markdown-html.ts";
-import { assertPublicUrl, decodeBody, type FetchedResponse, MARKUP_TYPE, parseHttpUrl, safeFetch } from "./net.ts";
 import type { PageExtractResult } from "./page.ts";
 import { joinPages, type PdfPage } from "./pdf.ts";
-import { fileKindOf, rewriteUrl } from "./rewrite.ts";
 import type { Document, FormatOption, ScrapeOptions } from "./schemas.ts";
 
 /** What a scrape runs on. The optional capabilities are used only when present and `enabled`. */
@@ -391,9 +399,8 @@ async function scrapeInner(
     if (cached)
       return { url: cached.url, status: cached.status, headers: new Headers(), contentType: cached.contentType, body: cached.body };
     const attempt = (via: "basic" | "stealth") =>
-      safeFetch(url, {
+      fetchWithin(url, deadline, {
         headers,
-        deadline,
         allowPrivateNetwork: config.allowPrivateNetwork,
         proxy: via === "stealth" ? stealthProxy : config.proxyUrl,
         maxBodyBytes: config.maxBodyBytes,

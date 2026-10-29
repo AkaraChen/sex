@@ -4,7 +4,7 @@ import http from "node:http";
 import net, { type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EgressPolicy } from "@sex/core/egress.ts";
+import { EgressPolicy } from "@searxng-js/sex-egress";
 import { AdBlockList } from "../src/engine/adblock.ts";
 import { EGRESS_HEADER, type EgressLease, EgressProxy } from "../src/engine/egress-proxy.ts";
 
@@ -558,9 +558,9 @@ test("the proxy works from a minified bundle", async () => {
     writeFileSync(
       entry,
       `export { EgressProxy } from ${JSON.stringify(join(import.meta.dir, "../src/engine/egress-proxy.ts"))};\n` +
-        `export { EgressPolicy } from ${JSON.stringify(join(import.meta.dir, "../../../packages/core/src/egress.ts"))};\n`,
+        `export { EgressPolicy } from ${JSON.stringify(join(import.meta.dir, "../../../packages/egress/src/egress.ts"))};\n`,
     );
-    const built = await Bun.build({ entrypoints: [entry], minify: true, target: "bun" });
+    const built = await Bun.build({ entrypoints: [entry], minify: true, target: "bun", conditions: ["sex-source"] });
     expect(built.success).toBe(true);
     const bundle = join(dir, "bundle.js");
     writeFileSync(bundle, (await built.outputs[0]?.text()) ?? "");

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import net from "node:net";
+import { EgressPolicy } from "@searxng-js/sex-egress";
 import { Deadline } from "@sex/core/deadline.ts";
-import { EgressPolicy } from "@sex/core/egress.ts";
 import { resolveConfig } from "../src/config.ts";
 import { AdBlockList } from "../src/engine/adblock.ts";
 import { BrowserPool } from "../src/engine/browser.ts";

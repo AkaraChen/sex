@@ -1,5 +1,5 @@
+import { assertPublicUrl, parseHttpUrl } from "@searxng-js/sex-egress";
 import { badRequest, notFound, toAppError } from "@searxng-js/sex-errors";
-import { assertPublicUrl, parseHttpUrl } from "@sex/core/net.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "@sex/core/scrape.ts";
 import type { BatchScrapeRequest, ScrapeOptions } from "../schemas.ts";
 import type { Engine } from "./engine.ts";

@@ -6,7 +6,7 @@ const repoRoot = resolve(import.meta.dir, "..");
 
 // Minimal env so no SEX_* variables from the developer's shell leak into the run.
 const cli = async (args: string[]) => {
-  const proc = Bun.spawn(["bun", "src/cli.ts", ...args], {
+  const proc = Bun.spawn(["bun", "--conditions", "sex-source", "src/cli.ts", ...args], {
     cwd: repoRoot,
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
     stdout: "pipe",

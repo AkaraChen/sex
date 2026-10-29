@@ -20,7 +20,7 @@ import {
 } from "@sex/core/config.ts";
 import { z } from "zod";
 
-export { DEFAULT_MAX_BODY_BYTES } from "@sex/core/config.ts";
+export { DEFAULT_MAX_BODY_BYTES } from "@searxng-js/sex-egress";
 
 export interface Config extends CoreConfig {
   /** CDP endpoint of an already running browser (ws:// or http://). */

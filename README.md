@@ -18,6 +18,7 @@
 | 目录 | 内容 |
 |---|---|
 | `packages/core`（`@sex/core`） | 两个产品共用的部分：SearXNG 搜索、HTTP 抓取 + Defuddle 提取、SSRF 防护、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` 两个 MCP 工具、CLI 的公共部分 |
+| `packages/egress`（`@searxng-js/sex-egress`，发布到 npm） | SSRF 安全的出站请求：`EgressPolicy`、`safeFetch`、`rewriteUrl`。Bun 和 Node 24 都能用，用法见 [packages/egress/README.md](packages/egress/README.md) |
 | `packages/errors`（`@searxng-js/sex-errors`，私有） | `AppError` 和错误目录（`ERRORS`），打包进用到它的包；跨包判断错误用 `AppError.isInstance` |
 | `apps/sex` | 完整版：在 core 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
 | `apps/sex-lite` | 轻量版：只用 core |

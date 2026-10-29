@@ -1,18 +1,26 @@
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { Readable } from "node:stream";
 import { AppError, badRequest, type ErrorCode } from "@searxng-js/sex-errors";
-import { DEFAULT_MAX_BODY_BYTES } from "./config.ts";
-import type { Deadline } from "./deadline.ts";
 import { egressFor, MAX_PINNED_ADDRESSES } from "./egress.ts";
 
 const MAX_REDIRECTS = 10;
+/** Default body size cap of `safeFetch`. */
+export const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
 
 export interface FetchOptions {
   headers?: Record<string, string>;
-  /** Bounds the whole fetch (redirects and body included). Pass `deadline.slice(ms)` for a step budget of its own. */
-  deadline: Deadline;
+  /**
+   * Bounds the whole fetch (redirects and body included). When it aborts, `safeFetch` throws `SCRAPE_TIMEOUT` if the
+   * signal's reason is a `TimeoutError` (`AbortSignal.timeout`), else `TIMEOUT` (cancelled). Callers with a finer notion
+   * of "time ran out" translate the error themselves.
+   */
+  signal: AbortSignal;
   allowPrivateNetwork: boolean;
   /**
    * Outbound proxy (`config.proxyUrl`). Required so a call site cannot forget it: pass `undefined` for a direct connection.
    * With a proxy the proxy resolves the host name, so the request cannot be pinned to the validated address; see `safeFetch`.
+   * Bun only: on Node a proxy is refused (Node's fetch has no proxy option, and silently going direct would be worse).
    */
   proxy: string | undefined;
   skipTlsVerification?: boolean;
@@ -96,10 +104,13 @@ async function readLimited(res: Response, signal: AbortSignal, maxBytes: number)
  * not a DNS answer that changes between this check and the proxy's own lookup (rebinding). Closing that gap is the proxy's job.
  */
 export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<FetchedResponse> {
-  const { signal } = opts.deadline;
+  const { signal } = opts;
   let url = parseHttpUrl(rawUrl);
   let method = opts.method ?? "GET";
   let body: string | undefined = opts.body;
+  if (opts.proxy && typeof Bun === "undefined") {
+    throw new AppError("CONFIG_INVALID", "An outbound proxy is only supported on Bun; this runtime would connect directly.");
+  }
   const headers: Record<string, string> = {
     "user-agent": opts.userAgent,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -120,23 +131,15 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
       for (const address of targets) {
         const pin = address ? pinToAddress(url, address) : undefined;
         try {
-          res = await fetch(pin?.url ?? url, {
+          res = await sendRequest(pin?.url ?? url, {
             method,
-            ...(body !== undefined ? { body } : {}),
+            body,
             headers: pin ? { host: pin.host, ...headers } : headers,
-            redirect: "manual",
             signal,
-            ...(opts.proxy ? { proxy: opts.proxy } : {}),
-            // Bun-specific TLS options; ignored by other runtimes.
-            ...(opts.skipTlsVerification || pin?.serverName
-              ? {
-                  tls: {
-                    ...(opts.skipTlsVerification ? { rejectUnauthorized: false } : {}),
-                    ...(pin?.serverName ? { serverName: pin.serverName } : {}),
-                  },
-                }
-              : {}),
-          } as RequestInit);
+            proxy: opts.proxy,
+            skipTlsVerification: opts.skipTlsVerification,
+            serverName: pin?.serverName,
+          });
           break;
         } catch (err) {
           if (signal.aborted) throw err;
@@ -174,10 +177,85 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
     }
     throw new AppError("TOO_MANY_REDIRECTS", `Too many redirects: ${rawUrl}`);
   } catch (err) {
-    opts.deadline.throwIfAborted(`while fetching ${rawUrl}`);
+    if (signal.aborted) throw abortError(signal, rawUrl);
     if (AppError.isInstance(err)) throw err;
     throw networkError(err, rawUrl, { skipTlsVerification: opts.skipTlsVerification });
   }
+}
+
+/** Time ran out (`AbortSignal.timeout`) or the caller cancelled; the two are told apart by the signal's reason. */
+function abortError(signal: AbortSignal, rawUrl: string): AppError {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error && reason.name === "TimeoutError")
+    return new AppError("SCRAPE_TIMEOUT", `Timed out while fetching ${rawUrl}`);
+  return new AppError("TIMEOUT", `Request cancelled while fetching ${rawUrl}`);
+}
+
+interface SendOptions {
+  method: string;
+  body: string | undefined;
+  headers: Record<string, string>;
+  signal: AbortSignal;
+  proxy: string | undefined;
+  skipTlsVerification: boolean | undefined;
+  /** TLS server name (SNI and certificate check) when the URL carries an address instead of the host. */
+  serverName: string | undefined;
+  /** Extra trusted CA certificate (PEM); for tests with a self-signed certificate. */
+  ca?: string;
+}
+
+/**
+ * One request, no redirects. Bun's `fetch` takes the proxy and TLS options; Node's does not, so a request that needs
+ * `serverName` / `skipTlsVerification` goes through `node:http(s)` there.
+ */
+export function sendRequest(url: URL, o: SendOptions): Promise<Response> {
+  if (typeof Bun !== "undefined" || !(o.serverName || o.skipTlsVerification || o.ca || o.headers.host)) {
+    return fetch(url, {
+      method: o.method,
+      ...(o.body !== undefined ? { body: o.body } : {}),
+      headers: o.headers,
+      redirect: "manual",
+      signal: o.signal,
+      ...(o.proxy ? { proxy: o.proxy } : {}),
+      // Bun-specific TLS options; ignored by other runtimes.
+      ...(o.skipTlsVerification || o.serverName || o.ca
+        ? {
+            tls: {
+              ...(o.skipTlsVerification ? { rejectUnauthorized: false } : {}),
+              ...(o.serverName ? { serverName: o.serverName } : {}),
+              ...(o.ca ? { ca: o.ca } : {}),
+            },
+          }
+        : {}),
+    } as RequestInit);
+  }
+  return new Promise<Response>((resolve, reject) => {
+    const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(
+      url,
+      {
+        method: o.method,
+        headers: o.headers,
+        signal: o.signal,
+        ...(url.protocol === "https:"
+          ? {
+              ...(o.serverName ? { servername: o.serverName } : {}),
+              ...(o.skipTlsVerification ? { rejectUnauthorized: false } : {}),
+              ...(o.ca ? { ca: o.ca } : {}),
+            }
+          : {}),
+      },
+      (res) => {
+        const headers = new Headers();
+        for (let i = 0; i < res.rawHeaders.length; i += 2) headers.append(res.rawHeaders[i] as string, res.rawHeaders[i + 1] as string);
+        const status = res.statusCode ?? 502;
+        const empty = status === 204 || status === 205 || status === 304;
+        if (empty) res.resume();
+        resolve(new Response(empty ? null : (Readable.toWeb(res) as ReadableStream<Uint8Array>), { status, headers }));
+      },
+    );
+    request.once("error", reject);
+    request.end(o.body);
+  });
 }
 
 const DNS_FAILURES = /^(ENOTFOUND|EAI_\w+|ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|CouldntResolveHost)$/;

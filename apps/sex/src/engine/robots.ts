@@ -1,5 +1,6 @@
+import { decodeBody } from "@searxng-js/sex-egress";
 import type { Deadline } from "@sex/core/deadline.ts";
-import { decodeBody, safeFetch } from "@sex/core/net.ts";
+import { fetchWithin } from "@sex/core/fetch-within.ts";
 import type { Engine } from "./engine.ts";
 
 interface Rule {
@@ -111,8 +112,7 @@ export function parseRobots(text: string, userAgent: string): Robots {
 
 export async function fetchRobots(engine: Engine, origin: string, userAgent: string, deadline: Deadline): Promise<Robots> {
   try {
-    const res = await safeFetch(`${origin}/robots.txt`, {
-      deadline: deadline.slice(10_000),
+    const res = await fetchWithin(`${origin}/robots.txt`, deadline.slice(10_000), {
       allowPrivateNetwork: engine.config.allowPrivateNetwork,
       proxy: engine.config.proxyUrl,
       userAgent: engine.config.userAgent,

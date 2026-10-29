@@ -1,8 +1,8 @@
+import { assertPublicUrl, parseHttpUrl } from "@searxng-js/sex-egress";
 import { AppError, badRequest, toAppError } from "@searxng-js/sex-errors";
 import { GUARD_MAX_CHARS } from "@sex/core/capabilities.ts";
 import { Deadline } from "@sex/core/deadline.ts";
 import { log } from "@sex/core/log.ts";
-import { assertPublicUrl, parseHttpUrl } from "@sex/core/net.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "@sex/core/scrape.ts";
 import { search } from "@sex/core/search.ts";
 import pLimit from "p-limit";

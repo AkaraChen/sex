@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { Deadline } from "@sex/core/deadline.ts";
-import { safeFetch } from "@sex/core/net.ts";
+import { safeFetch } from "@searxng-js/sex-egress";
 import type { Engine } from "../src/engine/engine.ts";
 import { type JobRecord, sendWebhook, type Task, type WebhookPayload } from "../src/engine/jobs/index.ts";
 import { deliverWebhook, WEBHOOK_MAX_ATTEMPTS, WEBHOOK_RETRY_BASE_MS } from "../src/engine/jobs/webhook.ts";
@@ -66,7 +65,7 @@ describe("safeFetch redirect handling", () => {
     await safeFetch(`${front.origin}/cross`, {
       allowPrivateNetwork: true,
       proxy: undefined,
-      deadline: Deadline.start(5_000),
+      signal: AbortSignal.timeout(5_000),
       userAgent: "test",
       headers: { ...credentials, "proxy-authorization": "p" },
     });
@@ -83,7 +82,7 @@ describe("safeFetch redirect handling", () => {
     await safeFetch(`${front.origin}/same`, {
       allowPrivateNetwork: true,
       proxy: undefined,
-      deadline: Deadline.start(5_000),
+      signal: AbortSignal.timeout(5_000),
       userAgent: "test",
       headers: credentials,
     });
@@ -97,7 +96,7 @@ describe("safeFetch redirect handling", () => {
     await safeFetch(`${front.origin}/post-303`, {
       allowPrivateNetwork: true,
       proxy: undefined,
-      deadline: Deadline.start(5_000),
+      signal: AbortSignal.timeout(5_000),
       userAgent: "test",
       method: "POST",
       body: "payload",
@@ -111,7 +110,7 @@ describe("safeFetch redirect handling", () => {
     await safeFetch(`${front.origin}/post-307`, {
       allowPrivateNetwork: true,
       proxy: undefined,
-      deadline: Deadline.start(5_000),
+      signal: AbortSignal.timeout(5_000),
       userAgent: "test",
       method: "POST",
       body: "payload",

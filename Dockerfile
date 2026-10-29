@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json bun.lock bunfig.toml tsconfig.json ./
 COPY packages/core/package.json packages/core/
 COPY packages/errors/package.json packages/errors/
+COPY packages/egress/package.json packages/egress/
 COPY apps/sex/package.json apps/sex/
 COPY apps/sex-lite/package.json apps/sex-lite/
 RUN bun install --frozen-lockfile

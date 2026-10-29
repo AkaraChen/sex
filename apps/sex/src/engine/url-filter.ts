@@ -1,5 +1,5 @@
+import { fileKindOf } from "@searxng-js/sex-egress";
 import { badRequest } from "@searxng-js/sex-errors";
-import { fileKindOf } from "@sex/core/rewrite.ts";
 
 /** Limits for user-supplied include/exclude regexes (the request schema allows the same). */
 export const MAX_PATTERNS = 100;

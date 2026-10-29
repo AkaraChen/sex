@@ -1,7 +1,8 @@
 import { gunzipSync } from "node:zlib";
+import { assertPublicUrl, decodeBody, parseHttpUrl } from "@searxng-js/sex-egress";
 import { Deadline } from "@sex/core/deadline.ts";
+import { fetchWithin } from "@sex/core/fetch-within.ts";
 import { log } from "@sex/core/log.ts";
-import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "@sex/core/net.ts";
 import { scrapeUrl } from "@sex/core/scrape.ts";
 import { clean, searxng } from "@sex/core/search.ts";
 import type { MapLink, MapRequest, MapResult } from "../schemas.ts";
@@ -69,8 +70,7 @@ export async function sitemapUrls(
     if (visited.has(sm)) continue;
     visited.add(sm);
     try {
-      const res = await safeFetch(sm, {
-        deadline: deadline.slice(15_000),
+      const res = await fetchWithin(sm, deadline.slice(15_000), {
         allowPrivateNetwork: engine.config.allowPrivateNetwork,
         proxy: engine.config.proxyUrl,
         userAgent: engine.config.userAgent,
@@ -129,8 +129,8 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
 
   // Like Firecrawl, the site is the one the entry URL redirects to; safeFetch checks every hop.
   let warning: string | undefined;
+  const resolveDeadline = deadline.slice(10_000);
   const resolveOpts = {
-    deadline: deadline.slice(10_000),
     allowPrivateNetwork: engine.config.allowPrivateNetwork,
     proxy: engine.config.proxyUrl,
     userAgent: engine.config.userAgent,
@@ -138,12 +138,12 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   };
   try {
     // HEAD where the server allows it; either way only the headers are read, the page itself is scraped below.
-    const head = await safeFetch(start.href, { ...resolveOpts, method: "HEAD" }).catch((err) => {
+    const head = await fetchWithin(start.href, resolveDeadline, { ...resolveOpts, method: "HEAD" }).catch((err) => {
       deadline.signal.throwIfAborted();
       log.debug("map: HEAD on the start URL failed", { error: err instanceof Error ? err.message : String(err) });
       return undefined;
     });
-    const res = head && head.status < 400 ? head : await safeFetch(start.href, resolveOpts);
+    const res = head && head.status < 400 ? head : await fetchWithin(start.href, resolveDeadline, resolveOpts);
     start = parseHttpUrl(res.url);
   } catch (err) {
     log.debug("map: resolving the start URL failed", { error: err instanceof Error ? err.message : String(err) });

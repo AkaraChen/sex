@@ -23,7 +23,21 @@ afterAll(() => {
 async function serve(port: number, dataDir: string, documentsUrl?: string) {
   const documents = documentsUrl ? ["--documents-url", documentsUrl] : [];
   child = Bun.spawn(
-    ["bun", cli, "serve", "--port", String(port), "--data-dir", dataDir, ...documents, "--allow-private-network", "--log-level", "warn"],
+    [
+      "bun",
+      "--conditions",
+      "sex-source",
+      cli,
+      "serve",
+      "--port",
+      String(port),
+      "--data-dir",
+      dataDir,
+      ...documents,
+      "--allow-private-network",
+      "--log-level",
+      "warn",
+    ],
     {
       stdout: "ignore",
       stderr: "inherit",

@@ -1,3 +1,4 @@
+import { DEFAULT_MAX_BODY_BYTES } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
 import { z } from "zod";
 
@@ -51,9 +52,6 @@ export interface CoreConfigOverrides {
 }
 
 export type Env = Record<string, string | undefined>;
-
-/** Default body cap for a page fetch; also used by callers that do not pass a config. */
-export const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
 
 const DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 

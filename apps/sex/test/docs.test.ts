@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { MARKUP_TYPE } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
 import { Deadline } from "@sex/core/deadline.ts";
 import { markdownToHtml } from "@sex/core/markdown-html.ts";
-import { MARKUP_TYPE } from "@sex/core/net.ts";
 import { DocsConverter, type HereDocs } from "../src/engine/docs.ts";
 import { testEngine, textPdf } from "./helpers.ts";
 

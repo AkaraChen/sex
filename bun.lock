@@ -27,6 +27,7 @@
         "@orpc/openapi": "^1.16.1",
         "@orpc/server": "^1.16.1",
         "@orpc/zod": "^1.16.1",
+        "@searxng-js/sex-egress": "workspace:*",
         "@searxng-js/sex-errors": "workspace:*",
         "@sex/core": "workspace:*",
         "ajv": "^8.20.0",
@@ -64,15 +65,23 @@
         "@orpc/server": "^1.16.1",
         "@orpc/zod": "^1.16.1",
         "@searxng-js/searxng": "0.1.0",
+        "@searxng-js/sex-egress": "workspace:*",
         "@searxng-js/sex-errors": "workspace:*",
         "citty": "^0.2.2",
         "defuddle": "^0.19.6",
         "hono": "^4.13.14",
-        "ipaddr.js": "^2",
         "linkedom": "^0.18.14",
         "p-limit": "^7.3.3",
         "unpdf": "^1.9.1",
         "zod": "^4.6.7",
+      },
+    },
+    "packages/egress": {
+      "name": "@searxng-js/sex-egress",
+      "version": "0.0.0",
+      "dependencies": {
+        "@searxng-js/sex-errors": "workspace:*",
+        "ipaddr.js": "^2",
       },
     },
     "packages/errors": {
@@ -358,6 +367,8 @@
     "@searxng-js/linux-x64": ["@searxng-js/linux-x64@0.1.0", "", { "os": "linux", "cpu": "x64" }, "sha512-O+DVjVWT8zEAP1H6KDTKSz6mdYeFp1NpjNBukBNtFqFUbGr/hP25IFS2Q4f1A2ZJh0u6yY2WQHI4brMME3YHeg=="],
 
     "@searxng-js/searxng": ["@searxng-js/searxng@0.1.0", "", { "optionalDependencies": { "@searxng-js/darwin-arm64": "0.1.0", "@searxng-js/linux-x64": "0.1.0", "@searxng-js/win32-x64": "0.1.0" } }, "sha512-yMK6z7ffAaKfx72CFlZwpng3Lk8TdDneOq/Qdj5NxWIau3Xx4Ono0WMUZrej2o+1cmSmWUxLUU1yWi6nzHs+KA=="],
+
+    "@searxng-js/sex-egress": ["@searxng-js/sex-egress@workspace:packages/egress"],
 
     "@searxng-js/sex-errors": ["@searxng-js/sex-errors@workspace:packages/errors"],
 

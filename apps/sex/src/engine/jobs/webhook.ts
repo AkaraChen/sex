@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { Deadline } from "@sex/core/deadline.ts";
+import { fetchWithin } from "@sex/core/fetch-within.ts";
 import { log } from "@sex/core/log.ts";
-import { safeFetch } from "@sex/core/net.ts";
 import { WEBHOOK_SIGNATURE_HEADER, type WebhookConfig } from "../../schemas.ts";
 import type { Engine } from "../engine.ts";
 import type { JobRecord, Task, WebhookPayload } from "./types.ts";
@@ -70,7 +70,7 @@ export async function deliverWebhook(engine: Engine, task: WebhookTask): Promise
   const { webhookSecret } = engine.config;
   let failure: { message: string; retry: boolean };
   try {
-    const res = await safeFetch(hook.url, {
+    const res = await fetchWithin(hook.url, Deadline.start(ATTEMPT_TIMEOUT_MS), {
       method: "POST",
       body,
       headers: {
@@ -78,7 +78,6 @@ export async function deliverWebhook(engine: Engine, task: WebhookTask): Promise
         ...hook.headers,
         ...(webhookSecret ? { [WEBHOOK_SIGNATURE_HEADER]: signBody(webhookSecret, body) } : {}),
       },
-      deadline: Deadline.start(ATTEMPT_TIMEOUT_MS),
       allowPrivateNetwork: engine.config.allowPrivateNetwork,
       proxy: engine.config.proxyUrl,
       userAgent: engine.config.userAgent,

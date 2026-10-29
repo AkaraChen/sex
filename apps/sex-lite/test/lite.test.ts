@@ -160,7 +160,7 @@ describe("mcp (streamable http at /mcp)", () => {
 describe("cli", () => {
   // Minimal env so no SEX_* variables from the developer's shell leak into the run.
   const cli = async (args: string[]) => {
-    const proc = Bun.spawn(["bun", "src/cli.ts", ...args], {
+    const proc = Bun.spawn(["bun", "--conditions", "sex-source", "src/cli.ts", ...args], {
       cwd: resolve(import.meta.dir, ".."),
       env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
       stdout: "pipe",

@@ -21,8 +21,8 @@ import http, { type ClientRequest, type IncomingMessage, type OutgoingHttpHeader
 import https from "node:https";
 import net, { type Socket } from "node:net";
 import { pipeline } from "node:stream";
+import { type EgressPolicy, MAX_PINNED_ADDRESSES } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
-import { type EgressPolicy, MAX_PINNED_ADDRESSES } from "@sex/core/egress.ts";
 import { log } from "@sex/core/log.ts";
 import { type AdBlockList, siteOf } from "./adblock.ts";
 

@@ -1,9 +1,8 @@
 // SEX_PROXY_URL: the proxy is used, and the SSRF checks stay in front of it.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { safeFetch } from "@searxng-js/sex-egress";
 import { resolveCoreConfig } from "../src/config.ts";
-import { Deadline } from "../src/deadline.ts";
 import { BaseEngine } from "../src/engine.ts";
-import { safeFetch } from "../src/net.ts";
 import { startCountingProxy } from "./helpers.ts";
 
 // A public IP literal needs no DNS lookup to pass the check; the proxy delivers it to the local fixture instead.
@@ -38,7 +37,7 @@ describe("safeFetch through a proxy", () => {
 
   const get = (url: string, extra: { proxy?: string; headers?: Record<string, string> } = {}) =>
     safeFetch(url, {
-      deadline: Deadline.start(5_000),
+      signal: AbortSignal.timeout(5_000),
       allowPrivateNetwork: false,
       userAgent: "t",
       proxy: proxy.url,

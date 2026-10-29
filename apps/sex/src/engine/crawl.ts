@@ -1,7 +1,8 @@
+import { assertPublicUrl, decodeBody, parseHttpUrl } from "@searxng-js/sex-egress";
 import { toAppError } from "@searxng-js/sex-errors";
 import { Deadline } from "@sex/core/deadline.ts";
+import { fetchWithin } from "@sex/core/fetch-within.ts";
 import { log } from "@sex/core/log.ts";
-import { assertPublicUrl, decodeBody, parseHttpUrl, safeFetch } from "@sex/core/net.ts";
 import { assertScrapeCapabilities, scrapeUrl } from "@sex/core/scrape.ts";
 import type { z } from "zod";
 import { CrawlRequest } from "../schemas.ts";
@@ -258,8 +259,7 @@ export async function handleCrawlStart(engine: Engine, jobId: string, taskId?: s
     await taskEffects(engine, job, taskId).started();
 
     if (!req.ignoreRobotsTxt) {
-      const robotsTxt = await safeFetch(`${start.origin}/robots.txt`, {
-        deadline: Deadline.start(10_000),
+      const robotsTxt = await fetchWithin(`${start.origin}/robots.txt`, Deadline.start(10_000), {
         allowPrivateNetwork: engine.config.allowPrivateNetwork,
         proxy: engine.config.proxyUrl,
         userAgent: engine.config.userAgent,

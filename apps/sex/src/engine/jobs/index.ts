@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { assertPublicUrl, parseHttpUrl } from "@sex/core/net.ts";
+import { assertPublicUrl, parseHttpUrl } from "@searxng-js/sex-egress";
 import type { Config } from "../../config.ts";
 import type { WebhookConfig } from "../../schemas.ts";
 import type { Engine } from "../engine.ts";
