@@ -83,7 +83,7 @@ jobs:
       - run: bun install --frozen-lockfile
       # The same release dist/sex embeds: version and SHA-256 are pinned in packages/browser/scripts/lightpanda.ts.
       - run: bun packages/browser/scripts/lightpanda.ts "$RUNNER_TEMP/lightpanda"
-      - run: bun test --conditions sex-source apps/sex/test/browser.test.ts apps/sex/test/browser-proxy.test.ts
+      - run: bun test --conditions sex-source --timeout 30000 apps/sex/test/browser.test.ts apps/sex/test/browser-proxy.test.ts
         env:
           SEX_TEST_LIGHTPANDA_PATH: ${{ runner.temp }}/lightpanda
 
@@ -102,7 +102,7 @@ jobs:
           google-chrome --headless=new --no-sandbox --disable-gpu --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
             --user-data-dir="$RUNNER_TEMP/chrome" about:blank >"$RUNNER_TEMP/chrome.log" 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:9222/json/version && break; sleep 1; done
-      - run: bun test --conditions sex-source apps/sex/test/browser.test.ts apps/sex/test/browser-fallback.test.ts apps/sex/test/abort.test.ts apps/sex/test/browser-proxy.test.ts apps/sex/test/egress-browser.test.ts
+      - run: bun test --conditions sex-source --timeout 30000 apps/sex/test/browser.test.ts apps/sex/test/browser-fallback.test.ts apps/sex/test/abort.test.ts apps/sex/test/browser-proxy.test.ts apps/sex/test/egress-browser.test.ts
         env:
           SEX_TEST_CDP_URL: http://127.0.0.1:9222
       - if: failure()
@@ -133,7 +133,7 @@ jobs:
             [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8333/)" != "000" ] && break
             sleep 1
           done
-      - run: bun test --conditions sex-source apps/sex/test/store-contract.test.ts apps/sex/test/durability.test.ts packages/documents-s3/test/s3.test.ts
+      - run: bun test --conditions sex-source --timeout 30000 apps/sex/test/store-contract.test.ts apps/sex/test/durability.test.ts packages/documents-s3/test/s3.test.ts
       # The same bucket through the AWS SDK on Node (sex-jobs' optional peer @aws-sdk/client-s3).
       - uses: actions/setup-node@v4
         with:

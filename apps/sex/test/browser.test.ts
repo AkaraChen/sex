@@ -49,7 +49,7 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
   let guardedA: BrowserPool;
   let guardedAll: BrowserPool;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     // Server B stands in for an internal address: every hit is recorded.
     b = Bun.serve({
       port: 0,
@@ -101,7 +101,10 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
     engine = testEngine(overrides);
     guardedA = new BrowserPool({ ...browserOptions(engine.config), kind: "remote-cdp", policy: new OnlyPort(String(a.port)) });
     guardedAll = new BrowserPool({ ...browserOptions(engine.config), kind: "remote-cdp", policy: new OnlyPort(undefined) });
-  });
+    // The cold start, outside every test's own budget: connecting to (or spawning) the browser, and the ad block table,
+    // which from source is derived from EasyList over the network on first use. It made the first test time out now and then.
+    await Promise.all([engine.browser.warmup(), guardedA.warmup(), guardedAll.warmup()]);
+  }, 120_000);
 
   afterAll(async () => {
     await Promise.all([guardedA?.close(), guardedAll?.close()]);
