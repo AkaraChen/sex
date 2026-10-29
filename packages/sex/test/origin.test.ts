@@ -137,12 +137,12 @@ describe("http host checks", () => {
 });
 
 describe("mcp origin check", () => {
-  let server: ReturnType<typeof serveHttp>;
+  let server: Awaited<ReturnType<typeof serveHttp>>;
   let port: number;
 
-  beforeAll(() => {
-    server = serveHttp(make(), { port: 0, host: "127.0.0.1" });
-    port = server.server.port!;
+  beforeAll(async () => {
+    server = await serveHttp(make(), { port: 0, host: "127.0.0.1" });
+    port = server.port;
   });
 
   afterAll(async () => {

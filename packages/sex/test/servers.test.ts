@@ -109,13 +109,13 @@ describe("http", () => {
 });
 
 describe("mcp (streamable http at /mcp)", () => {
-  let server: ReturnType<typeof serveHttp>;
+  let server: Awaited<ReturnType<typeof serveHttp>>;
   let base: string;
   let client: Client;
 
   beforeAll(async () => {
-    server = serveHttp(engine, { port: 0, host: "127.0.0.1" });
-    base = `http://127.0.0.1:${server.server.port}`;
+    server = await serveHttp(engine, { port: 0, host: "127.0.0.1" });
+    base = `http://127.0.0.1:${server.port}`;
     client = new Client({ name: "test", version: "1.0.0" });
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
   });

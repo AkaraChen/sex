@@ -34,7 +34,11 @@ export class SearxngService {
   private cooldownUntil = 0;
   private lastStartError = "";
 
-  constructor(private readonly config: Config) {}
+  private readonly config: Config;
+
+  constructor(config: Config) {
+    this.config = config;
+  }
 
   /** True when sex runs SearXNG itself (no SEX_SEARXNG_URL). */
   get managed(): boolean {

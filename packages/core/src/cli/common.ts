@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import type { CoreConfigOverrides } from "../config.ts";
 import type { BaseEngine } from "../engine.ts";
 import { AppError, toAppError } from "../errors.ts";
@@ -205,7 +206,7 @@ function printSearch(data: SearchData) {
 // ---------------------------------------------------------------- fetch
 
 export const parseJsonArg = async (value: string): Promise<unknown> => {
-  const text = value.trim().startsWith("{") ? value : await Bun.file(value).text();
+  const text = value.trim().startsWith("{") ? value : await readFile(value, "utf8");
   return JSON.parse(text);
 };
 

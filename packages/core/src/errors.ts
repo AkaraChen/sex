@@ -90,16 +90,15 @@ export class AppError extends Error {
   readonly status: number;
   readonly retryable: boolean;
   readonly fallback: boolean;
+  readonly code: ErrorCode;
+  readonly details?: unknown;
 
   /** `overrides.retryable` is for the few codes whose answer depends on the instance (SearXNG: a 5xx is worth retrying, a 403 is not). */
-  constructor(
-    readonly code: ErrorCode,
-    message: string,
-    readonly details?: unknown,
-    overrides?: { retryable?: boolean },
-  ) {
+  constructor(code: ErrorCode, message: string, details?: unknown, overrides?: { retryable?: boolean }) {
     super(message);
     this.name = "AppError";
+    this.code = code;
+    this.details = details;
     const s = ERRORS[code];
     this.status = s.status;
     this.retryable = overrides?.retryable ?? s.retryable;

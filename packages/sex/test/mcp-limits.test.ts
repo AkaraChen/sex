@@ -54,16 +54,16 @@ function startBigSite() {
 describe("mcp output limits", () => {
   let links: ReturnType<typeof startLinkSite>;
   let big: ReturnType<typeof startBigSite>;
-  let server: ReturnType<typeof serveHttp>;
+  let server: Awaited<ReturnType<typeof serveHttp>>;
   let client: Client;
 
   beforeAll(async () => {
     links = startLinkSite();
     big = startBigSite();
     const engine = testEngine();
-    server = serveHttp(engine, { port: 0, host: "127.0.0.1" });
+    server = await serveHttp(engine, { port: 0, host: "127.0.0.1" });
     client = new Client({ name: "test", version: "1.0.0" });
-    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.server.port}/mcp`)));
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp`)));
   });
 
   afterAll(async () => {

@@ -23,11 +23,10 @@ export class BaseEngine<C extends CoreConfig = CoreConfig> implements SearchCont
   readonly llm?: ScrapeLlm;
   readonly docs?: ScrapeDocs;
   readonly missingHints?: MissingHints;
+  readonly config: C;
 
-  constructor(
-    readonly config: C,
-    opts: { missingHints?: MissingHints } = {},
-  ) {
+  constructor(config: C, opts: { missingHints?: MissingHints } = {}) {
+    this.config = config;
     this.missingHints = opts.missingHints;
     this.searxng = new SearxngService(config);
     this.scrapeLimit = pLimit(config.concurrency);

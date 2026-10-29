@@ -62,7 +62,7 @@ const serve = defineCommand({
     onShutdown(engine, () => stopServer?.());
     if (!(await warmupOrExit(engine))) return;
     const { serveHttp } = await import("./server.ts");
-    stopServer = serveHttp(engine, listenAddress(args)).stop;
+    stopServer = (await serveHttp(engine, listenAddress(args))).stop;
   },
 });
 

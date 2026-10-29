@@ -1,6 +1,8 @@
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import ipaddr from "ipaddr.js";
+import { isBun } from "std-env";
+import type { Dispatcher } from "undici";
 import { DEFAULT_MAX_BODY_BYTES } from "./config.ts";
 import type { Deadline } from "./deadline.ts";
 import { AppError, badRequest, type ErrorCode } from "./errors.ts";
@@ -123,6 +125,112 @@ async function readLimited(res: Response, signal: AbortSignal, maxBytes: number)
   return out;
 }
 
+interface SendInit {
+  method: string;
+  body?: string;
+  headers: Record<string, string>;
+  signal: AbortSignal;
+}
+
+/**
+ * Bun: connects to the validated addresses themselves (first one that connects wins), not to a fresh DNS answer; the
+ * original host goes in the Host header and, through Bun's `tls.serverName`, in the SNI and certificate check. Without
+ * a lookup result (IP literal, private networks allowed) the URL is fetched as is.
+ */
+async function sendBun(url: URL, addresses: string[], init: SendInit, opts: FetchOptions): Promise<Response> {
+  const targets = addresses.length ? addresses.slice(0, MAX_PINNED_ADDRESSES) : [undefined];
+  let connectError: unknown;
+  for (const address of targets) {
+    const pin = address ? pinToAddress(url, address) : undefined;
+    try {
+      return await fetch(pin?.url ?? url, {
+        method: init.method,
+        ...(init.body !== undefined ? { body: init.body } : {}),
+        headers: pin ? { host: pin.host, ...init.headers } : init.headers,
+        redirect: "manual",
+        signal: init.signal,
+        ...(opts.skipTlsVerification || pin?.serverName
+          ? {
+              tls: {
+                ...(opts.skipTlsVerification ? { rejectUnauthorized: false } : {}),
+                ...(pin?.serverName ? { serverName: pin.serverName } : {}),
+              },
+            }
+          : {}),
+      } as RequestInit);
+    } catch (err) {
+      if (init.signal.aborted) throw err;
+      connectError = err;
+    }
+  }
+  throw connectError;
+}
+
+/**
+ * DNS lookup for undici's connections that refuses private addresses, so the address a socket connects to is the one
+ * that was checked (a second answer from a rebinding DNS server is checked again, not trusted).
+ */
+export const publicLookup: LookupFunction = (hostname, options, callback) => {
+  const family = options.family === "IPv4" ? 4 : options.family === "IPv6" ? 6 : options.family;
+  lookup(hostname, { all: true, ...(family ? { family } : {}) }).then(
+    (found) => {
+      if (found.some((a) => isPrivateIp(a.address))) {
+        callback(new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${hostname}`), []);
+        return;
+      }
+      const addresses = found.slice(0, MAX_PINNED_ADDRESSES);
+      const first = addresses[0];
+      if (options.all || !first) callback(null, addresses);
+      else callback(null, first.address, first.family);
+    },
+    (err: NodeJS.ErrnoException) => callback(err, []),
+  );
+};
+
+/** One undici Agent per (private networks allowed, TLS verification skipped), so connections are pooled across requests. */
+const nodeAgents = new Map<string, Promise<Dispatcher>>();
+
+function nodeAgent(opts: FetchOptions): Promise<Dispatcher> {
+  const key = `${opts.allowPrivateNetwork}:${opts.skipTlsVerification === true}`;
+  let agent = nodeAgents.get(key);
+  if (!agent) {
+    agent = import("undici").then(
+      ({ Agent }) =>
+        new Agent({
+          connect: {
+            ...(opts.skipTlsVerification ? { rejectUnauthorized: false } : {}),
+            ...(opts.allowPrivateNetwork ? {} : { lookup: publicLookup }),
+          },
+        }),
+    );
+    nodeAgents.set(key, agent);
+  }
+  return agent;
+}
+
+/** Node: undici's fetch through an Agent whose DNS lookup refuses private addresses (`publicLookup`). */
+async function sendNode(url: URL, _addresses: string[], init: SendInit, opts: FetchOptions): Promise<Response> {
+  const [{ fetch: undiciFetch }, dispatcher] = await Promise.all([import("undici"), nodeAgent(opts)]);
+  try {
+    const res = await undiciFetch(url, {
+      method: init.method,
+      ...(init.body !== undefined ? { body: init.body } : {}),
+      headers: init.headers,
+      redirect: "manual",
+      signal: init.signal,
+      dispatcher,
+    });
+    return res as unknown as Response;
+  } catch (err) {
+    // undici wraps connect errors as "fetch failed"; a lookup that refused a private address is ours.
+    const cause = (err as { cause?: unknown }).cause;
+    throw cause instanceof AppError ? cause : err;
+  }
+}
+
+/** Sends one request without following redirects, connecting only to validated addresses. */
+const send = isBun ? sendBun : sendNode;
+
 /** fetch() with SSRF checks on every redirect hop, a deadline and a body size cap. */
 export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<FetchedResponse> {
   const { signal } = opts.deadline;
@@ -138,37 +246,7 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const addresses = await resolvePublicAddresses(url, opts.allowPrivateNetwork);
-      // Connect to the validated addresses themselves (first one that connects wins), not to a fresh DNS answer.
-      // Without a lookup result (IP literal, private networks allowed) the URL is fetched as is.
-      const targets = addresses.length ? addresses.slice(0, MAX_PINNED_ADDRESSES) : [undefined];
-      let res: Response | undefined;
-      let connectError: unknown;
-      for (const address of targets) {
-        const pin = address ? pinToAddress(url, address) : undefined;
-        try {
-          res = await fetch(pin?.url ?? url, {
-            method,
-            ...(body !== undefined ? { body } : {}),
-            headers: pin ? { host: pin.host, ...headers } : headers,
-            redirect: "manual",
-            signal,
-            // Bun-specific TLS options; ignored by other runtimes.
-            ...(opts.skipTlsVerification || pin?.serverName
-              ? {
-                  tls: {
-                    ...(opts.skipTlsVerification ? { rejectUnauthorized: false } : {}),
-                    ...(pin?.serverName ? { serverName: pin.serverName } : {}),
-                  },
-                }
-              : {}),
-          } as RequestInit);
-          break;
-        } catch (err) {
-          if (signal.aborted) throw err;
-          connectError = err;
-        }
-      }
-      if (!res) throw connectError;
+      const res = await send(url, addresses, { method, body, headers, signal }, opts);
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {
         await res.body?.cancel();

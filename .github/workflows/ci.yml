@@ -12,6 +12,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.3
+      # For the tests that run core / sex-lite on Node (they skip themselves without it).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - run: bun install --frozen-lockfile
       - run: bun check
       - run: bun run lint

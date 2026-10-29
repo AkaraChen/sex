@@ -21,6 +21,8 @@
 | `packages/sex` | 完整版：在 core 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
 | `packages/sex-lite` | 轻量版：只用 core |
 
+core 和 sex-lite 也能在 Node（≥ 22.19）上从源码直接运行，例如 `node packages/sex-lite/src/cli.ts fetch <url>`；sex 只支持 Bun。
+
 ## 快速开始
 
 ```bash

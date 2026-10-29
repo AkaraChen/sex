@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { Defuddle } from "defuddle/node";
 import { parseHTML } from "linkedom";
-import pageScript from "./page-script.js" with { type: "text" };
+import { isBun } from "std-env";
 
 export interface PageExtractOptions {
   url: string;
@@ -39,8 +40,13 @@ export interface PageExtractResult {
   };
 }
 
-/** Source of the page-side extractor, for injection into a browser page. */
-export const PAGE_SCRIPT = pageScript as unknown as string;
+/**
+ * Source of the page-side extractor, for injection into a browser page. Bun imports it as text (which embeds it in a
+ * compiled binary); Node has no text imports and reads the file next to this module.
+ */
+export const PAGE_SCRIPT: string = isBun
+  ? ((await import("./page-script.js", { with: { type: "text" } })).default as unknown as string)
+  : readFileSync(new URL("./page-script.js", import.meta.url), "utf8");
 
 type PageFn = (
   doc: unknown,

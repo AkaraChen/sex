@@ -21,17 +21,29 @@ export interface DeadlineOptions {
  */
 export class Deadline {
   readonly signal: AbortSignal;
+  /** Epoch ms at which this deadline ends; Infinity when it has no time limit of its own. */
+  private readonly endsAt: number;
+  /** What fires when this deadline's own time runs out (not set on unbounded deadlines and on slices that share their parent's end). */
+  private readonly timer: AbortSignal | undefined;
+  private readonly timeoutMs: number | undefined;
+  private readonly caller: AbortSignal | undefined;
+  private readonly parent: Deadline | undefined;
+  private readonly expiredCode: ErrorCode;
 
   private constructor(
-    /** Epoch ms at which this deadline ends; Infinity when it has no time limit of its own. */
-    private readonly endsAt: number,
-    /** What fires when this deadline's own time runs out (not set on unbounded deadlines and on slices that share their parent's end). */
-    private readonly timer: AbortSignal | undefined,
-    private readonly timeoutMs: number | undefined,
-    private readonly caller: AbortSignal | undefined,
-    private readonly parent: Deadline | undefined,
-    private readonly expiredCode: ErrorCode,
+    endsAt: number,
+    timer: AbortSignal | undefined,
+    timeoutMs: number | undefined,
+    caller: AbortSignal | undefined,
+    parent: Deadline | undefined,
+    expiredCode: ErrorCode,
   ) {
+    this.endsAt = endsAt;
+    this.timer = timer;
+    this.timeoutMs = timeoutMs;
+    this.caller = caller;
+    this.parent = parent;
+    this.expiredCode = expiredCode;
     this.signal = AbortSignal.any([...(caller ? [caller] : []), ...(timer ? [timer] : []), ...(parent ? [parent.signal] : [])]);
   }
 

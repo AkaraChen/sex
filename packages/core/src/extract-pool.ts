@@ -1,3 +1,4 @@
+import { Worker } from "node:worker_threads";
 import type { Deadline } from "./deadline.ts";
 import { AppError, isErrorCode } from "./errors.ts";
 import { log } from "./log.ts";
@@ -7,8 +8,8 @@ import { type PdfText, pdfToMarkdown } from "./pdf.ts";
 // In a compiled binary, extra entrypoints are embedded relative to the build's --root (packages/), so the worker sits under
 // core/src/; the build scripts of sex and sex-lite both pass that root.
 const WORKER_URL = import.meta.url.includes("$bunfs")
-  ? new URL("./core/src/extract-worker.ts", import.meta.url).href
-  : new URL("./extract-worker.ts", import.meta.url).href;
+  ? new URL("./core/src/extract-worker.ts", import.meta.url)
+  : new URL("./extract-worker.ts", import.meta.url);
 
 type JobMsg = { kind: "html"; html: string; opts: PageExtractOptions } | { kind: "pdf"; pdf: Uint8Array; maxPages?: number };
 
@@ -39,10 +40,13 @@ export class ExtractPool {
   private nextId = 1;
   private closed = false;
 
-  constructor(
-    readonly size: number,
-    readonly taskTimeoutMs: number,
-  ) {}
+  readonly size: number;
+  readonly taskTimeoutMs: number;
+
+  constructor(size: number, taskTimeoutMs: number) {
+    this.size = size;
+    this.taskTimeoutMs = taskTimeoutMs;
+  }
 
   /** Extraction stops waiting when `deadline` ends (a job already handed to a worker is abandoned and its worker replaced). */
   html(html: string, opts: PageExtractOptions, deadline: Deadline): Promise<PageExtractResult> {
@@ -123,9 +127,12 @@ export class ExtractPool {
     const worker = new Worker(WORKER_URL);
     const slot: Slot = { worker };
     this.slots.push(slot);
-    worker.onmessage = (e: MessageEvent<WorkerReply>) => this.onReply(slot, e.data);
-    worker.onerror = (e: ErrorEvent) =>
-      this.drop(slot, new AppError("EXTRACT_FAILED", `Extraction worker failed: ${e.message || "unknown error"}`));
+    worker.on("message", (reply: WorkerReply) => this.onReply(slot, reply));
+    worker.on("error", (err: Error) =>
+      this.drop(slot, new AppError("EXTRACT_FAILED", `Extraction worker failed: ${err.message || "unknown error"}`)),
+    );
+    // A worker that exits on its own (not through `drop`, which removes the slot first) takes its job with it.
+    worker.on("exit", (code) => this.drop(slot, new AppError("EXTRACT_FAILED", `Extraction worker exited with code ${code}`)));
     return slot;
   }
 

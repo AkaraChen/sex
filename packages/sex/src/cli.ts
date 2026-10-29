@@ -128,7 +128,7 @@ const serve = defineCommand({
     // Opening the job backend starts the worker, which resumes tasks left in the queue by a previous run.
     void engine.jobs;
     const { serveHttp } = await import("./http/server.ts");
-    stopServer = serveHttp(engine, listenAddress(args)).stop;
+    stopServer = (await serveHttp(engine, listenAddress(args))).stop;
   },
 });
 

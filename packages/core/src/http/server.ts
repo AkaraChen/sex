@@ -1,3 +1,4 @@
+import type { Server } from "node:http";
 import { createMcpHandler, type McpServer } from "@modelcontextprotocol/server";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { OpenAPIReferencePlugin } from "@orpc/openapi/plugins";
@@ -5,6 +6,7 @@ import type { Router } from "@orpc/server";
 import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { isBun } from "std-env";
 import type { BaseEngine } from "../engine.ts";
 import { AppError } from "../errors.ts";
 import { log } from "../log.ts";
@@ -174,23 +176,51 @@ export function createHttpApp<E extends BaseEngine>(
   return { app, close: mcp.close };
 }
 
-export function serveHttpApp<E extends BaseEngine>(engine: E, spec: AppSpec<E>, opts: { port: number; host: string }) {
-  const { app, close } = createHttpApp(engine, spec, { bindHost: opts.host });
-  const server = Bun.serve({
-    port: opts.port,
-    hostname: opts.host,
-    fetch: app.fetch,
+/** A listening server: its port, and how to close the listener and its open connections. */
+interface Listener {
+  port: number;
+  stop: () => Promise<void>;
+}
+
+/** Bun.serve on Bun, node:http (through @hono/node-server) on Node. */
+async function listen(fetch: (req: Request) => Response | Promise<Response>, opts: { port: number; host: string }): Promise<Listener> {
+  if (isBun) {
     // Scrapes, searches with scrapeOptions and maps can legitimately take minutes.
-    idleTimeout: 255,
+    const server = Bun.serve({ port: opts.port, hostname: opts.host, fetch, idleTimeout: 255 });
+    return { port: server.port ?? opts.port, stop: () => server.stop(true) };
+  }
+  const { createAdaptorServer } = await import("@hono/node-server");
+  // No overall request timeout (Node's default is 5 minutes), for the same long requests and MCP streams.
+  const server = createAdaptorServer({ fetch, serverOptions: { requestTimeout: 0 } }) as Server;
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(opts.port, opts.host, () => {
+      server.off("error", reject);
+      resolve();
+    });
   });
+  const address = server.address();
+  return {
+    port: typeof address === "object" && address ? address.port : opts.port,
+    stop: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      }),
+  };
+}
+
+export async function serveHttpApp<E extends BaseEngine>(engine: E, spec: AppSpec<E>, opts: { port: number; host: string }) {
+  const { app, close } = createHttpApp(engine, spec, { bindHost: opts.host });
+  const server = await listen(app.fetch, opts);
   const url = `http://${opts.host}:${server.port}`;
   log.info("http server listening", { url, docs: `${url}/docs`, mcp: `${url}/mcp`, ...engine.describe() });
   return {
-    server,
+    port: server.port,
     /** Aborts in-flight MCP exchanges, then closes the listener and its open connections. */
     stop: async () => {
       await close();
-      await server.stop(true);
+      await server.stop();
     },
   };
 }
