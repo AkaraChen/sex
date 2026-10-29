@@ -8,7 +8,6 @@
 // machine or the network hits all of them alike.
 import { parseArgs } from "node:util";
 import { Deadline } from "@sex/core/deadline.ts";
-import { assertPublicUrl } from "@sex/core/net.ts";
 import { resolveConfig } from "../src/config.ts";
 import { AdBlockList } from "../src/engine/adblock.ts";
 import { BrowserPool } from "../src/engine/browser.ts";
@@ -30,31 +29,17 @@ const ms = (n: number) => `${n.toFixed(1)} ms`;
 
 function pool(adBlockList?: () => Promise<AdBlockList>): BrowserPool {
   if (!values.lightpanda) throw new Error("--lightpanda <path> is required");
-  // Private networks are allowed for the process itself so the local fixture is reachable in every setup; the SSRF policy is
-  // exercised through an explicit requestGuard instead.
+  // Private networks are allowed so the local fixture is reachable; the cost of the egress rules is measured by bench-egress.ts.
   return new BrowserPool(
     resolveConfig({ lightpanda: true, lightpandaPath: values.lightpanda, allowPrivateNetwork: true, concurrency: 1 }),
-    adBlockList,
+    {
+      adBlockList,
+    },
   );
 }
 
 const extract = { onlyMainContent: true, removeBase64Images: true, wantLinks: false, wantImages: false } as const;
 const UA = "Mozilla/5.0 (compatible; sex-bench)";
-
-/** What `scrapeUrl` passes for a public-only setup: the real SSRF check, per origin. */
-const publicOnly = async (u: string) => {
-  try {
-    await assertPublicUrl(new URL(u), false);
-    return true;
-  } catch {
-    return false;
-  }
-};
-// The fixture is on loopback, which the real guard refuses; this one does the same work and lets the request through.
-const guardCost = async (u: string) => {
-  await publicOnly(u);
-  return true;
-};
 
 async function overhead() {
   const N = 50;
@@ -86,11 +71,9 @@ async function overhead() {
   // `empty` is blockAds with a list that matches nothing: interception is on, the lookup finds nothing, so the difference to
   // `blockAds` is the lookup alone and the difference to `off` is interception alone (the CDP round trip plus the policy plumbing).
   const setups = [
-    { name: "off (no interception)", blockAds: false, requestGuard: undefined, list: real },
-    { name: "interception only (empty list)", blockAds: true, requestGuard: undefined, list: AdBlockList.empty },
-    { name: "blockAds", blockAds: true, requestGuard: undefined, list: real },
-    { name: "SSRF guard only (serve default)", blockAds: false, requestGuard: guardCost, list: real },
-    { name: "SSRF guard + blockAds", blockAds: true, requestGuard: guardCost, list: real },
+    { name: "off (no interception)", blockAds: false, list: real },
+    { name: "interception only (empty list)", blockAds: true, list: AdBlockList.empty },
+    { name: "blockAds", blockAds: true, list: real },
   ];
   const times = setups.map(() => [] as number[]);
   const once = (s: (typeof setups)[number]) => {
@@ -101,7 +84,6 @@ async function overhead() {
       userAgent: UA,
       extract,
       blockAds: s.blockAds,
-      requestGuard: s.requestGuard,
     });
   };
   try {
@@ -163,7 +145,6 @@ async function pages() {
               userAgent: UA,
               extract,
               blockAds,
-              requestGuard: publicOnly,
             });
             side.ms.push(performance.now() - t0);
             side.blocked.push(res.adsBlocked ?? 0);

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Deadline } from "../src/deadline.ts";
-import { assertPublicUrl, isPrivateIp, safeFetch } from "../src/net.ts";
+import { isPrivateIp } from "../src/egress.ts";
+import { assertPublicUrl, safeFetch } from "../src/net.ts";
 
 const hostOf = (u: string) => new URL(u).hostname.replace(/^\[|\]$/g, "");
 

@@ -31,8 +31,6 @@ export interface BrowserScrapeOptions {
   waitFor?: number;
   actions?: Action[];
   extract: Omit<PageExtractOptions, "url">;
-  /** Checked for every request the browser makes (documents, redirects, subresources). Resolves true when allowed. */
-  requestGuard?: (url: string) => Promise<boolean>;
   /** Accept invalid TLS certificates (Chrome only; CDP Security.setIgnoreCertificateErrors). */
   skipTlsVerification?: boolean;
   /** Abort requests to ad and tracker domains (EasyList / EasyPrivacy). The browser may not support it. */

@@ -305,6 +305,20 @@ describe("applyRequestPolicies", () => {
     expect(await f.fire("https://elsewhere.test/landing", { navigation: true })).toEqual({ type: "continue", arg: undefined });
   });
 
+  test("behind a proxy the caller's Proxy-Authorization is dropped, not sent to the target; Authorization stays", async () => {
+    const headers = { Authorization: "Bearer T", "Proxy-Authorization": "Basic Zm9vOmJhcg==" };
+    const direct = fakePage();
+    await applyRequestPolicies(direct.page, { url: target, headers });
+    expect(await direct.fire("https://site.test/")).toMatchObject({
+      arg: { headers: { authorization: "Bearer T", "proxy-authorization": "Basic Zm9vOmJhcg==" } },
+    });
+    const proxied = fakePage();
+    await applyRequestPolicies(proxied.page, { url: target, headers, viaProxy: true });
+    const call = await proxied.fire("https://site.test/");
+    expect(call.arg).toMatchObject({ headers: { authorization: "Bearer T" } });
+    expect(JSON.stringify(call.arg)).not.toContain("proxy-authorization");
+  });
+
   test("a Cookie header is never passed back to the browser", async () => {
     const f = fakePage();
     await applyRequestPolicies(f.page, { url: target, headers: { Authorization: "Bearer T" } });

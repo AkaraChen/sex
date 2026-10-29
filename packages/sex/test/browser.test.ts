@@ -2,8 +2,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Deadline } from "@sex/core/deadline.ts";
+import { EgressPolicy } from "@sex/core/egress.ts";
+import { AppError } from "@sex/core/errors.ts";
 import type { ConfigOverrides } from "../src/config.ts";
-import { pdeathsigWrapper } from "../src/engine/browser.ts";
+import { BrowserPool, pdeathsigWrapper } from "../src/engine/browser.ts";
 import type { Engine } from "../src/engine/engine.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
@@ -20,6 +22,18 @@ if (LIGHTPANDA) variants.push(["spawned lightpanda", { lightpanda: true, lightpa
 
 const html = (body: string) =>
   `<!doctype html><html lang="en"><head><title>Browser Fixture</title></head><body><main><article>${body}</article></main></body></html>`;
+/** Refuses everything but one port of this machine, the way a request guard would refuse a private origin. */
+class OnlyPort extends EgressPolicy {
+  constructor(private readonly port: string | undefined) {
+    super({ allowPrivateNetwork: false });
+  }
+  override async resolve(url: Pick<URL, "hostname" | "href">) {
+    if (this.port !== undefined && new URL(url.href).port !== this.port)
+      throw new AppError("PRIVATE_NETWORK_BLOCKED", `refused ${url.href}`);
+    return [];
+  }
+}
+
 const extract = { onlyMainContent: true, removeBase64Images: true, wantLinks: false, wantImages: false };
 
 describe.each(variants)("browser (%s)", (_name, overrides) => {
@@ -31,7 +45,9 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
   let bHeaders: Record<string, Headers> = {};
   let engine: Engine;
   const origin = () => `http://127.0.0.1:${a.port}`;
-  const guardA = async (u: string) => new URL(u).port === String(a.port);
+  /** The request-guard route (a browser elsewhere): CDP interception asks the policy about every request. */
+  let guardedA: BrowserPool;
+  let guardedAll: BrowserPool;
 
   beforeAll(() => {
     // Server B stands in for an internal address: every hit is recorded.
@@ -83,9 +99,12 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
       },
     });
     engine = testEngine(overrides);
+    guardedA = new BrowserPool(engine.config, { kind: "remote-cdp", policy: new OnlyPort(String(a.port)) });
+    guardedAll = new BrowserPool(engine.config, { kind: "remote-cdp", policy: new OnlyPort(undefined) });
   });
 
   afterAll(async () => {
+    await Promise.all([guardedA?.close(), guardedAll?.close()]);
     await engine?.browser.close();
     a?.stop(true);
     b?.stop(true);
@@ -181,8 +200,8 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
   });
 
   test("blocks a redirect to a non-allowed address before its content is fetched", async () => {
-    const err = await engine.browser
-      .scrape({ url: `${origin()}/redirect`, deadline: Deadline.start(10_000), userAgent: "t", extract, requestGuard: guardA })
+    const err = await guardedA
+      .scrape({ url: `${origin()}/redirect`, deadline: Deadline.start(10_000), userAgent: "t", extract })
       .catch((e: unknown) => e);
     expect((err as { code?: string }).code).toBe("PRIVATE_NETWORK_BLOCKED");
     expect(bHits).toEqual([]);
@@ -190,10 +209,10 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
 
   describe("user credentials", () => {
     const headers = { Authorization: "Bearer secret-token", Cookie: "sid=abc123; theme=dark", "X-Plain": "1" };
-    const scrape = (path: string, extra: Partial<Parameters<Engine["browser"]["scrape"]>[0]> = {}) => {
+    const scrape = (path: string, extra: Partial<Parameters<Engine["browser"]["scrape"]>[0]> = {}, pool = engine.browser) => {
       aHeaders = {};
       bHeaders = {};
-      return engine.browser.scrape({
+      return pool.scrape({
         url: `${origin()}${path}`,
         deadline: Deadline.start(10_000),
         userAgent: "t",
@@ -227,13 +246,13 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
     });
 
     test("work next to the private-network guard", async () => {
-      const result = await scrape("/creds", { requestGuard: async () => true });
+      const result = await scrape("/creds", {}, guardedAll);
       expect(result.rawHtml).toContain("Credentials page");
       expect(aHeaders["/same.js"]?.get("authorization")).toBe("Bearer secret-token");
       expect(bHeaders["/cdn.js"]?.get("authorization")).toBeNull();
       // The guard still decides first: a refused origin is not contacted, with or without credentials.
       bHits = [];
-      await scrape("/creds", { requestGuard: guardA });
+      await scrape("/creds", {}, guardedA);
       expect(bHits).toEqual([]);
     });
 
@@ -253,12 +272,11 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
 
   test("blocks subresources to a non-allowed address without failing the page", async () => {
     bHits = [];
-    const result = await engine.browser.scrape({
+    const result = await guardedA.scrape({
       url: `${origin()}/img`,
       deadline: Deadline.start(10_000),
       userAgent: "t",
       extract,
-      requestGuard: guardA,
     });
     expect(result.rawHtml).toContain("Image page");
     expect(bHits).toEqual([]);
@@ -377,7 +395,7 @@ describe.skipIf(!LIGHTPANDA)("spawned lightpanda process", () => {
   test("lightpanda itself refuses private addresses when they are not allowed", async () => {
     const e = spawning({ allowPrivateNetwork: false });
     hits = 0;
-    // No requestGuard: only the child's --block-private-networks stands between the page and the loopback fixture.
+    // Only the child's --block-private-networks stands between the page and the loopback fixture.
     const err = await e.browser
       .scrape({ url: `http://127.0.0.1:${site.port}/`, deadline: Deadline.start(10_000), userAgent: "t", extract })
       .catch((x: unknown) => x);

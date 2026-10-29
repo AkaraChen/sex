@@ -235,6 +235,11 @@ export interface RequestPolicyOptions {
   adBlockList?: AdBlockList;
   /** Block image and media requests. */
   blockMedia?: boolean;
+  /**
+   * The page's requests go through a proxy. A `Proxy-Authorization` header can then only be meant for that proxy, which has its
+   * own credentials (as in `safeFetch` behind `SEX_PROXY_URL`), so the caller's is dropped instead of sent to the target.
+   */
+  viaProxy?: boolean;
 }
 
 export type PolicyPage = Pick<Page, "setExtraHTTPHeaders" | "setCookie" | "setRequestInterception" | "on" | "mainFrame">;
@@ -256,6 +261,7 @@ export interface AppliedPolicies {
 export async function applyRequestPolicies(page: PolicyPage, opts: RequestPolicyOptions): Promise<AppliedPolicies> {
   const target = new URL(opts.url);
   const { plain, scoped, cookies } = splitUserHeaders(opts.headers);
+  if (opts.viaProxy) delete scoped["proxy-authorization"];
   if (Object.keys(plain).length) await page.setExtraHTTPHeaders(plain).catch(() => {});
 
   let cookieHeader: string | undefined;

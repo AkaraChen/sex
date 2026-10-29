@@ -70,7 +70,7 @@ jobs:
       - run: bun install --frozen-lockfile
       # The same release dist/sex embeds: version and SHA-256 are pinned in packages/sex/scripts/lightpanda.ts.
       - run: bun packages/sex/scripts/lightpanda.ts "$RUNNER_TEMP/lightpanda"
-      - run: bun test packages/sex/test/browser.test.ts
+      - run: bun test packages/sex/test/browser.test.ts packages/sex/test/browser-proxy.test.ts
         env:
           SEX_TEST_LIGHTPANDA_PATH: ${{ runner.temp }}/lightpanda
 
@@ -89,7 +89,7 @@ jobs:
           google-chrome --headless=new --no-sandbox --disable-gpu --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
             --user-data-dir="$RUNNER_TEMP/chrome" about:blank >"$RUNNER_TEMP/chrome.log" 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:9222/json/version && break; sleep 1; done
-      - run: bun test packages/sex/test/browser.test.ts packages/sex/test/browser-fallback.test.ts packages/sex/test/abort.test.ts
+      - run: bun test packages/sex/test/browser.test.ts packages/sex/test/browser-fallback.test.ts packages/sex/test/abort.test.ts packages/sex/test/browser-proxy.test.ts packages/sex/test/egress-browser.test.ts
         env:
           SEX_TEST_CDP_URL: http://127.0.0.1:9222
       - if: failure()
