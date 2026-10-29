@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-map",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0-rc.1",
   "type": "module",
   "description": "Find the URLs of a site (Firecrawl v2 map): sitemaps, the start page's links and a SearXNG site: search, with robots.txt and path filters",
   "license": "MIT",

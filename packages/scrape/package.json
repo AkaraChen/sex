@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-scrape",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0-rc.1",
   "type": "module",
   "description": "Fetch a URL and get Markdown, HTML, links and more (Firecrawl v2 scrape), with optional browser, LLM, document and cache plugins",
   "license": "MIT",
