@@ -206,7 +206,16 @@ describe.each(binaries)("%s: fetching real pages", (_name, binary) => {
         ))
       )
         return;
-      const r = await run(binary, ["fetch", "https://expired.badssl.com/", "--timeout", "30000"], { timeoutMs: 90_000 });
+      // badssl.com sometimes resets connections from CI runners before the handshake: retry, and treat a site that keeps
+      // resetting as unreachable rather than as a wrong error code.
+      const r = await retry(
+        () => run(binary, ["fetch", "https://expired.badssl.com/", "--timeout", "30000"], { timeoutMs: 90_000 }),
+        (res) => !/ECONNRESET/.test(res.stderr),
+      );
+      if (/ECONNRESET/.test(r.stderr)) {
+        console.warn("skipped: expired.badssl.com keeps resetting the connection from here");
+        return;
+      }
       expect(r.code).toBe(1);
       expect(r.stderr).toMatch(/SCRAPE_SSL_ERROR/);
     },
