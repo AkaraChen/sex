@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-store",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0-rc.1",
   "type": "module",
   "description": "SQLite page cache (maxAge) and change tracking store for @searxng-js/sex-scrape",
   "license": "MIT",
