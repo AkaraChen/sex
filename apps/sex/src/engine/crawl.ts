@@ -1,9 +1,9 @@
+import { Deadline } from "@searxng-js/sex-deadline";
 import { assertPublicUrl, decodeBody, parseHttpUrl } from "@searxng-js/sex-egress";
 import { toAppError } from "@searxng-js/sex-errors";
 import { assertScrapeCapabilities, scrapeUrl } from "@searxng-js/sex-scrape";
 import { log } from "@searxng-js/sex-server/log";
 import type { z } from "zod";
-import { Deadline } from "../deadline.ts";
 import { fetchWithin } from "../fetch-within.ts";
 import { CrawlRequest } from "../schemas.ts";
 import type { Engine } from "./engine.ts";

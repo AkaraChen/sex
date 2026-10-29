@@ -1,9 +1,9 @@
 import { gunzipSync } from "node:zlib";
+import { Deadline } from "@searxng-js/sex-deadline";
 import { assertPublicUrl, decodeBody, parseHttpUrl } from "@searxng-js/sex-egress";
 import { scrapeUrl } from "@searxng-js/sex-scrape";
 import { clean, searxng } from "@searxng-js/sex-search";
 import { log } from "@searxng-js/sex-server/log";
-import { Deadline } from "../deadline.ts";
 import { fetchWithin } from "../fetch-within.ts";
 import type { MapLink, MapRequest, MapResult } from "../schemas.ts";
 import type { Engine } from "./engine.ts";

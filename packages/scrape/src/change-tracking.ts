@@ -1,7 +1,7 @@
+import type { Deadline } from "@searxng-js/sex-deadline";
 import { toAppError } from "@searxng-js/sex-errors";
 import type { Logger } from "@searxng-js/sex-page";
 import { type ChangeTracker, GUARD_MAX_CHARS, type ScrapeLlm } from "./capabilities.ts";
-import type { Deadline } from "./deadline.ts";
 import type { ChangeTrackingResult } from "./schemas.ts";
 
 /** The `changeTracking` format of a request, normalized. */

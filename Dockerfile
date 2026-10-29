@@ -3,9 +3,14 @@ FROM oven/bun:1.4.3 AS source
 WORKDIR /app
 COPY package.json bun.lock bunfig.toml tsconfig.json ./
 COPY packages/errors/package.json packages/errors/
+COPY packages/deadline/package.json packages/deadline/
 COPY packages/egress/package.json packages/egress/
 COPY packages/page/package.json packages/page/
 COPY packages/searxng/package.json packages/searxng/
+COPY packages/browser/package.json packages/browser/
+COPY packages/llm/package.json packages/llm/
+COPY packages/docs/package.json packages/docs/
+COPY packages/store/package.json packages/store/
 COPY packages/scrape/package.json packages/scrape/
 COPY packages/search/package.json packages/search/
 COPY packages/server/package.json packages/server/
@@ -33,7 +38,7 @@ EXPOSE 3002
 ENTRYPOINT ["sex-lite"]
 CMD ["serve"]
 
-# One executable with SearXNG (linux-x64 only), Lightpanda (version and SHA-256 pinned in apps/sex/scripts/lightpanda.ts;
+# One executable with SearXNG (linux-x64 only), Lightpanda (version and SHA-256 pinned in packages/browser/scripts/lightpanda.ts;
 # downloaded here) and here-docs with its native engines embedded (see apps/sex/scripts/build.ts).
 FROM source AS build
 RUN bun run build

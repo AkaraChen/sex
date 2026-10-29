@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Deadline } from "@searxng-js/sex-deadline";
 import type { AppError } from "@searxng-js/sex-errors";
-import { Deadline } from "../src/deadline.ts";
+import { escapeTags } from "@searxng-js/sex-llm";
 import type { Engine } from "../src/engine/engine.ts";
 import { conflictingFields, entitySources, mergeAll, mergeEntities, splitSchema } from "../src/engine/extract-merge.ts";
-import { escapeTags } from "../src/engine/prompts.ts";
 import { MOCK_LLM_TOKENS, startFixtureSite, startMockLlm, testEngine, waitFor } from "./helpers.ts";
 
 const NO_LIMIT = Deadline.unbounded();

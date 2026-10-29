@@ -81,8 +81,8 @@ jobs:
         with:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
-      # The same release dist/sex embeds: version and SHA-256 are pinned in apps/sex/scripts/lightpanda.ts.
-      - run: bun apps/sex/scripts/lightpanda.ts "$RUNNER_TEMP/lightpanda"
+      # The same release dist/sex embeds: version and SHA-256 are pinned in packages/browser/scripts/lightpanda.ts.
+      - run: bun packages/browser/scripts/lightpanda.ts "$RUNNER_TEMP/lightpanda"
       - run: bun test --conditions sex-source apps/sex/test/browser.test.ts apps/sex/test/browser-proxy.test.ts
         env:
           SEX_TEST_LIGHTPANDA_PATH: ${{ runner.temp }}/lightpanda

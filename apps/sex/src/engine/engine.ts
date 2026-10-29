@@ -1,20 +1,34 @@
 import { join } from "node:path";
+import { BrowserPool, type BrowserPoolOptions } from "@searxng-js/sex-browser";
+import { DocsConverter } from "@searxng-js/sex-docs";
 import { AppError, notFound } from "@searxng-js/sex-errors";
+import { Llm } from "@searxng-js/sex-llm";
 import { BaseEngine } from "@searxng-js/sex-server/engine";
+import { log } from "@searxng-js/sex-server/log";
+import { SqliteChangeTracker, SqliteScrapeCache } from "@searxng-js/sex-store";
 import type { Config } from "../config.ts";
 import type { BatchScrapeRequest, CrawlRequest, ExtractRequest, MapRequest, MapResult } from "../schemas.ts";
 import { startBatchScrape } from "./batch.ts";
-import { BrowserPool } from "./browser.ts";
-import { SqliteScrapeCache } from "./cache.ts";
-import { SqliteChangeTracker } from "./change-tracker.ts";
 import { crawlParamsFromPrompt, startCrawl } from "./crawl.ts";
-import { DocsConverter } from "./docs.ts";
 import { startExtract } from "./extract.ts";
 import { documentsLocation } from "./jobs/documents.ts";
 import { createJobBackend, type JobBackend, type JobKind, type JobRecord } from "./jobs/index.ts";
-import { Llm } from "./llm.ts";
 import { mapSite } from "./map.ts";
 import { abandonTask, runTask } from "./tasks.ts";
+
+/** The browser pool's options from the app's settings. */
+export function browserOptions(config: Config): BrowserPoolOptions {
+  return {
+    concurrency: config.concurrency,
+    allowPrivateNetwork: config.allowPrivateNetwork,
+    proxyUrl: config.proxyUrl,
+    lightpanda: config.lightpanda,
+    lightpandaPath: config.lightpandaPath,
+    cdpUrl: config.cdpUrl,
+    blockMedia: config.blockMedia,
+    logger: log,
+  };
+}
 
 /** Everything the HTTP, MCP and CLI front-ends share: the core search and fetch, plus browser, LLM, documents and jobs. */
 export class Engine extends BaseEngine<Config> {
@@ -34,12 +48,14 @@ export class Engine extends BaseEngine<Config> {
         defaultMaxAge: config.cacheMaxAgeMs,
         ttlMs: config.cacheTtlMs,
         maxBytes: config.cacheMaxBytes,
+        logger: log,
       });
       this.changeTracker = new SqliteChangeTracker(join(config.dataDir, "change-tracking.sqlite"));
     }
-    this.browser = new BrowserPool(config);
-    this.llm = new Llm(config);
-    this.docs = new DocsConverter(config);
+    // The plugins take their own options; this is where the app's settings become them.
+    this.browser = new BrowserPool(browserOptions(config));
+    this.llm = new Llm({ endpoint: config.llm, maxInputChars: config.llmMaxInputChars, timeoutMs: config.llmTimeout, logger: log });
+    this.docs = new DocsConverter({ enabled: config.docs, concurrency: config.docsConcurrency, logger: log });
   }
 
   private backend?: JobBackend;

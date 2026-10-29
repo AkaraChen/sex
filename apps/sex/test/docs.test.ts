@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { Deadline } from "@searxng-js/sex-deadline";
+import { DocsConverter } from "@searxng-js/sex-docs";
 import { MARKUP_TYPE } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
 import { markdownToHtml } from "@searxng-js/sex-page";
-import { Deadline } from "../src/deadline.ts";
-import { DocsConverter, type HereDocs } from "../src/engine/docs.ts";
 import { testEngine, textPdf } from "./helpers.ts";
 
 const fixture = (name: string) => Bun.file(new URL(`./fixtures/${name}`, import.meta.url));
@@ -121,7 +121,7 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
   });
 
   test("time spent waiting for a conversion slot counts against the deadline", async () => {
-    const one = new DocsConverter({ ...docs.config, docsConcurrency: 1 });
+    const one = new DocsConverter({ enabled: true, concurrency: 1 });
     const bytes = await fixture("scan.pdf").bytes();
     const first = one.convert(bytes, { ...Deadline.start(60_000).time() });
     const err = await rejection(one.convert(bytes, { ...Deadline.start(1).time() }));
@@ -139,37 +139,6 @@ describe.skipIf(!available)("SEX_DOCS (here-docs)", () => {
   test("unrecognised bytes are a 415", async () => {
     const err = await rejection(docs.docs.convert(new Uint8Array([0, 1, 2, 3]), { ...Deadline.start(10_000).time() }));
     expect({ status: err.status, code: err.code }).toEqual({ status: 415, code: "UNSUPPORTED_FILE" });
-  });
-});
-
-/** here-docs stand-in that converts `pages` pages at once, then hangs until the signal aborts, like a conversion that runs out of time. */
-function stalledHereDocs(pages: number, pageCount: number): HereDocs {
-  return {
-    createEngine: async () => ({ close: async () => {} }),
-    async *convertPages(_bytes: Uint8Array, opts: { signal?: AbortSignal }) {
-      for (let page = 1; page <= pages; page++) yield { page, pageCount, markdown: `page ${page}`, warnings: [] };
-      await new Promise((_, reject) => opts.signal?.addEventListener("abort", () => reject(opts.signal?.reason), { once: true }));
-    },
-  } as unknown as HereDocs;
-}
-
-describe("a conversion that runs out of time", () => {
-  const converter = (hereDocs: HereDocs) => new DocsConverter({ ...plain.config, docs: true }, async () => hereDocs);
-
-  test("returns the pages converted so far, with a warning", async () => {
-    const c = converter(stalledHereDocs(2, 5));
-    const doc = await c.convert(new Uint8Array([1]), { ...Deadline.start(100).time() });
-    expect(doc.markdown).toBe("page 1\n\npage 2");
-    expect({ numPages: doc.numPages, pagesConverted: doc.pagesConverted }).toEqual({ numPages: 5, pagesConverted: 2 });
-    expect(doc.warnings).toEqual([{ code: "timeout", message: "Timed out: converted only the first 2 of 5 pages" }]);
-    await c.close();
-  });
-
-  test("with no page converted is a 408 SCRAPE_TIMEOUT", async () => {
-    const c = converter(stalledHereDocs(0, 5));
-    const err = await rejection(c.convert(new Uint8Array([1]), { ...Deadline.start(100).time() }));
-    expect({ status: err.status, code: err.code }).toEqual({ status: 408, code: "SCRAPE_TIMEOUT" });
-    await c.close();
   });
 });
 
@@ -238,7 +207,7 @@ describe("without SEX_DOCS", () => {
   });
 
   test("the converter is never started", () => {
-    expect(new DocsConverter(plain.config).enabled).toBe(false);
+    expect(new DocsConverter({ enabled: false, concurrency: 1 }).enabled).toBe(false);
   });
 });
 

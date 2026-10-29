@@ -2,8 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Deadline } from "../src/deadline.ts";
-import { SqliteChangeTracker } from "../src/engine/change-tracker.ts";
 import type { Engine } from "../src/engine/engine.ts";
 import { startMockLlm, testEngine } from "./helpers.ts";
 
@@ -263,31 +261,5 @@ describe("changeTracking json mode", () => {
     } finally {
       await engine.close();
     }
-  });
-});
-
-describe("SqliteChangeTracker", () => {
-  test("keeps one row per (url, tag), replaced by put, and never expires it", async () => {
-    const tracker = new SqliteChangeTracker(join(dir, "tracker.sqlite"));
-    await tracker.put("https://a.test/", null, "one", 1);
-    await tracker.put("https://a.test/", "t", "tagged", 2);
-    await tracker.put("https://a.test/", null, "two ".repeat(1000), 1_000);
-    expect(await tracker.get("https://a.test/", null)).toEqual({ markdown: "two ".repeat(1000), scrapedAt: 1_000 });
-    expect(await tracker.get("https://a.test/", "t")).toEqual({ markdown: "tagged", scrapedAt: 2 });
-    expect(await tracker.get("https://a.test/", "other")).toBeUndefined();
-    tracker.close();
-    const reopened = new SqliteChangeTracker(join(dir, "tracker.sqlite"));
-    expect((await reopened.get("https://a.test/", "t"))?.markdown).toBe("tagged");
-    reopened.close();
-  });
-
-  test("diff gives up on a deadline that has run out instead of blocking", () => {
-    const tracker = new SqliteChangeTracker(":memory:");
-    const lines = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag} line ${i} ${Math.random()}`).join("\n");
-    const started = Date.now();
-    const diff = tracker.diff(lines(20_000, "a"), lines(20_000, "b"), Deadline.start(50));
-    expect(Date.now() - started).toBeLessThan(2000);
-    expect(diff).toBeUndefined();
-    tracker.close();
   });
 });

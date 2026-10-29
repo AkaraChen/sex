@@ -27,21 +27,20 @@
         "@orpc/openapi": "^1.16.1",
         "@orpc/server": "^1.16.1",
         "@orpc/zod": "^1.16.1",
+        "@searxng-js/sex-browser": "workspace:*",
+        "@searxng-js/sex-deadline": "workspace:*",
+        "@searxng-js/sex-docs": "workspace:*",
         "@searxng-js/sex-egress": "workspace:*",
         "@searxng-js/sex-errors": "workspace:*",
+        "@searxng-js/sex-llm": "workspace:*",
         "@searxng-js/sex-page": "workspace:*",
         "@searxng-js/sex-scrape": "workspace:*",
         "@searxng-js/sex-search": "workspace:*",
         "@searxng-js/sex-server": "workspace:*",
-        "ajv": "^8.20.0",
+        "@searxng-js/sex-store": "workspace:*",
         "bunqueue": "2.9.20",
         "citty": "^0.2.2",
-        "defuddle": "^0.19.6",
-        "diff": "^9.0.0",
-        "here-docs": "github:AkaraChen/here-docs#40febc7",
         "p-limit": "^7.3.3",
-        "puppeteer-core": "^25.16.0",
-        "xsai": "^1.0.0-beta.3",
         "zod": "^4.6.7",
       },
     },
@@ -59,6 +58,48 @@
         "citty": "^0.2.2",
       },
     },
+    "packages/browser": {
+      "name": "@searxng-js/sex-browser",
+      "version": "0.0.0",
+      "dependencies": {
+        "@searxng-js/sex-deadline": "workspace:*",
+        "@searxng-js/sex-egress": "workspace:*",
+        "@searxng-js/sex-errors": "workspace:*",
+        "@searxng-js/sex-page": "workspace:*",
+        "p-limit": "^7.3.3",
+        "puppeteer-core": "^25.16.0",
+      },
+      "devDependencies": {
+        "@searxng-js/sex-scrape": "workspace:*",
+        "defuddle": "^0.19.6",
+      },
+      "peerDependencies": {
+        "@searxng-js/sex-scrape": "workspace:^",
+      },
+    },
+    "packages/deadline": {
+      "name": "@searxng-js/sex-deadline",
+      "version": "0.0.0",
+      "dependencies": {
+        "@searxng-js/sex-errors": "workspace:*",
+      },
+    },
+    "packages/docs": {
+      "name": "@searxng-js/sex-docs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@searxng-js/sex-deadline": "workspace:*",
+        "@searxng-js/sex-errors": "workspace:*",
+        "here-docs": "github:AkaraChen/here-docs#40febc7",
+        "p-limit": "^7.3.3",
+      },
+      "devDependencies": {
+        "@searxng-js/sex-scrape": "workspace:*",
+      },
+      "peerDependencies": {
+        "@searxng-js/sex-scrape": "workspace:^",
+      },
+    },
     "packages/egress": {
       "name": "@searxng-js/sex-egress",
       "version": "0.0.0",
@@ -70,6 +111,22 @@
     "packages/errors": {
       "name": "@searxng-js/sex-errors",
       "version": "0.0.0",
+    },
+    "packages/llm": {
+      "name": "@searxng-js/sex-llm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@searxng-js/sex-deadline": "workspace:*",
+        "@searxng-js/sex-errors": "workspace:*",
+        "ajv": "^8.20.0",
+        "xsai": "^1.0.0-beta.3",
+      },
+      "devDependencies": {
+        "@searxng-js/sex-scrape": "workspace:*",
+      },
+      "peerDependencies": {
+        "@searxng-js/sex-scrape": "workspace:^",
+      },
     },
     "packages/page": {
       "name": "@searxng-js/sex-page",
@@ -94,6 +151,7 @@
       "name": "@searxng-js/sex-scrape",
       "version": "0.0.0",
       "dependencies": {
+        "@searxng-js/sex-deadline": "workspace:*",
         "@searxng-js/sex-egress": "workspace:*",
         "@searxng-js/sex-errors": "workspace:*",
         "@searxng-js/sex-page": "workspace:*",
@@ -148,6 +206,19 @@
         "hono": "^4.13.14",
         "p-limit": "^7.3.3",
         "zod": "^4.6.7",
+      },
+    },
+    "packages/store": {
+      "name": "@searxng-js/sex-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "diff": "^9.0.0",
+      },
+      "devDependencies": {
+        "@searxng-js/sex-scrape": "workspace:*",
+      },
+      "peerDependencies": {
+        "@searxng-js/sex-scrape": "workspace:^",
       },
     },
     "packages/testing": {
@@ -434,9 +505,17 @@
 
     "@searxng-js/searxng": ["@searxng-js/searxng@0.1.0", "", { "optionalDependencies": { "@searxng-js/darwin-arm64": "0.1.0", "@searxng-js/linux-x64": "0.1.0", "@searxng-js/win32-x64": "0.1.0" } }, "sha512-yMK6z7ffAaKfx72CFlZwpng3Lk8TdDneOq/Qdj5NxWIau3Xx4Ono0WMUZrej2o+1cmSmWUxLUU1yWi6nzHs+KA=="],
 
+    "@searxng-js/sex-browser": ["@searxng-js/sex-browser@workspace:packages/browser"],
+
+    "@searxng-js/sex-deadline": ["@searxng-js/sex-deadline@workspace:packages/deadline"],
+
+    "@searxng-js/sex-docs": ["@searxng-js/sex-docs@workspace:packages/docs"],
+
     "@searxng-js/sex-egress": ["@searxng-js/sex-egress@workspace:packages/egress"],
 
     "@searxng-js/sex-errors": ["@searxng-js/sex-errors@workspace:packages/errors"],
+
+    "@searxng-js/sex-llm": ["@searxng-js/sex-llm@workspace:packages/llm"],
 
     "@searxng-js/sex-page": ["@searxng-js/sex-page@workspace:packages/page"],
 
@@ -447,6 +526,8 @@
     "@searxng-js/sex-searxng": ["@searxng-js/sex-searxng@workspace:packages/searxng"],
 
     "@searxng-js/sex-server": ["@searxng-js/sex-server@workspace:packages/server"],
+
+    "@searxng-js/sex-store": ["@searxng-js/sex-store@workspace:packages/store"],
 
     "@searxng-js/sex-testing": ["@searxng-js/sex-testing@workspace:packages/testing"],
 

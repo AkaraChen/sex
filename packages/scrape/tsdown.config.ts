@@ -7,6 +7,6 @@ export default defineConfig({
   fixedExtension: false,
   tsconfig: "../tsconfig.build.json",
   clean: true,
-  deps: { alwaysBundle: [/^@searxng-js\/sex-errors/] },
+  deps: { alwaysBundle: [/^@searxng-js\/sex-(errors|deadline)/] },
   inputOptions: { resolve: { conditionNames: ["sex-source", "import", "default"] } },
 });

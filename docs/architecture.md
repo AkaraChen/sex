@@ -52,6 +52,7 @@
 | 包 | 打包进 | 内容 |
 |---|---|---|
 | `sex-errors` | 所有发布包 | `AppError`、错误目录、`badRequest` 等辅助函数。类上带 `Symbol.for` 标记，见下方「错误」 |
+| `sex-deadline` | `sex-scrape`、`sex-browser`、`sex-llm`、`sex-docs` | `Deadline`：一次操作剩下的时间加调用方的取消。包的边界只传 `signal` 和可选的 `deadlineAt`，收到的包用它重建自己的 `Deadline` |
 | `sex-documents-s3` | `sex-jobs` | S3 胶水：Bun 上用 `Bun.S3Client`，Node 上动态 import `@aws-sdk/client-s3`，没装就报错 |
 | `sex-server` | `apps/sex`、`apps/sex-lite` | 两个 app 共用的脚手架：Hono + oRPC、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` MCP 工具、`BaseEngine`、citty 的公共 flag。只跑在 Bun 上，直接用 `Bun.serve` |
 
@@ -211,13 +212,13 @@ flowchart LR
 - [x] 3. **`sex-egress`**：边界改为 `signal`。它不依赖别的包，先做。
 - [x] 4. **第二类 `sex-page`、`sex-searxng`**：Markdown、YAML 按运行时分支。
 - [x] 5. **`sex-scrape`、`sex-search`、`sex-server`**：完成后 `apps/sex-lite` 完全基于新包，删除 `packages/core`。
-- [ ] 6. **能力插件 `sex-browser`、`sex-llm`、`sex-docs`、`sex-store`**：SQLite、zstd 换成 `node:` 内置，换之前先测 SQLite 在 Bun 上的性能。
+- [x] 6. **能力插件 `sex-browser`、`sex-llm`、`sex-docs`、`sex-store`**：SQLite、zstd 换成 `node:` 内置，换之前先测 SQLite 在 Bun 上的性能。
 - [ ] 7. **`sex-map`、`sex-jobs`、第三类 `sex-documents-s3`**：bunqueue 队列移进 `apps/sex/src`。完成后 `apps/sex` 迁移完毕。
 - [ ] 8. **首次发布到 npm。**
 
 ## 风险和待确认
 
-- **SQLite 性能**：jobs 存储从 `bun:sqlite` 换成 `node:sqlite` 后，在 Bun 上可能变慢。如果明显变慢，jobs 的 SQLite 也改成按运行时分支。
+- **SQLite 性能**：jobs 存储从 `bun:sqlite` 换成 `node:sqlite` 后，在 Bun 上可能变慢。如果明显变慢，jobs 的 SQLite 也改成按运行时分支。步骤 6 先测了页面缓存（`sex-store`）：同一个表结构，Bun 1.4.3 上 5000 次 `put`（删旧行、zstd 压缩一个 9 KB 页面、插入）和 5000 次 `get`（查询、更新 `used_at`、解压），两轮：`bun:sqlite` 约 48–53 µs / 次，`node:sqlite` 约 44–54 µs（put）和 48–61 µs（get）。差别在噪声里，前提是每个连接只 `prepare` 一次（`node:sqlite` 每次都 `prepare` 要慢约一半，约 78 µs / 65–75 µs；`bun:sqlite` 的 `query()` 自带缓存）。所以 `sex-store` 直接用 `node:sqlite`，带一个按连接缓存语句的小封装。jobs 存储的写入量和事务更多，到步骤 7 再用同样的方法测。
 - **类型内联**（第 2 步已确认，可行）：发布包引用私有库（`sex-errors`）时，tsdown 把 JS 和 `.d.ts` 里的 `AppError` 等都内联，dist 里没有私有包名。需要的配置：
   - `deps: { alwaysBundle: [/^@searxng-js\/sex-errors/] }`：私有库在 `dependencies` 里（`workspace:*`），默认会被当外部依赖，必须强制内联。
   - `inputOptions.resolve.conditionNames: ["sex-source", "import", "default"]`：私有库没有 dist 时也能从 `src` 解析。

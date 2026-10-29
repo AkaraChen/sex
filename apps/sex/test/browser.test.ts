@@ -1,12 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { BrowserPool, pdeathsigWrapper } from "@searxng-js/sex-browser";
+import { Deadline } from "@searxng-js/sex-deadline";
 import { EgressPolicy } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
 import type { ConfigOverrides } from "../src/config.ts";
-import { Deadline } from "../src/deadline.ts";
-import { BrowserPool, pdeathsigWrapper } from "../src/engine/browser.ts";
-import type { Engine } from "../src/engine/engine.ts";
+import { browserOptions, type Engine } from "../src/engine/engine.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
 // Opt-in, needs a browser. Either an already running CDP browser:
@@ -99,8 +99,8 @@ describe.each(variants)("browser (%s)", (_name, overrides) => {
       },
     });
     engine = testEngine(overrides);
-    guardedA = new BrowserPool(engine.config, { kind: "remote-cdp", policy: new OnlyPort(String(a.port)) });
-    guardedAll = new BrowserPool(engine.config, { kind: "remote-cdp", policy: new OnlyPort(undefined) });
+    guardedA = new BrowserPool({ ...browserOptions(engine.config), kind: "remote-cdp", policy: new OnlyPort(String(a.port)) });
+    guardedAll = new BrowserPool({ ...browserOptions(engine.config), kind: "remote-cdp", policy: new OnlyPort(undefined) });
   });
 
   afterAll(async () => {

@@ -1,5 +1,5 @@
+import type { Deadline } from "@searxng-js/sex-deadline";
 import { type FetchedResponse, type FetchOptions, safeFetch } from "@searxng-js/sex-egress";
-import type { Deadline } from "./deadline.ts";
 
 /**
  * `safeFetch` bounded by a `Deadline`: the package only knows an `AbortSignal`, so what it throws after the abort is

@@ -1,8 +1,7 @@
 // The small model for auxiliary calls, `/*` link selection, the site structure in prompt crawls and highlight units.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { Deadline } from "../src/deadline.ts";
+import { Deadline } from "@searxng-js/sex-deadline";
 import type { Engine } from "../src/engine/engine.ts";
-import { splitSegments } from "../src/engine/segments.ts";
 import { MOCK_LLM_TOKENS, startFixtureSite, startMockLlm, testEngine, waitFor } from "./helpers.ts";
 
 const NO_LIMIT = Deadline.unbounded();
@@ -197,38 +196,6 @@ describe("prompt crawl site structure", () => {
 });
 
 describe("highlight units", () => {
-  test("code fences and tables stay whole, long paragraphs are cut into sentences", () => {
-    const sentence = "This sentence is rather ordinary, e.g. in length and style.";
-    const paragraph = Array.from({ length: 10 }, (_, i) => `${sentence} Number ${i}.`).join(" ");
-    const units = splitSegments(
-      ["# Title", "", "```ts", "const a = 1;", "", "const b = 2;", "```", "| a | b |", "|---|---|", "| 1 | 2 |", paragraph].join("\n"),
-    );
-    expect(units.slice(0, 3)).toEqual(["# Title", "```ts\nconst a = 1;\n\nconst b = 2;\n```", "| a | b |\n|---|---|\n| 1 | 2 |"]);
-    expect(units.length).toBeGreaterThan(10);
-    // Cutting loses no text, and "e.g." does not end a sentence.
-    expect(units.slice(3).join(" ")).toBe(paragraph);
-    expect(units.slice(3, 5)).toEqual([sentence, "Number 0."]);
-  });
-
-  test("sentences are cut by ICU rules: CJK full stops split, abbreviations do not", () => {
-    const cjk = `${"这是第一句话。".repeat(80)}`;
-    const units = splitSegments(cjk);
-    expect(units).toHaveLength(80);
-    expect(units.every((u) => u === "这是第一句话。")).toBe(true);
-    const english = `${"See e.g. the docs for details about this. ".repeat(12)}`.trim();
-    const parts = splitSegments(english);
-    expect(parts).toHaveLength(12);
-    expect(parts[0]).toBe("See e.g. the docs for details about this.");
-  });
-
-  test("an unclosed fence runs to the end, and a huge block is grouped by whole lines", () => {
-    expect(splitSegments("```\na\nb")).toEqual(["```\na\nb"]);
-    const rows = Array.from({ length: 200 }, (_, i) => `| row ${i} | ${"x".repeat(30)} |`);
-    const units = splitSegments(rows.join("\n"));
-    expect(units.length).toBeGreaterThan(1);
-    expect(units.join("\n")).toBe(rows.join("\n"));
-  });
-
   test("the model picks a whole table by one number, and continuation lines are indented", async () => {
     const engine = testEngine({ llmModel: "big", llmBaseUrl: llm.url });
     try {

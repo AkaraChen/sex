@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import net from "node:net";
+import { AdBlockList, BrowserPool } from "@searxng-js/sex-browser";
+import { Deadline } from "@searxng-js/sex-deadline";
 import { EgressPolicy } from "@searxng-js/sex-egress";
 import { resolveConfig } from "../src/config.ts";
-import { Deadline } from "../src/deadline.ts";
-import { AdBlockList } from "../src/engine/adblock.ts";
-import { BrowserPool } from "../src/engine/browser.ts";
+import { browserOptions } from "../src/engine/engine.ts";
 
 // Opt-in, needs Chrome on this machine (the CI chrome job): SEX_TEST_CDP_URL=http://127.0.0.1:9222 bun test apps/sex/test/egress-browser.test.ts
 // The page is fetched through sex's EgressProxy, so these are the rules as a real browser meets them: documents, redirects,
@@ -41,7 +41,11 @@ describe.skipIf(!CDP)("browser on this machine, through the EgressProxy", () => 
   const config = (allowPrivateNetwork = false) =>
     resolveConfig({ cdpUrl: CDP, concurrency: 2, timeout: 15_000, searxngUrl: "http://127.0.0.1:1" }, { allowPrivateNetwork }, {});
   const poolFor = (policy: EgressPolicy, list?: AdBlockList) => {
-    const pool = new BrowserPool(config(policy.allowPrivateNetwork), { policy, ...(list ? { adBlockList: async () => list } : {}) });
+    const pool = new BrowserPool({
+      ...browserOptions(config(policy.allowPrivateNetwork)),
+      policy,
+      ...(list ? { adBlockList: async () => list } : {}),
+    });
     pools.push(pool);
     return pool;
   };

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { type CallTime, Deadline } from "@searxng-js/sex-deadline";
 import {
   assertPublicUrl,
   decodeBody,
@@ -32,7 +33,6 @@ import {
   type ScrapeLlm,
 } from "./capabilities.ts";
 import { type ChangeTrackingRequest, trackChanges } from "./change-tracking.ts";
-import { type CallTime, Deadline } from "./deadline.ts";
 import { extractHtmlWithin, extractPdfWithin } from "./extract-within.ts";
 import { fetchWithin } from "./fetch-within.ts";
 import type { Document, FormatOption, ScrapeOptions } from "./schemas.ts";

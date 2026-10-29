@@ -24,8 +24,13 @@
 | `packages/egress`（`@searxng-js/sex-egress`，发布到 npm） | SSRF 安全的出站请求：`EgressPolicy`、`safeFetch`、`rewriteUrl`。Bun 和 Node 24 都能用，用法见 [packages/egress/README.md](packages/egress/README.md) |
 | `packages/page`（`@searxng-js/sex-page`，发布到 npm） | HTML 和 PDF 提取（Defuddle、unpdf、worker 线程池）、Markdown 转 HTML。Bun 和 Node 24 都能用；Node 上转 Markdown 需要装可选 peer `marked`，用法见 [packages/page/README.md](packages/page/README.md) |
 | `packages/searxng`（`@searxng-js/sex-searxng`，发布到 npm） | 连接外部 SearXNG，或把预编译的 SearXNG 作为子进程托管。Node 上给托管实例配代理需要装可选 peer `yaml`，用法见 [packages/searxng/README.md](packages/searxng/README.md) |
+| `packages/browser`（`@searxng-js/sex-browser`，发布到 npm） | 用浏览器渲染页面（Lightpanda 子进程或任意 CDP 浏览器），含 SSRF 执行、广告拦截和 `EgressProxy`；传给 sex-scrape 的 `browser`。Bun 和 Node 24 都能用，用法见 [packages/browser/README.md](packages/browser/README.md) |
+| `packages/llm`（`@searxng-js/sex-llm`，发布到 npm） | LLM 格式（json、summary、问答、highlights）、change tracking 的 json 描述和注入防护，任何 OpenAI 兼容端点；传给 sex-scrape 的 `llm`。Bun 和 Node 24 都能用，用法见 [packages/llm/README.md](packages/llm/README.md) |
+| `packages/docs`（`@searxng-js/sex-docs`，发布到 npm） | PDF、Office 文档和图片的转换与 OCR（here-docs）；传给 sex-scrape 的 `docs`。Node 上能否用取决于 here-docs，用法见 [packages/docs/README.md](packages/docs/README.md) |
+| `packages/store`（`@searxng-js/sex-store`，发布到 npm） | 页面缓存（`maxAge`）和 change tracking 的 SQLite 存储（`node:sqlite`）；传给 sex-scrape 的 `cache` / `changeTracker`。Bun 和 Node 24 都能用，用法见 [packages/store/README.md](packages/store/README.md) |
+| `packages/deadline`（`@searxng-js/sex-deadline`，私有） | `Deadline`：一次操作剩下的时间加调用方的取消，打包进用到它的包；包的边界只传 `signal` 和可选的 `deadlineAt` |
 | `packages/errors`（`@searxng-js/sex-errors`，私有） | `AppError` 和错误目录（`ERRORS`），打包进用到它的包；跨包判断错误用 `AppError.isInstance` |
-| `apps/sex` | 完整版：在 sex-server 上加了浏览器、LLM、文档转换、map / crawl / batch / extract 和任务队列 |
+| `apps/sex` | 完整版：在 sex-server 上装配 sex-browser、sex-llm、sex-docs、sex-store，加上 map / crawl / batch / extract 和任务队列 |
 | `apps/sex-lite` | 轻量版：只用 sex-server、sex-scrape、sex-search |
 
 ## 快速开始
@@ -114,7 +119,7 @@ compose 通过 `.env` 读取 `SEX_LLM_*`、`SEX_DOCS` 和 `SEX_SEARXNG_URL`。�
 - **`--cdp-url ws://...`**（`SEX_CDP_URL`）：连接已经在运行的 CDP 浏览器，比如 Chrome。sex 不启动任何进程；地址是回环时按“本机的外部浏览器”处理（Chrome 专用，见下面的表），要用 Lightpanda 请用 `--lightpanda`；和 `--lightpanda` 同时设置时以 `--cdp-url` 为准。
 - 都不设：不用浏览器。
 
-`dist/sex`（以及 Docker 镜像）内置了 Lightpanda，`--lightpanda` 开箱即用：第一次用到时解压到 `$XDG_CACHE_HOME/sex/lightpanda-<版本>-<hash>/`（约 76 MB），之后复用。版本和每个平台的 SHA-256 固定在 `apps/sex/scripts/lightpanda.ts`（目前是 1.0.2），`bun run build` 第一次会从 GitHub Releases 下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`，压缩后让 `dist/sex` 增大约 23 MB。预编译版本只有 Linux x64 / arm64（glibc ≥ 2.35）和 macOS x64 / arm64，Windows 和 musl 没有。
+`dist/sex`（以及 Docker 镜像）内置了 Lightpanda，`--lightpanda` 开箱即用：第一次用到时解压到 `$XDG_CACHE_HOME/sex/lightpanda-<版本>-<hash>/`（约 76 MB），之后复用。版本和每个平台的 SHA-256 固定在 `packages/browser/scripts/lightpanda.ts`（目前是 1.0.2），`bun run build` 第一次会从 GitHub Releases 下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`，压缩后让 `dist/sex` 增大约 23 MB。预编译版本只有 Linux x64 / arm64（glibc ≥ 2.35）和 macOS x64 / arm64，Windows 和 musl 没有。
 
 从源码运行（`bun run dev`）时没有内置的二进制，需要自己放到 PATH 上，或用 `--lightpanda-path`（`SEX_LIGHTPANDA_PATH`）指定；`--lightpanda-path` 也会覆盖内置的版本：
 
@@ -164,11 +169,11 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 - 数据：EasyList 和 EasyPrivacy 里的域名规则，也就是 `||domain^`（可带 `$third-party`）和例外规则 `@@||domain^`，约 9 万条。带路径、通配符、其它选项的规则和页面元素隐藏规则不用。
 - 匹配：按域名的 label 从后往前做后缀匹配（`ads.example.com` 命中 `cdn.ads.example.com`，不命中 `badads.example.com`），不是子串匹配；例外规则优先于拦截规则。`$third-party` 规则只在请求离开目标页所在的可注册域名时生效（没有 public suffix list，用“两段或 `co.uk` 式三段”近似）。
 - 范围：子资源和 iframe 被拦截时直接中止；目标页本身的导航（包括重定向）永远不拦（`EgressProxy` 上的差别见上）。浏览器不支持 request interception（部分 `--cdp-url` 浏览器）且没有别的策略需要它时，静默不拦截，不报错。
-- 数据怎么来：`apps/sex/scripts/adblock.ts` 固定了 EasyList 仓库的一个提交，按它的模板拉取各个子列表，提取域名后得到一个纯文本表，并固定该表的 SHA-256。`bun run build` 把它 zstd 压缩（约 600 KB）嵌入 `dist/sex`；第一次用到浏览器时解压并建 `Set`（约 30 ms，常驻内存增加约 10 MiB），之后每次查询不到 1 µs。从源码运行时，第一次用到会下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`；下载失败只打一条警告，不拦截，不影响抓取。升级规则：改 `EASYLIST_COMMIT`，运行 `bun apps/sex/scripts/adblock.ts` 取新 hash 填进 `ADBLOCK_TABLE_SHA256`。
-- 开销：CDP 路径要让浏览器把每个请求交给 sex 决定，这一步（CDP 往返）才是成本，查表本身可以忽略；本机的外部浏览器上广告在 `EgressProxy` 里按 host 拒绝，不需要 CDP 拦截。开了 `--allow-private-network`（`search` / `fetch` 默认就开）且没有其它策略时，Lightpanda 和远程浏览器上的 `blockAds` 会把 CDP 拦截打开。在 Lightpanda 上，一个有 50 个子资源且没有一个命中广告表的页面，实测增加约 2–5%（约 80 µs / 请求）；真实的广告多的新闻页面里，被拦掉 4–13 个请求，页面反而更快，正文不变。复测：`bun apps/sex/scripts/bench-adblock.ts`。
+- 数据怎么来：`packages/browser/scripts/adblock.ts` 固定了 EasyList 仓库的一个提交，按它的模板拉取各个子列表，提取域名后得到一个纯文本表，并固定该表的 SHA-256。`bun run build` 把它 zstd 压缩（约 600 KB）嵌入 `dist/sex`；第一次用到浏览器时解压并建 `Set`（约 30 ms，常驻内存增加约 10 MiB），之后每次查询不到 1 µs。从源码运行时，第一次用到会下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`；下载失败只打一条警告，不拦截，不影响抓取。升级规则：改 `EASYLIST_COMMIT`，运行 `bun packages/browser/scripts/adblock.ts` 取新 hash 填进 `ADBLOCK_TABLE_SHA256`。
+- 开销：CDP 路径要让浏览器把每个请求交给 sex 决定，这一步（CDP 往返）才是成本，查表本身可以忽略；本机的外部浏览器上广告在 `EgressProxy` 里按 host 拒绝，不需要 CDP 拦截。开了 `--allow-private-network`（`search` / `fetch` 默认就开）且没有其它策略时，Lightpanda 和远程浏览器上的 `blockAds` 会把 CDP 拦截打开。在 Lightpanda 上，一个有 50 个子资源且没有一个命中广告表的页面，实测增加约 2–5%（约 80 µs / 请求）；真实的广告多的新闻页面里，被拦掉 4–13 个请求，页面反而更快，正文不变。复测：`bun packages/browser/scripts/bench-adblock.ts`。
 - **`SEX_BLOCK_MEDIA`**（`--block-media`）：另外拦截图片和音视频请求（按资源类型，不是扩展名），默认关。文本抓取不需要这些字节；`screenshot` 本来就不支持。
 
-**EasyList 的出处与许可**：广告域名表来自 [EasyList](https://easylist.to/) 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0。sex 只取其中的域名，派生出的域名表随 `dist/sex` 一起分发；具体的提交和校验和见 `apps/sex/scripts/adblock.ts`。
+**EasyList 的出处与许可**：广告域名表来自 [EasyList](https://easylist.to/) 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0。sex 只取其中的域名，派生出的域名表随 `dist/sex` 一起分发；具体的提交和校验和见 `packages/browser/scripts/adblock.ts`。
 
 ### 出站代理
 
@@ -245,7 +250,7 @@ SSRF 防护在代理之前仍然生效：
 
 ### 页面缓存
 
-`maxAge`、`storeInCache`、`minAge`、`lockdown` 按 Firecrawl 的含义工作（只有 sex，sex-lite 没有缓存）。缓存存在 `SEX_DATA_DIR/cache.sqlite`（bun:sqlite，和任务数据库分开，大块内容和它的 WAL 不进 `jobs.sqlite`）；没有数据目录时（一次性 CLI 命令）没有缓存。
+`maxAge`、`storeInCache`、`minAge`、`lockdown` 按 Firecrawl 的含义工作（只有 sex，sex-lite 没有缓存）。缓存存在 `SEX_DATA_DIR/cache.sqlite`（`node:sqlite`，和任务数据库分开，大块内容和它的 WAL 不进 `jobs.sqlite`）；没有数据目录时（一次性 CLI 命令）没有缓存。
 
 - **缓存什么**：抓到的内容，不是最后的 Document：HTTP 响应体（HTML、PDF、文件字节），浏览器渲染的页面则是渲染后的 HTML，zstd 压缩后一个 (URL, 变体) 一行。`formats`、选择器、`parsers`（含 `maxPages`）、LLM 格式都是对取出来的内容再做一遍，所以一条缓存可以回答所有格式的请求，命中时仍会解析（省掉的是下载和渲染）。只缓存 2xx 响应。
 - **缓存键**：抓取用的 URL（重写后、去掉 `#` 片段）加变体：有没有走浏览器渲染、`blockAds: false`、`waitFor`、`mobile`、`skipTlsVerification`、`location.languages`。
@@ -258,7 +263,7 @@ SSRF 防护在代理之前仍然生效：
 
 `formats: ["markdown", { "type": "changeTracking", "modes": ["git-diff", "json"], "tag": "daily" }]` 把这次抓到的页面和同一个 URL（和 `tag`）上一次抓到的比较，结果在文档的 `changeTracking` 里，字段和 Firecrawl 一样：`changeStatus`（`new` / `same` / `changed` / `removed`）、`previousScrapeAt`（上一次抓取时间，ISO 8601，第一次是 `null`）、`visibility`、`diff`、`json`。只有 sex 支持；sex-lite 和没有 `SEX_DATA_DIR` 的 sex 返回 `501 NOT_SUPPORTED`（提示里写明怎么开）。
 
-- **存储**：`SEX_DATA_DIR/change-tracking.sqlite`（bun:sqlite），每个 (URL, tag) 一行，存最近一次的 markdown（zstd 压缩）。新的抓取直接覆盖旧的，**不过期、不淘汰**，也不是页面缓存（缓存会过期和淘汰，这里存的是下一次比较的唯一依据）。文件打不开时 `changeTracking` 不返回、文档带 `warning`，不会悄悄重建成全部 `new`。URL 是请求的 URL（`sourceURL`），`tag` 为空串等于没给 `tag`。
+- **存储**：`SEX_DATA_DIR/change-tracking.sqlite`（`node:sqlite`），每个 (URL, tag) 一行，存最近一次的 markdown（zstd 压缩）。新的抓取直接覆盖旧的，**不过期、不淘汰**，也不是页面缓存（缓存会过期和淘汰，这里存的是下一次比较的唯一依据）。文件打不开时 `changeTracking` 不返回、文档带 `warning`，不会悄悄重建成全部 `new`。URL 是请求的 URL（`sourceURL`），`tag` 为空串等于没给 `tag`。
 - **`changeStatus`**（Firecrawl 的规则）：没有上一次是 `new`；页面返回 404 是 `removed`；否则去掉 `[iframe](…)`、把连续空白当成一个空格后，**文本逐字相等**才是 `same`，不然 `changed`（调换段落、改一个字都是 `changed`；Firecrawl 只比较去掉空白后各字符出现的次数，会把这些误判成 `same`，sex 不照搬）。只有 2xx 的页面会写入，所以 404 或错误页不会成为下一次的比较对象。必须同时请求 `markdown`，否则 `400`。上传（`/v2/parse`）不支持。
 - **`modes`**（只在 `changed` 时给）：`git-diff` 给 `diff.text`（`previous.md` → `current.md` 的 unified diff，3 行上下文）和 `diff.json`（Firecrawl 的 `{ files: [{ from, to, chunks: [{ content, changes }] }] }` 结构），用 [jsdiff](https://github.com/kpdecker/jsdiff) 生成，页面太大、5 秒内比不完时跳过并加 warning。`json` 需要 LLM（没有是 `501 LLM_NOT_CONFIGURED`）：给了 `schema` 就对两个版本各抽取一次、逐个顶层字段比较（`{ 字段: { previous, current } }`）；没给就让 LLM 按 `prompt` 描述两个版本的差别。LLM 调用失败只丢掉 `json`（带 warning），不影响抓取和写入。
 - **`visibility`** 总是 `visible`：Firecrawl 的 `hidden` 是 crawl 里不在范围内的 URL，sex 没有这个概念。
@@ -470,4 +475,4 @@ SEX_TEST_SEARXNG=1 bun test --conditions sex-source packages/searxng/test/searxn
 SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test --conditions sex-source apps/sex/test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
 ```
 
-其它检查：`bun check`（类型检查），`bun run lint`（Biome）。`bun run build:packages` 用 tsdown 构建要发布的包，`bun run test:node` 在 Node 上对 dist 跑它们的测试（目前还没有发布包，两者都是空操作）；版本用 changesets 管理（`bun run changeset`）。
+其它检查：`bun check`（类型检查），`bun run lint`（Biome）。`bun run build:packages` 用 tsdown 构建要发布的包，`bun run test:node` 在 Node 上对 dist 跑它们的测试（包的测试用 `node:test`，Bun 和 Node 都能跑；需要整个引擎、`Bun.serve` 或真浏览器的测试留在 `apps/sex/test`，用 `bun:test`）；版本用 changesets 管理（`bun run changeset`）。

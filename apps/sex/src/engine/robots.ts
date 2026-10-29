@@ -1,5 +1,5 @@
+import type { Deadline } from "@searxng-js/sex-deadline";
 import { decodeBody } from "@searxng-js/sex-egress";
-import type { Deadline } from "../deadline.ts";
 import { fetchWithin } from "../fetch-within.ts";
 import type { Engine } from "./engine.ts";
 

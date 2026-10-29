@@ -1,0 +1,37 @@
+{
+  "name": "@searxng-js/sex-docs",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "PDF, office document and image conversion (structured text, local OCR) through here-docs, for @searxng-js/sex-scrape",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AkaraChen/sex.git",
+    "directory": "packages/docs"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@searxng-js/sex-deadline": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
+    "here-docs": "github:AkaraChen/here-docs#40febc7",
+    "p-limit": "^7.3.3"
+  },
+  "peerDependencies": {
+    "@searxng-js/sex-scrape": "workspace:^"
+  },
+  "devDependencies": {
+    "@searxng-js/sex-scrape": "workspace:*"
+  }
+}

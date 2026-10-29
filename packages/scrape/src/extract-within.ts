@@ -1,5 +1,5 @@
+import type { Deadline } from "@searxng-js/sex-deadline";
 import type { ExtractPool, PageExtractOptions, PageExtractResult, PdfText } from "@searxng-js/sex-page";
-import type { Deadline } from "./deadline.ts";
 
 // The page package only knows an `AbortSignal`: what it throws after the abort is replaced by the deadline's own error
 // (`SCRAPE_TIMEOUT` when the time ran out, `TIMEOUT` when the caller cancelled), like `fetchWithin` does.

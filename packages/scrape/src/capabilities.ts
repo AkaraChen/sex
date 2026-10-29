@@ -1,5 +1,5 @@
+import type { CallTime } from "@searxng-js/sex-deadline";
 import type { PageExtractOptions, PageExtractResult, PdfPage } from "@searxng-js/sex-page";
-import type { CallTime } from "./deadline.ts";
 import type { Action, ChangeTrackingResult } from "./schemas.ts";
 
 /**
