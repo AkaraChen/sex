@@ -220,4 +220,22 @@ describe("Deadline", () => {
   test("timedOut is the deadline's error even a moment before its own timer fires", () => {
     assert.deepEqual(code(Deadline.start(60_000).timedOut("while loading x")), { status: 408, code: "SCRAPE_TIMEOUT" });
   });
+  test("once deadlineAt has passed, an error is the deadline's even before its own timer fires", () => {
+    // What a package that got this deadline as a CallTime sees when its own timer to the same deadlineAt fired first.
+    const d = Deadline.of({ deadlineAt: Date.now() - 1 });
+    assert.equal(d.signal.aborted, false);
+    assert.equal(d.over, true);
+    assert.deepEqual(code(d.translate(new Error("the LLM call timed out"))), { status: 408, code: "SCRAPE_TIMEOUT" });
+    assert.throws(
+      () => d.throwIfAborted(),
+      (err) => AppError.isInstance(err) && err.code === "SCRAPE_TIMEOUT",
+    );
+  });
+
+  test("time left: a step's own error stays its own", () => {
+    const d = Deadline.start(10_000);
+    const own = new Error("boom");
+    assert.equal(d.over, false);
+    assert.equal(d.translate(own), own);
+  });
 });

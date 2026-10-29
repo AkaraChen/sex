@@ -138,7 +138,7 @@ async function describeChanges(input: TrackInput, previous: string, result: Chan
       result.json = await llm.describeChanges(before, after, { prompt: request.prompt, url }, time);
     }
   } catch (err) {
-    if (deadline.signal.aborted) throw deadline.translate(err);
+    if (deadline.over) throw deadline.translate(err);
     const e = toAppError(err);
     if (e.status === 501 || e.code === "SCRAPE_PROMPT_INJECTION_DETECTED") throw err;
     log.warn("change tracking json failed", { url, code: e.code, error: e.message });

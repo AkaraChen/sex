@@ -453,7 +453,7 @@ async function scrapeInner(
         warnings.push(`The site blocked the request (${was}); retried through the stealth proxy (HTTP ${res.status}).`);
         fetchedVia = "stealth";
       } catch (err) {
-        if (deadline.signal.aborted) throw deadline.translate(err);
+        if (deadline.over) throw deadline.translate(err);
         log.warn("retry through the stealth proxy failed", { url, error: toAppError(err).message });
         warnings.push(`The site blocked the request (${was}); the retry through the stealth proxy failed (${toAppError(err).code}).`);
       }
@@ -495,7 +495,7 @@ async function scrapeInner(
         extract: extractOpts,
       });
     } catch (err) {
-      if (deadline.signal.aborted) throw deadline.translate(err);
+      if (deadline.over) throw deadline.translate(err);
       const reason = browserFallbackReason(err, options, deadline);
       if (!reason) throw err;
       fallback = { reason };
@@ -588,7 +588,7 @@ async function scrapeInner(
     // the browser's answer stays unless the plain fetch finds something.
     const warns: string[] = [];
     const tried = await fetchPage(warns).catch((err: unknown) => {
-      if (deadline.signal.aborted) throw deadline.translate(err);
+      if (deadline.over) throw deadline.translate(err);
       log.warn("HTTP fetch after an empty browser page failed", { url, error: toAppError(err).message });
       return undefined;
     });
@@ -603,7 +603,7 @@ async function scrapeInner(
     // the browser's page only if it is not blocked too.
     const warns: string[] = [];
     const tried = await fetchPage(warns, { stealth: true }).catch((err: unknown) => {
-      if (deadline.signal.aborted) throw deadline.translate(err);
+      if (deadline.over) throw deadline.translate(err);
       log.warn("HTTP fetch through the stealth proxy after a blocked browser page failed", { url, error: toAppError(err).message });
       return undefined;
     });
@@ -730,7 +730,7 @@ async function scrapeInner(
     const values: unknown[] = settled.map((r, i) => {
       if (r.status === "fulfilled") return r.value;
       const err = toAppError(r.reason);
-      if (llmDeadline.signal.aborted) throw llmDeadline.translate(r.reason);
+      if (llmDeadline.over) throw llmDeadline.translate(r.reason);
       if (err.status === 501 || err.code === "SCRAPE_PROMPT_INJECTION_DETECTED") throw r.reason;
       log.warn("LLM format failed", { format: labels[i], code: err.code, error: err.message });
       warnings.push(`${labels[i]} failed: ${err.message}`);

@@ -367,7 +367,8 @@ describe.skipIf(!LIGHTPANDA)("spawned lightpanda process", () => {
         console.log(engine.browser.pid);
         await Bun.sleep(60_000);
       `;
-      const parent = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "ignore" });
+      // The child resolves the workspace packages from source like the test itself (CI builds no dist for this job).
+      const parent = Bun.spawn([process.execPath, "--conditions", "sex-source", "-e", script], { stdout: "pipe", stderr: "pipe" });
       let pid = 0;
       try {
         // The first line the script prints is the PID of its Lightpanda child.
@@ -380,6 +381,9 @@ describe.skipIf(!LIGHTPANDA)("spawned lightpanda process", () => {
           out += decoder.decode(value, { stream: true });
         }
         pid = Number(out.trim());
+        // A script that died before printing gives no PID; process.kill(0, 0) would then probe our own process group.
+        if (!Number.isInteger(pid) || pid <= 0)
+          throw new Error(`no Lightpanda PID from the child: ${await new Response(parent.stderr).text()}`);
         expect(alive(pid)).toBe(true);
         parent.kill("SIGKILL");
         await parent.exited;

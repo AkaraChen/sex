@@ -326,7 +326,7 @@ export class Llm implements ScrapeLlm {
       });
       return v as { isInjection: boolean; reason: string };
     } catch (err) {
-      if (deadline.signal.aborted) throw deadline.translate(err, "while checking for prompt injection");
+      if (deadline.over) throw deadline.translate(err, "while checking for prompt injection");
       log.warn("prompt injection guard failed; continuing without a verdict for this chunk", {
         error: err instanceof Error ? err.message : String(err),
       });

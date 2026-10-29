@@ -114,6 +114,15 @@ export class Deadline {
     return Math.max(0, this.endsAt - Date.now());
   }
 
+  /**
+   * Over: the signal has aborted, or the time is up and the timer has not fired yet. Another package that got this deadline
+   * as a `CallTime` runs its own timer to the same `deadlineAt`, and that timer can fire first; its error is then still this
+   * deadline running out, not a failure of the step.
+   */
+  get over(): boolean {
+    return this.signal.aborted || this.remaining() === 0;
+  }
+
   /** The time ran out (as opposed to the caller cancelling). */
   get expired(): boolean {
     return !this.cancelled && this.expiredBy() !== undefined;
@@ -144,7 +153,7 @@ export class Deadline {
 
   /** Throws the right error if the deadline is already over. */
   throwIfAborted(what?: string): void {
-    if (this.signal.aborted) throw this.abortError(what);
+    if (this.over) throw this.abortError(what);
   }
 
   /**
@@ -153,7 +162,7 @@ export class Deadline {
    * `what` completes "Timed out after 30000ms ..." / "Request cancelled ...", e.g. "while fetching https://example.com/".
    */
   translate(err: unknown, what?: string): unknown {
-    return this.signal.aborted ? this.abortError(what) : err;
+    return this.over ? this.abortError(what) : err;
   }
 
   /** Waits `ms`, or until the deadline is over (then throws like `throwIfAborted`). */
