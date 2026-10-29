@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-egress",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.0",
   "type": "module",
   "description": "SSRF-safe outbound requests: EgressPolicy (where a server may connect to) and safeFetch (DNS-pinned fetch with a check on every redirect hop)",
   "repository": {

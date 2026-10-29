@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-browser",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.0",
   "type": "module",
   "description": "Render pages in a browser (Lightpanda child process or any CDP browser) for @searxng-js/sex-scrape, with SSRF enforcement, ad blocking and the egress proxy",
   "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/browser" },
@@ -14,8 +14,8 @@
     }
   },
   "dependencies": {
-    "@searxng-js/sex-egress": "workspace:*",
-    "@searxng-js/sex-page": "workspace:*",
+    "@searxng-js/sex-egress": "workspace:^",
+    "@searxng-js/sex-page": "workspace:^",
     "p-limit": "^7.3.3",
     "puppeteer-core": "^25.16.0"
   },

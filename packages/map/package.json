@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-map",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.0",
   "type": "module",
   "description": "Find the URLs of a site (Firecrawl v2 map): sitemaps, the start page's links and a SearXNG site: search, with robots.txt and path filters",
   "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/map" },
@@ -14,9 +14,9 @@
     }
   },
   "dependencies": {
-    "@searxng-js/sex-egress": "workspace:*",
-    "@searxng-js/sex-scrape": "workspace:*",
-    "@searxng-js/sex-search": "workspace:*",
+    "@searxng-js/sex-egress": "workspace:^",
+    "@searxng-js/sex-scrape": "workspace:^",
+    "@searxng-js/sex-search": "workspace:^",
     "zod": "^4.6.7"
   },
   "devDependencies": {

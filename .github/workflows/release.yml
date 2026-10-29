@@ -1,0 +1,42 @@
+name: Release
+
+# Publishes the @searxng-js/sex-* packages whose package.json version is not on npm yet (scripts/release.ts), through
+# npm trusted publishing: GitHub's OIDC token instead of an npm token, with provenance. Every package must have this
+# repository + workflow file as its trusted publisher (RELEASING.md). Nothing is published when every version is already
+# on npm, so a push that does not change a version is a no-op.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Pack and print what would be published, without publishing
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the <name>@<version> tags
+  id-token: write # npm trusted publishing (OIDC) and provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Trusted publishing needs npm >= 11.5.1.
+      - run: npm install -g npm@^11.15.0 && npm --version
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages
+      # The packages' own tests on Node, against the dist about to be published.
+      - run: bun run test:node
+      - run: bun run release ${{ inputs.dry_run && '--dry-run' || '' }}

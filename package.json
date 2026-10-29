@@ -17,7 +17,9 @@
     "build:lite": "bun apps/sex-lite/scripts/build.ts",
     "build:packages": "bun scripts/build-packages.ts",
     "test:node": "bun scripts/test-node.ts",
-    "changeset": "changeset"
+    "changeset": "changeset",
+    "release": "bun scripts/release.ts",
+    "set-version": "bun scripts/set-version.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.3",
