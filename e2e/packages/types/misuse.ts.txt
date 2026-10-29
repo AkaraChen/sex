@@ -1,0 +1,19 @@
+// Every line tagged MISUSE must be a type error; nothing else in this file may be.
+import { safeFetch } from "@searxng-js/sex-egress";
+import { ExtractPool, markdownToHtml } from "@searxng-js/sex-page";
+import { type ScrapeContext, scrapeUrl } from "@searxng-js/sex-scrape";
+import { type SearchContext, search } from "@searxng-js/sex-search";
+
+declare const ctx: ScrapeContext;
+declare const searchCtx: SearchContext;
+
+export async function misuse(): Promise<void> {
+  await safeFetch("https://example.com/", { allowPrivateNetwork: true }); // MISUSE
+  await scrapeUrl(ctx, 42); // MISUSE
+  await scrapeUrl(ctx, "https://example.com/", { formats: ["not-a-format"] }); // MISUSE
+  new ExtractPool({ size: "two", taskTimeoutMs: 1000 }); // MISUSE
+  const html: number = await markdownToHtml("# hi"); // MISUSE
+  await search(searchCtx, { limit: 5 }); // MISUSE
+  const ok: string = (await scrapeUrl(ctx, "https://example.com/")).document.markdown ?? "";
+  void [html, ok];
+}

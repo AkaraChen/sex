@@ -1,0 +1,123 @@
+name: E2E
+
+# End-to-end tests of the built binaries (sex, sex-lite) and of the published packages, from the outside.
+# The suites live in e2e/; e2e/README.md says what each covers and how to run it locally.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SEX_E2E_BIN_DIR: ${{ github.workspace }}/e2e-bin
+  # Missing services (Chrome, S3) fail the suite instead of skipping it.
+  SEX_E2E_REQUIRE_ALL: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: bun run build:lite
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            dist/sex
+            dist/sex-lite
+          retention-days: 3
+
+  suite:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [lite, sex, infra, packages]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: e2e-bin
+      - run: chmod +x e2e-bin/sex e2e-bin/sex-lite
+      - name: Start headless Chrome (infra)
+        if: matrix.suite == 'infra'
+        run: |
+          google-chrome --headless=new --no-sandbox --disable-gpu --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+            --user-data-dir="$RUNNER_TEMP/chrome" about:blank >"$RUNNER_TEMP/chrome.log" 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:9222/json/version && break; sleep 1; done
+          echo "SEX_E2E_CDP_URL=http://127.0.0.1:9222" >> "$GITHUB_ENV"
+      - name: Start an S3 server (infra)
+        if: matrix.suite == 'infra'
+        run: |
+          docker run -d --name s3 -p 127.0.0.1:8333:8333 -e AWS_ACCESS_KEY_ID=sex -e AWS_SECRET_ACCESS_KEY=sex-secret \
+            chrislusf/seaweedfs:4.48 server -s3 -dir=/data -ip.bind=0.0.0.0
+          for i in $(seq 60); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8333/)" != "000" ] && break; sleep 1; done
+          {
+            echo "SEX_E2E_S3_ENDPOINT=http://127.0.0.1:8333"
+            echo "SEX_E2E_S3_ACCESS_KEY_ID=sex"
+            echo "SEX_E2E_S3_SECRET_ACCESS_KEY=sex-secret"
+          } >> "$GITHUB_ENV"
+      - name: Build the published packages (packages)
+        if: matrix.suite == 'packages'
+        run: bun run build:packages
+      - run: bun run e2e ./e2e/${{ matrix.suite }}
+      - if: failure() && matrix.suite == 'infra'
+        run: tail -50 "$RUNNER_TEMP/chrome.log" || true
+
+  # The big test: a large local site, thousands of pages, hundreds of concurrent requests. Numbers go to the job summary.
+  load:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: e2e-bin
+      - run: chmod +x e2e-bin/sex e2e-bin/sex-lite
+      - run: bun run e2e ./e2e/load
+
+  # Real websites and the real (managed) SearXNG. The internet is not ours: a failure here does not block a merge.
+  online:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: e2e-bin
+      - run: chmod +x e2e-bin/sex e2e-bin/sex-lite
+      - run: bun run e2e ./e2e/online

@@ -1,0 +1,91 @@
+// A consumer's TypeScript: the main APIs of every published package, as the READMEs use them. Must compile as it is.
+
+import { AdBlockList, BrowserPool } from "@searxng-js/sex-browser";
+import { DocsConverter } from "@searxng-js/sex-docs";
+import { EgressPolicy, type FetchedResponse, safeFetch } from "@searxng-js/sex-egress";
+import {
+  createDocumentLog,
+  createJobBackend,
+  type JobsContext,
+  MemoryTaskQueue,
+  SqliteJobStore,
+  startBatchScrape,
+  startCrawl,
+  startWorker,
+} from "@searxng-js/sex-jobs";
+import { Llm, type LlmOptions, TokenMeter } from "@searxng-js/sex-llm";
+import { type MapContext, mapSite } from "@searxng-js/sex-map";
+import { ExtractPool, markdownToHtml } from "@searxng-js/sex-page";
+import { type Document, type ScrapeCache, type ScrapeContext, type ScrapeOptions, scrapeUrl } from "@searxng-js/sex-scrape";
+import { type SearchContext, search } from "@searxng-js/sex-search";
+import { SearxngService } from "@searxng-js/sex-searxng";
+import { SqliteChangeTracker, SqliteScrapeCache } from "@searxng-js/sex-store";
+import pLimit from "p-limit";
+
+export async function main(): Promise<void> {
+  const res: FetchedResponse = await safeFetch("https://example.com/", {
+    signal: AbortSignal.timeout(10_000),
+    allowPrivateNetwork: false,
+    proxy: undefined,
+    userAgent: "my-bot/1.0",
+  });
+  const status: number = res.status;
+  const bytes: number = res.body.byteLength;
+  const policy = new EgressPolicy({ allowPrivateNetwork: false });
+  await policy.resolve(new URL("https://example.com/"), false);
+
+  const extractPool = new ExtractPool({ size: 2, taskTimeoutMs: 30_000 });
+  const html: string = await markdownToHtml("# hi");
+  const cache = new SqliteScrapeCache("./cache.sqlite", { defaultMaxAge: 0, ttlMs: 60_000, maxBytes: 1_000_000 });
+  const changeTracker = new SqliteChangeTracker("./change-tracking.sqlite");
+  const asCache: ScrapeCache = cache;
+  const llm = new Llm({
+    endpoint: { baseUrl: "http://localhost:1/v1", model: "m" },
+    maxInputChars: 1000,
+    timeoutMs: 1000,
+  } satisfies LlmOptions);
+  const meter = new TokenMeter();
+  await llm.metered(meter, async () => undefined);
+  const browser = new BrowserPool({ concurrency: 1, allowPrivateNetwork: false, blockMedia: false, lightpanda: true });
+  const docs = new DocsConverter({ enabled: false, concurrency: 1 });
+  const ads = AdBlockList.parse("ads.example\n");
+  const searxng = new SearxngService({ url: "http://localhost:8080" });
+
+  const ctx: ScrapeContext = {
+    settings: { allowPrivateNetwork: false, userAgent: "my-bot/1.0", timeout: 30_000, maxBodyBytes: 10 * 1024 * 1024 },
+    scrapeLimit: pLimit(8),
+    extractPool,
+    cache,
+    changeTracker,
+    llm,
+    browser,
+    docs,
+  };
+  const options: ScrapeOptions = { formats: ["markdown", "links", { type: "json", schema: { type: "object" } }], maxAge: 60_000 };
+  const { document }: { document: Document } = await scrapeUrl(ctx, "https://example.com/", options);
+  const markdown: string | undefined = document.markdown;
+
+  const searchCtx: SearchContext = { ...ctx, searchDomainLimit: pLimit(4), searxng };
+  const { data } = await search(searchCtx, { query: "defuddle", limit: 5 });
+  const urls: Array<string | undefined> | undefined = data.web?.map((r) => r.url);
+
+  const mapCtx: MapContext = searchCtx;
+  const { links } = await mapSite(mapCtx, { url: "https://example.com/docs", limit: 100, sitemap: "include" });
+  const first: string | undefined = links[0]?.url;
+
+  const store = new SqliteJobStore(":memory:", 24 * 3600_000, createDocumentLog({ dataDir: "./data" }));
+  const jobs = createJobBackend({ store, queue: new MemoryTaskQueue({ concurrency: 4 }) });
+  const jobsCtx: JobsContext = {
+    ...mapCtx,
+    llm, // sex-llm's Llm is a JobsLlm as well as a ScrapeLlm
+    jobs,
+    jobSettings: { concurrency: 4, extractWildcardPages: 10 },
+    search: async () => ({ data: {} }),
+  };
+  startWorker(jobsCtx);
+  const { job } = await startBatchScrape(jobsCtx, { urls: ["https://example.com/a"] });
+  const crawl = await startCrawl(jobsCtx, { url: "https://example.com/" });
+  const state: string | undefined = (await jobs.store.get(job.id))?.status;
+
+  void [status, bytes, html, asCache, ads, markdown, urls, first, state, crawl.job.id];
+}
