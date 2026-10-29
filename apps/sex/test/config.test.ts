@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createDocumentLog, documentsLocation, FsDocumentLog, MemoryDocumentLog, S3DocumentLog } from "@searxng-js/sex-jobs";
 import { defaultDataDir, resolveConfig } from "../src/config.ts";
-import { createDocumentLog, documentsLocation, FsDocumentLog, MemoryDocumentLog, S3DocumentLog } from "../src/engine/jobs/documents.ts";
 import { testEngine } from "./helpers.ts";
 
 test("resolveConfig reads from an explicit env object", () => {

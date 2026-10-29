@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Deadline } from "@searxng-js/sex-deadline";
-import { sitemapUrls } from "../src/engine/map.ts";
-import { fetchRobots, parseRobots } from "../src/engine/robots.ts";
+import { fetchRobots, parseRobots, sitemapUrls } from "@searxng-js/sex-map";
 import { testEngine } from "./helpers.ts";
 
 describe("robots.txt per RFC 9309", () => {

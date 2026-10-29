@@ -52,7 +52,7 @@
 | 包 | 打包进 | 内容 |
 |---|---|---|
 | `sex-errors` | 所有发布包 | `AppError`、错误目录、`badRequest` 等辅助函数。类上带 `Symbol.for` 标记，见下方「错误」 |
-| `sex-deadline` | `sex-scrape`、`sex-browser`、`sex-llm`、`sex-docs` | `Deadline`：一次操作剩下的时间加调用方的取消。包的边界只传 `signal` 和可选的 `deadlineAt`，收到的包用它重建自己的 `Deadline` |
+| `sex-deadline` | `sex-scrape`、`sex-map`、`sex-browser`、`sex-llm`、`sex-docs` | `Deadline`：一次操作剩下的时间加调用方的取消。包的边界只传 `signal` 和可选的 `deadlineAt`，收到的包用它重建自己的 `Deadline` |
 | `sex-documents-s3` | `sex-jobs` | S3 胶水：Bun 上用 `Bun.S3Client`，Node 上动态 import `@aws-sdk/client-s3`，没装就报错 |
 | `sex-server` | `apps/sex`、`apps/sex-lite` | 两个 app 共用的脚手架：Hono + oRPC、`/v2/scrape` 和 `/v2/search` 路由、`web_fetch` / `web_search` MCP 工具、`BaseEngine`、citty 的公共 flag。只跑在 Bun 上，直接用 `Bun.serve` |
 
@@ -207,18 +207,18 @@ flowchart LR
 
 自底向上：先第三类，再第二类，最后第一类。每步一个 PR，Bun 和 Node 的测试都要通过，同一个 PR 里更新 CLAUDE.md 的 Layout 和 README 的仓库结构表。
 
-- [ ] 1. **骨架**：`apps/` 目录、tsdown、changesets、`sex-source` 条件、CI 的 Bun 和 Node 两个 job、Dockerfile 路径。
+- [x] 1. **骨架**：`apps/` 目录、tsdown、changesets、`sex-source` 条件、CI 的 Bun 和 Node 两个 job、Dockerfile 路径。
 - [x] 2. **第三类 `sex-errors`**：`Symbol.for` 标记和 `isInstance`；11 处跨包的 `instanceof AppError` 换掉。（`log` 改成 `logger` 选项随各包抽出时做，不在本步。）
 - [x] 3. **`sex-egress`**：边界改为 `signal`。它不依赖别的包，先做。
 - [x] 4. **第二类 `sex-page`、`sex-searxng`**：Markdown、YAML 按运行时分支。
 - [x] 5. **`sex-scrape`、`sex-search`、`sex-server`**：完成后 `apps/sex-lite` 完全基于新包，删除 `packages/core`。
 - [x] 6. **能力插件 `sex-browser`、`sex-llm`、`sex-docs`、`sex-store`**：SQLite、zstd 换成 `node:` 内置，换之前先测 SQLite 在 Bun 上的性能。
-- [ ] 7. **`sex-map`、`sex-jobs`、第三类 `sex-documents-s3`**：bunqueue 队列移进 `apps/sex/src`。完成后 `apps/sex` 迁移完毕。
+- [x] 7. **`sex-map`、`sex-jobs`、第三类 `sex-documents-s3`**：bunqueue 队列移进 `apps/sex/src`。完成后 `apps/sex` 迁移完毕。
 - [ ] 8. **首次发布到 npm。**
 
 ## 风险和待确认
 
-- **SQLite 性能**：jobs 存储从 `bun:sqlite` 换成 `node:sqlite` 后，在 Bun 上可能变慢。如果明显变慢，jobs 的 SQLite 也改成按运行时分支。步骤 6 先测了页面缓存（`sex-store`）：同一个表结构，Bun 1.4.3 上 5000 次 `put`（删旧行、zstd 压缩一个 9 KB 页面、插入）和 5000 次 `get`（查询、更新 `used_at`、解压），两轮：`bun:sqlite` 约 48–53 µs / 次，`node:sqlite` 约 44–54 µs（put）和 48–61 µs（get）。差别在噪声里，前提是每个连接只 `prepare` 一次（`node:sqlite` 每次都 `prepare` 要慢约一半，约 78 µs / 65–75 µs；`bun:sqlite` 的 `query()` 自带缓存）。所以 `sex-store` 直接用 `node:sqlite`，带一个按连接缓存语句的小封装。jobs 存储的写入量和事务更多，到步骤 7 再用同样的方法测。
+- **SQLite 性能**：jobs 存储从 `bun:sqlite` 换成 `node:sqlite` 后，在 Bun 上可能变慢。如果明显变慢，jobs 的 SQLite 也改成按运行时分支。步骤 6 先测了页面缓存（`sex-store`）：同一个表结构，Bun 1.4.3 上 5000 次 `put`（删旧行、zstd 压缩一个 9 KB 页面、插入）和 5000 次 `get`（查询、更新 `used_at`、解压），两轮：`bun:sqlite` 约 48–53 µs / 次，`node:sqlite` 约 44–54 µs（put）和 48–61 µs（get）。差别在噪声里，前提是每个连接只 `prepare` 一次（`node:sqlite` 每次都 `prepare` 要慢约一半，约 78 µs / 65–75 µs；`bun:sqlite` 的 `query()` 自带缓存）。所以 `sex-store` 直接用 `node:sqlite`，带一个按连接缓存语句的小封装。jobs 存储的写入量和事务更多，步骤 7 用同样的方法测了：Bun 1.4.3，同一个 `SqliteJobStore`（两个版本只差 SQLite 的调用），20000 个 URL 的热路径，三轮：`schedule`（每次 100 个候选，含 `seen` 和 `outbox` 写入）`bun:sqlite` 约 19–22 µs / URL，`node:sqlite` 约 22–25 µs；`pushDocument`（查 job、领取、插入索引、`completed + 1`，文档字节写内存日志）68–70 µs 对 71–79 µs；`settle` 49–52 µs 对 49–55 µs；读一页 100 个文档的索引 0.25–0.27 ms 对 0.23–0.34 ms。慢不超过 1.1 倍，在 1.5 倍以内，所以 `sex-jobs` 直接用 `node:sqlite`（同样每个连接只 `prepare` 一次，见 `packages/jobs/src/db.ts`）。`bun:sqlite` 写出的 `jobs.sqlite` 用新代码打开、再用旧代码打开，都读得出（互读验证过）。
 - **类型内联**（第 2 步已确认，可行）：发布包引用私有库（`sex-errors`）时，tsdown 把 JS 和 `.d.ts` 里的 `AppError` 等都内联，dist 里没有私有包名。需要的配置：
   - `deps: { alwaysBundle: [/^@searxng-js\/sex-errors/] }`：私有库在 `dependencies` 里（`workspace:*`），默认会被当外部依赖，必须强制内联。
   - `inputOptions.resolve.conditionNames: ["sex-source", "import", "default"]`：私有库没有 dist 时也能从 `src` 解析。
@@ -235,6 +235,13 @@ flowchart LR
 
 ## 当前进度
 
-分支 `wip/package-split-v1` 上有一版按旧方案做的尝试（公开的 `sex-kit`、`sex-schemas`），只供参考 `apps/` 搬迁等机械步骤，不按它的包划分。
+步骤 1–7 做完了：`packages/core` 已删，`apps/sex` 和 `apps/sex-lite` 都只做组装，所有库在 `packages/` 里。还剩步骤 8（首次发布到 npm）。每步的细节在对应的提交信息里，和本文不同的地方如下。
 
-
+- `sex-deadline`（步骤 6 加的私有库）：`sex-browser`、`sex-llm`、`sex-docs` 要用同一个 `Deadline`，又不能从 peer `sex-scrape` 拿，所以抽成私有库打包进去。步骤 7 里 `sex-map` 也打包它（`mapSite` 内部保留一个 `Deadline`，错误码仍是 `TIMEOUT`；`sitemapUrls`、`fetchRobots` 在边界上收 `CallTime`）。`sex-jobs` 不用：webhook 的一次投递和 crawl 取 robots.txt 在入口处用 `AbortSignal.timeout`，extract 给 LLM 调用传 `{ signal }`。
+- `sex-jobs` 的 extract 不依赖 `sex-llm`：它要的 LLM 能力是 `JobsLlm` 接口（`sex-llm` 的 `Llm` 满足，为此 `Llm` 多了 `schemaErrors` 和 `relevanceFieldDescription`），网页搜索是 `JobsContext.search`。所以 `sex-jobs` 的依赖是 `sex-scrape`、`sex-map`、`sex-egress`，和本文的表一致，不需要 `sex-search`。
+- `sex-documents-s3` 里 `S3DocumentLog` 不 import `sex-jobs` 的 `DocumentLog`（接口在使用方，会成环），按结构兼容。文档对象名从 `Bun.randomUUIDv7()` 改成 `crypto.randomUUID()`，不再按写入时间排序（没有代码依赖过列表顺序）；`sex-jobs` 也导出 `S3DocumentLog` 和 `openS3`，Node 用户可以自己传端点和凭据。读到对象末尾之外的区间现在两个客户端都返回空（`Bun.S3Client` 原来会抛 `InvalidRange`）。
+- 任务队列：`MemoryTaskQueue` 在 `sex-jobs` 里（之前没有），规则和 bunqueue 那份一样（无 lane 的任务先走、lane 轮流、上限、冷却、延迟），但进程结束任务就没了，也没有重新投递；bunqueue 的 `BunqueueTaskQueue` 在 `apps/sex/src/engine/jobs/queue.ts`。
+- SQLite：jobs 存储用 `node:sqlite`（数字见上面的风险一条），旧的 `jobs.sqlite` 原样可用。
+- 测试：`packages/map`、`packages/jobs`、`packages/documents-s3` 的测试是 `node:test`，Bun 和 Node（对 dist）都跑；要整个 `Engine`、`Bun.serve` 或 bunqueue 的任务测试（`scheduling`、`settlement`、`dead-letter`、`webhook`、`store-contract`、`durability`、`batch-*`、`crawl-semantics`、`robots-rfc`、`map-hardening` 等）留在 `apps/sex/test`，用 `bun:test`。
+- 日志：包只接可选的 `logger`，apps 把 stderr 的 `log` 传进去；`logger` 选项的方案仍等用户确认，没有做全局的日志重构。
+- 分支 `wip/package-split-v1` 上有一版按旧方案做的尝试（公开的 `sex-kit`、`sex-schemas`），只供参考 `apps/` 搬迁等机械步骤，不按它的包划分。

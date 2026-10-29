@@ -1,8 +1,8 @@
 // appendToId: appended URLs use the append request's own options, and are never dropped
 // when the original batch finishes at the same time as the append.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { JobRecord } from "@searxng-js/sex-jobs";
 import type { Engine } from "../src/engine/engine.ts";
-import type { JobRecord } from "../src/engine/jobs/index.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
 const paragraphs = Array.from(

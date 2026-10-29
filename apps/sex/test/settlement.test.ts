@@ -1,8 +1,7 @@
 // Each task settles its job's pending count at most once, and every task settles even when its handler fails early.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { type JobRecord, runTask, type Task, type TaskQueue } from "@searxng-js/sex-jobs";
 import type { Engine } from "../src/engine/engine.ts";
-import type { JobRecord, Task, TaskQueue } from "../src/engine/jobs/index.ts";
-import { runTask } from "../src/engine/tasks.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
 const paragraphs = Array.from(

@@ -2,19 +2,29 @@ import { join } from "node:path";
 import { BrowserPool, type BrowserPoolOptions } from "@searxng-js/sex-browser";
 import { DocsConverter } from "@searxng-js/sex-docs";
 import { AppError, notFound } from "@searxng-js/sex-errors";
+import {
+  abandonTask,
+  type BatchScrapeRequest,
+  type CrawlRequest,
+  crawlParamsFromPrompt,
+  documentsLocation,
+  type ExtractRequest,
+  type JobBackend,
+  type JobKind,
+  type JobRecord,
+  type JobsSettings,
+  runTask,
+  startBatchScrape,
+  startCrawl,
+  startExtract,
+} from "@searxng-js/sex-jobs";
 import { Llm } from "@searxng-js/sex-llm";
+import { type MapRequest, type MapResult, mapSite } from "@searxng-js/sex-map";
 import { BaseEngine } from "@searxng-js/sex-server/engine";
 import { log } from "@searxng-js/sex-server/log";
 import { SqliteChangeTracker, SqliteScrapeCache } from "@searxng-js/sex-store";
 import type { Config } from "../config.ts";
-import type { BatchScrapeRequest, CrawlRequest, ExtractRequest, MapRequest, MapResult } from "../schemas.ts";
-import { startBatchScrape } from "./batch.ts";
-import { crawlParamsFromPrompt, startCrawl } from "./crawl.ts";
-import { startExtract } from "./extract.ts";
-import { documentsLocation } from "./jobs/documents.ts";
-import { createJobBackend, type JobBackend, type JobKind, type JobRecord } from "./jobs/index.ts";
-import { mapSite } from "./map.ts";
-import { abandonTask, runTask } from "./tasks.ts";
+import { createJobBackend } from "./jobs/index.ts";
 
 /** The browser pool's options from the app's settings. */
 export function browserOptions(config: Config): BrowserPoolOptions {
@@ -41,8 +51,16 @@ export class Engine extends BaseEngine<Config> {
   /** The previous scrape of each (URL, tag) for `changeTracking`, in `<dataDir>/change-tracking.sqlite`; none without a data dir. */
   declare readonly changeTracker?: SqliteChangeTracker;
 
+  /** What the jobs read of the config (how pages are fetched is `settings`). */
+  readonly jobSettings: JobsSettings;
+
   constructor(config: Config) {
     super(config);
+    this.jobSettings = {
+      concurrency: config.concurrency,
+      extractWildcardPages: config.extractWildcardPages,
+      webhookSecret: config.webhookSecret,
+    };
     if (config.dataDir) {
       this.cache = new SqliteScrapeCache(join(config.dataDir, "cache.sqlite"), {
         defaultMaxAge: config.cacheMaxAgeMs,

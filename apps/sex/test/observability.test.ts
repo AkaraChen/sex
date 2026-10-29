@@ -1,7 +1,7 @@
 // Stored crawl headers are redacted in the active listing, and responses carry request ids.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { JobRecord } from "@searxng-js/sex-jobs";
 import type { Engine } from "../src/engine/engine.ts";
-import type { JobRecord } from "../src/engine/jobs/index.ts";
 import { createApp } from "../src/http/server.ts";
 import { testEngine } from "./helpers.ts";
 

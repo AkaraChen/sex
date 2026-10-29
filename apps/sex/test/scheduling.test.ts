@@ -1,11 +1,9 @@
 // Per-job pacing and ordering: maxConcurrency, delay, and big jobs not starving small ones. The queue-level tests pin
 // what the scheduler relies on from bunqueue (caps, cooldowns, lanes); the engine-level ones check the whole path.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { JobScheduler, pageLimits, runTask, type Task, type TaskOutcome, WEBHOOK_CONCURRENCY } from "@searxng-js/sex-jobs";
 import type { Engine } from "../src/engine/engine.ts";
-import { JobScheduler, pageLimits, type Task, type TaskOutcome } from "../src/engine/jobs/index.ts";
 import { BunqueueTaskQueue } from "../src/engine/jobs/queue.ts";
-import { WEBHOOK_CONCURRENCY } from "../src/engine/jobs/scheduler.ts";
-import { runTask } from "../src/engine/tasks.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
 const page = (jobId: string, n: number): Task => ({ type: "page", jobId, taskId: `${jobId}-${n}`, url: `http://x.test/${n}`, depth: 0 });

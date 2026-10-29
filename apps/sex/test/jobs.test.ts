@@ -1,7 +1,7 @@
 // Crawl / batch / extract through the job store and task queue.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { JobKind, JobRecord } from "@searxng-js/sex-jobs";
 import type { Engine } from "../src/engine/engine.ts";
-import type { JobKind, JobRecord } from "../src/engine/jobs/index.ts";
 import { startFixtureSite, startMockLlm, testEngine, waitFor } from "./helpers.ts";
 
 {

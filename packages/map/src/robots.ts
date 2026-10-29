@@ -1,7 +1,7 @@
-import type { Deadline } from "@searxng-js/sex-deadline";
+import { type CallTime, Deadline } from "@searxng-js/sex-deadline";
 import { decodeBody } from "@searxng-js/sex-egress";
-import { fetchWithin } from "../fetch-within.ts";
-import type { Engine } from "./engine.ts";
+import { fetchWithin } from "./fetch-within.ts";
+import type { MapContext } from "./map.ts";
 
 interface Rule {
   allow: boolean;
@@ -110,13 +110,14 @@ export function parseRobots(text: string, userAgent: string): Robots {
   };
 }
 
-export async function fetchRobots(engine: Engine, origin: string, userAgent: string, deadline: Deadline): Promise<Robots> {
+/** The fetched robots.txt of `origin` as the rules `userAgent` is bound by; no file, an error or a timeout allows everything. */
+export async function fetchRobots(ctx: MapContext, origin: string, userAgent: string, time: CallTime): Promise<Robots> {
   try {
-    const res = await fetchWithin(`${origin}/robots.txt`, deadline.slice(10_000), {
-      allowPrivateNetwork: engine.config.allowPrivateNetwork,
-      proxy: engine.config.proxyUrl,
-      userAgent: engine.config.userAgent,
-      maxBodyBytes: engine.config.maxBodyBytes,
+    const res = await fetchWithin(`${origin}/robots.txt`, Deadline.of(time).slice(10_000), {
+      allowPrivateNetwork: ctx.settings.allowPrivateNetwork,
+      proxy: ctx.settings.proxyUrl,
+      userAgent: ctx.settings.userAgent,
+      maxBodyBytes: ctx.settings.maxBodyBytes,
     });
     const text = robotsTextFor(res.status, () => decodeBody(res.body, res.contentType));
     return text ? parseRobots(text, userAgent) : ALLOW_ALL;

@@ -1,4 +1,4 @@
-import type { Document } from "../../schemas.ts";
+import type { Document } from "@searxng-js/sex-scrape";
 
 export type JobKind = "crawl" | "batch_scrape" | "extract";
 export type JobState = "scraping" | "completed" | "failed" | "cancelled";

@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { gzipSync } from "node:zlib";
 import { Deadline } from "@searxng-js/sex-deadline";
+import { sitemapUrls } from "@searxng-js/sex-map";
 import type { Engine } from "../src/engine/engine.ts";
-import { sitemapUrls } from "../src/engine/map.ts";
 import { testEngine } from "./helpers.ts";
 
 const paragraphs = Array.from(

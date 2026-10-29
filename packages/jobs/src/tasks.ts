@@ -1,43 +1,43 @@
-import { log } from "@searxng-js/sex-server/log";
+import { settleTask } from "./backend.ts";
 import { handleBatchPage } from "./batch.ts";
+import type { JobsContext } from "./context.ts";
 import { handleCrawlPage, handleCrawlStart } from "./crawl.ts";
-import type { Engine } from "./engine.ts";
+import { taskEffects } from "./effects.ts";
 import { handleExtract } from "./extract.ts";
-import { taskEffects } from "./jobs/effects.ts";
-import { sendWebhook, settleTask, type Task, type TaskOutcome } from "./jobs/index.ts";
-import { deliverWebhook } from "./jobs/webhook.ts";
+import type { Task, TaskOutcome } from "./types.ts";
+import { deliverWebhook, sendWebhook } from "./webhook.ts";
 
 /**
  * Worker entry point: runs one queued task against the shared job store. Crawl-start and page tasks settle
  * their job's `pending` count exactly once, in the finally, even if dispatch throws or the job is no longer scraping.
  */
-export async function runTask(engine: Engine, task: Task): Promise<TaskOutcome> {
-  const { store } = engine.jobs;
-  log.debug("task", { type: task.type, job: task.jobId, ...("url" in task ? { url: task.url } : {}) });
+export async function runTask(ctx: JobsContext, task: Task): Promise<TaskOutcome> {
+  const { store } = ctx.jobs;
+  ctx.logger?.debug("task", { type: task.type, job: task.jobId, ...("url" in task ? { url: task.url } : {}) });
   if (task.type === "webhook") {
     // Not settled: webhooks are not part of the job's `pending`.
-    await deliverWebhook(engine, task);
+    await deliverWebhook(ctx, task);
     return "done";
   }
   if (task.type === "extract") {
     const job = await store.get(task.jobId);
     if (job?.status !== "scraping") return "skipped";
-    await handleExtract(engine, job, task.taskId);
+    await handleExtract(ctx, job, task.taskId);
     return "done";
   }
   try {
     if (task.type === "crawl-start") {
-      await handleCrawlStart(engine, task.jobId, task.taskId);
+      await handleCrawlStart(ctx, task.jobId, task.taskId);
       return "done";
     }
     const job = await store.get(task.jobId);
     // Cancelled or failed jobs still drain their queued pages, which costs their lane no cooldown.
     if (job?.status !== "scraping") return "skipped";
-    if (job.kind === "crawl") await handleCrawlPage(engine, job, task.url, task.depth, task.taskId);
-    else await handleBatchPage(engine, job, task.url, task.options, task.taskId);
+    if (job.kind === "crawl") await handleCrawlPage(ctx, job, task.url, task.depth, task.taskId);
+    else await handleBatchPage(ctx, job, task.url, task.options, task.taskId);
     return "done";
   } finally {
-    await settleTask(engine, task.jobId, task.taskId);
+    await settleTask(ctx, task.jobId, task.taskId);
   }
 }
 
@@ -51,21 +51,32 @@ const ABANDONED = "The task was interrupted too many times (the process stopped 
  * start or an extract fails its job, and the task is settled. All of it is claimed per taskId, so an abandoned task
  * that was handled before a crash is not handled twice.
  */
-export async function abandonTask(engine: Engine, task: Task): Promise<void> {
-  const { store } = engine.jobs;
+export async function abandonTask(ctx: JobsContext, task: Task): Promise<void> {
+  const { store } = ctx.jobs;
   const job = await store.get(task.jobId);
   switch (task.type) {
     case "webhook":
       return; // The delivery is lost; nothing waits for it.
     case "extract":
-      if (job && (await store.finish(job.id, "failed", { error: ABANDONED }))) await sendWebhook(engine, job, "failed", [], ABANDONED);
+      if (job && (await store.finish(job.id, "failed", { error: ABANDONED }))) await sendWebhook(ctx, job, "failed", [], ABANDONED);
       return;
     case "crawl-start":
-      if (job && (await store.finish(job.id, "failed", { error: ABANDONED }))) await sendWebhook(engine, job, "failed", [], ABANDONED);
+      if (job && (await store.finish(job.id, "failed", { error: ABANDONED }))) await sendWebhook(ctx, job, "failed", [], ABANDONED);
       break;
     case "page":
-      if (job?.status === "scraping") await taskEffects(engine, job, task.taskId).failure(task.url, ABANDONED, "INTERNAL_ERROR");
+      if (job?.status === "scraping") await taskEffects(ctx, job, task.taskId).failure(task.url, ABANDONED, "INTERNAL_ERROR");
       break;
   }
-  await settleTask(engine, task.jobId, task.taskId);
+  await settleTask(ctx, task.jobId, task.taskId);
+}
+
+/**
+ * Starts consuming the context's task queue in this process: each task runs through `runTask`, and a task the queue gave up on
+ * (see `TaskQueue.startWorker`) through `abandonTask`.
+ */
+export function startWorker(ctx: JobsContext): void {
+  ctx.jobs.queue.startWorker(
+    (task) => runTask(ctx, task),
+    (task) => abandonTask(ctx, task),
+  );
 }

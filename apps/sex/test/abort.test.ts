@@ -1,7 +1,7 @@
 // Cancelled requests and jobs stop doing work: queued scrapes never start, extract stops calling the LLM, and full crawls stop discovering links.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { JobRecord } from "@searxng-js/sex-jobs";
 import type { Engine } from "../src/engine/engine.ts";
-import type { JobRecord } from "../src/engine/jobs/index.ts";
 import { chatCompletionStream, testEngine, waitFor } from "./helpers.ts";
 
 const CDP = process.env.SEX_TEST_CDP_URL;

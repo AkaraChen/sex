@@ -114,6 +114,17 @@ export class Llm implements ScrapeLlm {
     compileJsonSchema(schema);
   }
 
+  /** The problems of `value` against a JSON Schema, one line each (empty when it matches); a schema that does not compile is a 400. */
+  schemaErrors(schema: Record<string, unknown>, value: unknown): string[] {
+    const validate = compileJsonSchema(schema);
+    return validate(value) ? [] : describeSchemaErrors(validate.errors);
+  }
+
+  /** The description of the `is_content_relevant` field that multi-entity extraction adds to a schema. */
+  get relevanceFieldDescription(): string {
+    return P.RELEVANCE_FIELD_DESCRIPTION;
+  }
+
   /** Cuts content to the input budget. Callers that can report it turn `truncated` into a warning. */
   fit(content: string): { text: string; truncated: boolean } {
     if (content.length <= this.maxInputChars) return { text: content, truncated: false };

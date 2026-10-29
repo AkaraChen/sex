@@ -1,7 +1,7 @@
 // Crawl scope, query handling, sitemap depth and prompt-derived options, matching Firecrawl v2 semantics.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { JobRecord } from "@searxng-js/sex-jobs";
 import type { Engine } from "../src/engine/engine.ts";
-import type { JobRecord } from "../src/engine/jobs/index.ts";
 import { startMockLlm, testEngine, waitFor } from "./helpers.ts";
 
 const link = (href: string) => `<a href="${href}">${href}</a>`;

@@ -13,8 +13,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import pLimit from "p-limit";
-import type { Config } from "../../config.ts";
+import { openS3, S3DocumentLog, type S3Options } from "@searxng-js/sex-documents-s3";
 
 /** Where one stored document's bytes are. */
 export interface DocumentRef {
@@ -145,86 +144,37 @@ export class MemoryDocumentLog implements DocumentLog {
   }
 }
 
-/** Parallel S3 requests per drop or read. */
-const S3_CONCURRENCY = 8;
-
-/**
- * One S3 object per document, `<prefix>/<jobId>/<random id>.json` (Bun.S3Client; credentials, endpoint and region
- * come from the S3_* / AWS_* env vars). A PUT is durable once it resolves. Objects are immutable, so there is
- * nothing to truncate: a document written but never indexed is an orphan inside its job's prefix until the job is
- * dropped.
- */
-export class S3DocumentLog implements DocumentLog {
-  /** "" or "some/prefix/". */
-  private readonly prefix: string;
-
-  constructor(
-    private readonly client: Bun.S3Client,
-    prefix: string,
-  ) {
-    const trimmed = prefix.replace(/^\/+|\/+$/g, "");
-    this.prefix = trimmed ? `${trimmed}/` : "";
-  }
-
-  async append(jobId: string, json: string): Promise<DocumentRef> {
-    const object = `${jobId}/${Bun.randomUUIDv7()}.json`;
-    const bytes = Buffer.from(json);
-    await this.client.write(this.prefix + object, bytes, { type: "application/json" });
-    return { object, offset: 0, length: bytes.length };
-  }
-
-  async read(object: string, offset: number, length: number) {
-    try {
-      return await this.client
-        .file(this.prefix + object)
-        .slice(offset, offset + length)
-        .bytes();
-    } catch (err) {
-      if ((err as { code?: string }).code === "NoSuchKey") return new Uint8Array(0);
-      throw err;
-    }
-  }
-
-  async drop(jobId: string) {
-    const limit = pLimit(S3_CONCURRENCY);
-    const keys: string[] = [];
-    await this.list({ prefix: `${this.prefix}${jobId}/` }, (page) => {
-      for (const o of page.contents ?? []) keys.push(o.key);
-    });
-    await Promise.all(keys.map((key) => limit(() => this.client.delete(key))));
-  }
-
-  private async list(options: Bun.S3ListObjectsOptions, each: (page: Bun.S3ListObjectsResponse) => void) {
-    let continuationToken: string | undefined;
-    do {
-      const page = await this.client.list({ ...options, continuationToken });
-      each(page);
-      continuationToken = page.isTruncated ? page.nextContinuationToken : undefined;
-    } while (continuationToken);
-  }
-}
-
 /** Reads made in parallel for one page of documents (in practice only on S3, where each document is a read). */
-export const READ_CONCURRENCY = S3_CONCURRENCY;
+export const READ_CONCURRENCY = 8;
+
+/** Where documents are kept. */
+export interface DocumentsOptions {
+  /** `s3://bucket/prefix` or `file:///path`; takes precedence over `dataDir`. */
+  documentsUrl?: string;
+  /** JSONL files go to `<dataDir>/documents`; without either documents stay in memory. */
+  dataDir?: string;
+}
 
 /** Where documents are kept, for `/health`: a file:// or s3:// URL, or "memory". */
-export function documentsLocation(config: Pick<Config, "documentsUrl" | "dataDir">): string {
-  if (config.documentsUrl) return config.documentsUrl;
-  return config.dataDir ? pathToFileURL(join(config.dataDir, "documents")).href : "memory";
+export function documentsLocation(options: DocumentsOptions): string {
+  if (options.documentsUrl) return options.documentsUrl;
+  return options.dataDir ? pathToFileURL(join(options.dataDir, "documents")).href : "memory";
 }
 
 /**
- * The document log for a config: `documentsUrl` (s3://bucket/prefix or file:///path, checked by resolveConfig), else
- * JSONL files under `<dataDir>/documents`, else memory.
+ * The document log for the options: `documentsUrl` (s3://bucket/prefix or file:///path), else JSONL files under
+ * `<dataDir>/documents`, else memory. The S3 client (`Bun.S3Client`, or the AWS SDK when there is no Bun) takes its endpoint
+ * and credentials from the environment the way that client does; pass them in `s3` to set them here.
  */
-export function createDocumentLog(config: Pick<Config, "documentsUrl" | "dataDir">): DocumentLog {
-  if (config.documentsUrl) {
-    const url = new URL(config.documentsUrl);
+export function createDocumentLog(options: DocumentsOptions & { s3?: Omit<S3Options, "bucket"> }): DocumentLog {
+  if (options.documentsUrl) {
+    const url = new URL(options.documentsUrl);
     if (url.protocol === "s3:") {
-      return new S3DocumentLog(new Bun.S3Client({ bucket: decodeURIComponent(url.hostname) }), decodeURIComponent(url.pathname));
+      const bucket = decodeURIComponent(url.hostname);
+      return new S3DocumentLog(openS3({ ...options.s3, bucket }), decodeURIComponent(url.pathname));
     }
     return new FsDocumentLog(fileURLToPath(url));
   }
-  if (config.dataDir) return new FsDocumentLog(join(config.dataDir, "documents"));
+  if (options.dataDir) return new FsDocumentLog(join(options.dataDir, "documents"));
   return new MemoryDocumentLog();
 }

@@ -1,10 +1,18 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { safeFetch } from "@searxng-js/sex-egress";
+import {
+  deliverWebhook,
+  ExtractRequest,
+  type JobRecord,
+  sendWebhook,
+  type Task,
+  WEBHOOK_MAX_ATTEMPTS,
+  WEBHOOK_RETRY_BASE_MS,
+  WebhookConfig,
+  type WebhookPayload,
+} from "@searxng-js/sex-jobs";
 import type { Engine } from "../src/engine/engine.ts";
-import { type JobRecord, sendWebhook, type Task, type WebhookPayload } from "../src/engine/jobs/index.ts";
-import { deliverWebhook, WEBHOOK_MAX_ATTEMPTS, WEBHOOK_RETRY_BASE_MS } from "../src/engine/jobs/webhook.ts";
-import { ExtractRequest, WebhookConfig } from "../src/schemas.ts";
 import { startMockLlm, testEngine, waitFor } from "./helpers.ts";
 
 interface Hit {

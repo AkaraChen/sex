@@ -28,9 +28,12 @@
 | `packages/llm`（`@searxng-js/sex-llm`，发布到 npm） | LLM 格式（json、summary、问答、highlights）、change tracking 的 json 描述和注入防护，任何 OpenAI 兼容端点；传给 sex-scrape 的 `llm`。Bun 和 Node 24 都能用，用法见 [packages/llm/README.md](packages/llm/README.md) |
 | `packages/docs`（`@searxng-js/sex-docs`，发布到 npm） | PDF、Office 文档和图片的转换与 OCR（here-docs）；传给 sex-scrape 的 `docs`。Node 上能否用取决于 here-docs，用法见 [packages/docs/README.md](packages/docs/README.md) |
 | `packages/store`（`@searxng-js/sex-store`，发布到 npm） | 页面缓存（`maxAge`）和 change tracking 的 SQLite 存储（`node:sqlite`）；传给 sex-scrape 的 `cache` / `changeTracker`。Bun 和 Node 24 都能用，用法见 [packages/store/README.md](packages/store/README.md) |
+| `packages/map`（`@searxng-js/sex-map`，发布到 npm） | 找出一个站点的 URL（Firecrawl 的 map）：sitemap、起始页的链接、SearXNG 的 `site:` 搜索，带 robots.txt 和路径过滤。Bun 和 Node 24 都能用，用法见 [packages/map/README.md](packages/map/README.md) |
+| `packages/jobs`（`@searxng-js/sex-jobs`，发布到 npm） | crawl、batch scrape、extract 任务：SQLite 任务存储（`node:sqlite`）、内存任务队列、webhook，文档存文件或 S3。Bun 和 Node 24 都能用；Node 上用 S3 需装可选 peer `@aws-sdk/client-s3`，用法见 [packages/jobs/README.md](packages/jobs/README.md) |
+| `packages/documents-s3`（`@searxng-js/sex-documents-s3`，私有） | 文档存 S3 的胶水：Bun 上 `Bun.S3Client`，Node 上动态 import `@aws-sdk/client-s3`；打包进 sex-jobs |
 | `packages/deadline`（`@searxng-js/sex-deadline`，私有） | `Deadline`：一次操作剩下的时间加调用方的取消，打包进用到它的包；包的边界只传 `signal` 和可选的 `deadlineAt` |
 | `packages/errors`（`@searxng-js/sex-errors`，私有） | `AppError` 和错误目录（`ERRORS`），打包进用到它的包；跨包判断错误用 `AppError.isInstance` |
-| `apps/sex` | 完整版：在 sex-server 上装配 sex-browser、sex-llm、sex-docs、sex-store，加上 map / crawl / batch / extract 和任务队列 |
+| `apps/sex` | 完整版：在 sex-server 上装配 sex-browser、sex-llm、sex-docs、sex-store、sex-map 和 sex-jobs；bunqueue 的持久任务队列在 `apps/sex/src/engine/jobs/queue.ts`，只给这个 app 用 |
 | `apps/sex-lite` | 轻量版：只用 sex-server、sex-scrape、sex-search |
 
 ## 快速开始
@@ -275,7 +278,7 @@ SSRF 防护在代理之前仍然生效：
 crawl、batch scrape、extract 都是异步任务。任务按页拆分：crawl 先跑一个 `crawl-start` 任务（读 robots.txt 和 sitemap），之后每个页面是一个 `page` 任务，抓完后再把新发现的链接入队；batch 每个 URL 一个任务；extract 整体是一个任务。
 
 - **执行**：任务都在 `serve` 进程里跑，同时运行的页面数受 `SEX_CONCURRENCY` 限制。没有单独的 worker 进程。
-- **存储**：任务状态（进度、错误、去重集合，以及文档的索引）存在 `SEX_DATA_DIR/jobs.sqlite`，待执行的任务存在 `SEX_DATA_DIR/queue.sqlite`（[bunqueue](https://bunqueue.dev) 的嵌入式 broker）。`serve` 默认用 `$XDG_DATA_HOME/sex`（没设时是 `~/.local/share/sex`），Docker 镜像里是 `/data`。结束的任务在 `SEX_JOB_TTL_MS` 后删除，连同它的文档。
+- **存储**：任务状态（进度、错误、去重集合，以及文档的索引）存在 `SEX_DATA_DIR/jobs.sqlite`（`node:sqlite`；以前 `bun:sqlite` 写的文件原样可用），待执行的任务存在 `SEX_DATA_DIR/queue.sqlite`（[bunqueue](https://bunqueue.dev) 的嵌入式 broker）。`serve` 默认用 `$XDG_DATA_HOME/sex`（没设时是 `~/.local/share/sex`），Docker 镜像里是 `/data`。结束的任务在 `SEX_JOB_TTL_MS` 后删除，连同它的文档。
 - **文档**：抓到的页面（Firecrawl 的 `Document` JSON，常常一个就几百 KB）不放进 SQLite，SQLite 只记每个文档在哪、多大。存储位置由 `SEX_DOCUMENTS_URL` 决定：
   - 默认：每个任务一个只追加的 `SEX_DATA_DIR/documents/<任务 id>.jsonl`，一行一个文档。读状态页时整页一次读出，直接拼成响应，不做 JSON 解析和重新序列化。
   - `s3://bucket/prefix`：每个文档一个对象 `prefix/<任务 id>/<随机 id>.json`，用 Bun 内置的 S3 客户端，不需要额外依赖。读状态页时每个文档一个 GET，最多 8 个并发。任何 S3 兼容服务都可以（AWS S3、SeaweedFS、MinIO 等）。

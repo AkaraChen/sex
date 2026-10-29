@@ -1,13 +1,11 @@
 import { gunzipSync } from "node:zlib";
-import { Deadline } from "@searxng-js/sex-deadline";
+import { type CallTime, Deadline } from "@searxng-js/sex-deadline";
 import { assertPublicUrl, decodeBody, parseHttpUrl } from "@searxng-js/sex-egress";
 import { scrapeUrl } from "@searxng-js/sex-scrape";
-import { clean, searxng } from "@searxng-js/sex-search";
-import { log } from "@searxng-js/sex-server/log";
-import { fetchWithin } from "../fetch-within.ts";
-import type { MapLink, MapRequest, MapResult } from "../schemas.ts";
-import type { Engine } from "./engine.ts";
+import { clean, type SearchContext, searxng } from "@searxng-js/sex-search";
+import { fetchWithin } from "./fetch-within.ts";
 import { fetchRobots, type Robots } from "./robots.ts";
+import type { MapLink, MapRequest, MapResult } from "./schemas.ts";
 import { basePathOf, compilePatterns, matchesPatterns } from "./url-filter.ts";
 
 const MAX_SITEMAPS = 50;
@@ -35,6 +33,9 @@ const decodeXml = (raw: string) => {
     .trim();
 };
 
+/** What a map runs on: a search context (SearXNG for `search`, and everything a scrape of the start page needs). */
+export type MapContext = SearchContext;
+
 export interface SitemapOptions {
   /** Only URLs it accepts count toward `max`, so filtering happens before the limit instead of after it. */
   accept?: (url: string) => boolean;
@@ -44,15 +45,16 @@ export interface SitemapOptions {
   robots?: Robots;
 }
 
-/** Collects page URLs from robots.txt sitemaps and /sitemap.xml, following sitemap indexes. */
+/** Collects page URLs from robots.txt sitemaps and /sitemap.xml, following sitemap indexes, within the time `time` leaves. */
 export async function sitemapUrls(
-  engine: Engine,
+  ctx: MapContext,
   origin: string,
   max: number,
-  deadline: Deadline,
+  time: CallTime,
   opts: SitemapOptions = {},
 ): Promise<string[]> {
-  const robots = opts.robots ?? (await fetchRobots(engine, origin, "sex", deadline));
+  const deadline = Deadline.of(time);
+  const robots = opts.robots ?? (await fetchRobots(ctx, origin, "sex", deadline));
   // Sitemap: lines may be relative; resolve them against the site's origin.
   const declared = robots.sitemaps.flatMap((sm) => {
     try {
@@ -71,10 +73,10 @@ export async function sitemapUrls(
     visited.add(sm);
     try {
       const res = await fetchWithin(sm, deadline.slice(15_000), {
-        allowPrivateNetwork: engine.config.allowPrivateNetwork,
-        proxy: engine.config.proxyUrl,
-        userAgent: engine.config.userAgent,
-        maxBodyBytes: engine.config.maxBodyBytes,
+        allowPrivateNetwork: ctx.settings.allowPrivateNetwork,
+        proxy: ctx.settings.proxyUrl,
+        userAgent: ctx.settings.userAgent,
+        maxBodyBytes: ctx.settings.maxBodyBytes,
       });
       if (res.status >= 400) continue;
       const gz = res.body[0] === 0x1f && res.body[1] === 0x8b;
@@ -89,7 +91,7 @@ export async function sitemapUrls(
         else if (urls.size < max && (!opts.accept || opts.accept(loc))) urls.add(loc);
       }
     } catch (err) {
-      log.debug("sitemap fetch failed", { sitemap: sm, error: err instanceof Error ? err.message : String(err) });
+      ctx.logger?.debug("sitemap fetch failed", { sitemap: sm, error: err instanceof Error ? err.message : String(err) });
     }
   }
   return [...urls];
@@ -115,9 +117,9 @@ export interface MapInternals {
   skipSearch?: boolean;
 }
 
-export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSignal, internals: MapInternals = {}): Promise<MapResult> {
+export async function mapSite(ctx: MapContext, req: MapRequest, signal?: AbortSignal, internals: MapInternals = {}): Promise<MapResult> {
   let start = parseHttpUrl(req.url.trim());
-  await assertPublicUrl(start, engine.config.allowPrivateNetwork);
+  await assertPublicUrl(start, ctx.settings.allowPrivateNetwork);
   const includes = compilePatterns(req.includePaths, "includePaths");
   const excludes = compilePatterns(req.excludePaths, "excludePaths");
   const limit = req.limit ?? 5000;
@@ -131,22 +133,22 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   let warning: string | undefined;
   const resolveDeadline = deadline.slice(10_000);
   const resolveOpts = {
-    allowPrivateNetwork: engine.config.allowPrivateNetwork,
-    proxy: engine.config.proxyUrl,
-    userAgent: engine.config.userAgent,
+    allowPrivateNetwork: ctx.settings.allowPrivateNetwork,
+    proxy: ctx.settings.proxyUrl,
+    userAgent: ctx.settings.userAgent,
     headersOnly: true,
   };
   try {
     // HEAD where the server allows it; either way only the headers are read, the page itself is scraped below.
     const head = await fetchWithin(start.href, resolveDeadline, { ...resolveOpts, method: "HEAD" }).catch((err) => {
       deadline.signal.throwIfAborted();
-      log.debug("map: HEAD on the start URL failed", { error: err instanceof Error ? err.message : String(err) });
+      ctx.logger?.debug("map: HEAD on the start URL failed", { error: err instanceof Error ? err.message : String(err) });
       return undefined;
     });
     const res = head && head.status < 400 ? head : await fetchWithin(start.href, resolveDeadline, resolveOpts);
     start = parseHttpUrl(res.url);
   } catch (err) {
-    log.debug("map: resolving the start URL failed", { error: err instanceof Error ? err.message : String(err) });
+    ctx.logger?.debug("map: resolving the start URL failed", { error: err instanceof Error ? err.message : String(err) });
     deadline.signal.throwIfAborted();
   }
   const baseHost = stripWww(start.hostname);
@@ -167,17 +169,17 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
   };
 
   const titles = new Map<string, { title?: string; description?: string }>();
-  const fromSitemap = mode === "skip" ? Promise.resolve([]) : sitemapUrls(engine, start.origin, limit, deadline, { accept: inScope });
+  const fromSitemap = mode === "skip" ? Promise.resolve([]) : sitemapUrls(ctx, start.origin, limit, deadline, { accept: inScope });
   const fromPage =
     mode === "only"
       ? Promise.resolve([] as string[])
-      : scrapeUrl(engine, start.href, { formats: ["links"], timeout: engine.config.timeout }, { ...deadline.time(), collectLinks: true })
+      : scrapeUrl(ctx, start.href, { formats: ["links"], timeout: ctx.settings.timeout }, { ...deadline.time(), collectLinks: true })
           .then(({ links, linkTitles }) => {
             for (const [u, t] of Object.entries(linkTitles ?? {})) if (!titles.has(u)) titles.set(u, { title: t });
             return links ?? [];
           })
           .catch((err) => {
-            log.debug("map: page scrape failed", { error: err instanceof Error ? err.message : String(err) });
+            ctx.logger?.debug("map: page scrape failed", { error: err instanceof Error ? err.message : String(err) });
             return [] as string[];
           });
   const fromSearch =
@@ -186,7 +188,7 @@ export async function mapSite(engine: Engine, req: MapRequest, signal?: AbortSig
       : Promise.all(
           [1, 2].map((page) =>
             searxng(
-              engine,
+              ctx,
               { q: `site:${baseHost}${req.search ? ` ${req.search}` : ""}`, categories: "general" },
               page,
               deadline.time(),

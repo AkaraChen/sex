@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { isPrivateIp } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
 import { normalizeFormats } from "@searxng-js/sex-scrape";
-import { parseRobots } from "../src/engine/robots.ts";
 
 describe("isPrivateIp", () => {
   test.each([
@@ -21,40 +20,6 @@ describe("isPrivateIp", () => {
     ["2606:4700::1111", false],
   ])("%s -> %p", (ip, expected) => {
     expect(isPrivateIp(ip)).toBe(expected);
-  });
-});
-
-describe("parseRobots", () => {
-  const robots = parseRobots(
-    `User-agent: *
-Disallow: /private/
-Allow: /private/public
-Disallow: /*.pdf$
-
-User-agent: sexbot
-Disallow: /
-
-Sitemap: https://example.com/sitemap.xml`,
-    "sex",
-  );
-
-  test("longest match wins, allow beats disallow on ties", () => {
-    expect(robots.isAllowed("https://example.com/")).toBe(true);
-    expect(robots.isAllowed("https://example.com/private/x")).toBe(false);
-    expect(robots.isAllowed("https://example.com/private/public/y")).toBe(true);
-  });
-
-  test("wildcards and end anchors", () => {
-    expect(robots.isAllowed("https://example.com/a/b.pdf")).toBe(false);
-    expect(robots.isAllowed("https://example.com/a/b.pdf?x=1")).toBe(true);
-  });
-
-  test("specific user-agent groups take precedence", () => {
-    expect(parseRobots("User-agent: sexbot\nDisallow: /\n\nUser-agent: *\nAllow: /", "sexbot").isAllowed("https://e.com/x")).toBe(false);
-  });
-
-  test("collects sitemaps", () => {
-    expect(robots.sitemaps).toEqual(["https://example.com/sitemap.xml"]);
   });
 });
 

@@ -133,4 +133,10 @@ jobs:
             [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8333/)" != "000" ] && break
             sleep 1
           done
-      - run: bun test --conditions sex-source apps/sex/test/store-contract.test.ts apps/sex/test/durability.test.ts
+      - run: bun test --conditions sex-source apps/sex/test/store-contract.test.ts apps/sex/test/durability.test.ts packages/documents-s3/test/s3.test.ts
+      # The same bucket through the AWS SDK on Node (sex-jobs' optional peer @aws-sdk/client-s3).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: bun run build:packages
+      - run: node --test packages/documents-s3/test/s3.test.ts

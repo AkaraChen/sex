@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
+import type { QueuedTask, Task, TaskOutcome, TaskQueue } from "@searxng-js/sex-jobs";
 import { log } from "@searxng-js/sex-server/log";
 import { Queue, shutdownManager, Worker } from "bunqueue/client";
-import type { QueuedTask, Task, TaskOutcome, TaskQueue } from "./types.ts";
 
 /**
  * bunqueue's embedded broker is one per process and opens one database, so every queue in the process must pass the

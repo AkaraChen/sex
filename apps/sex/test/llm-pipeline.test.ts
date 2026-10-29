@@ -3,7 +3,6 @@ import { Deadline } from "@searxng-js/sex-deadline";
 import type { AppError } from "@searxng-js/sex-errors";
 import { escapeTags } from "@searxng-js/sex-llm";
 import type { Engine } from "../src/engine/engine.ts";
-import { conflictingFields, entitySources, mergeAll, mergeEntities, splitSchema } from "../src/engine/extract-merge.ts";
 import { MOCK_LLM_TOKENS, startFixtureSite, startMockLlm, testEngine, waitFor } from "./helpers.ts";
 
 const NO_LIMIT = Deadline.unbounded();
@@ -428,82 +427,5 @@ describe("extract pipeline", () => {
     } finally {
       slow.stop(true);
     }
-  });
-
-  test("pages that disagree on a single-answer field are named in the warning", () => {
-    expect(
-      conflictingFields([{ company: "Acme", ceo: { name: "A" } }, { company: "Acme Inc", ceo: { name: "A" }, hq: "Oslo" }, { hq: "Rome" }]),
-    ).toEqual(["company", "hq"]);
-    expect(conflictingFields([{ a: [1] }, { a: [2] }, { a: null }, { a: "x" }])).toEqual([]);
-  });
-});
-
-describe("entitySources", () => {
-  test("traces each merged item to the pages it was seen on", () => {
-    const pieces = [
-      {
-        url: "u1",
-        value: {
-          products: [
-            { name: "X", price: null },
-            { name: "Y", price: 2 },
-          ],
-        },
-      },
-      { url: "u2", value: { products: [{ name: "X", price: 5 }] } },
-      {
-        url: "u3",
-        value: {
-          products: [
-            { name: "Y", price: 2 },
-            { name: "Z", price: 1 },
-          ],
-        },
-      },
-    ];
-    const merged = mergeAll(pieces.map((p) => p.value));
-    expect(entitySources(merged, pieces)).toEqual({ "products[0]": ["u1", "u2"], "products[1]": ["u1", "u3"], "products[2]": ["u3"] });
-  });
-
-  test("root arrays are keyed [i]; items without scalars match by equality", () => {
-    const pieces = [
-      { url: "u1", value: [{ tags: ["a"] }] },
-      { url: "u2", value: [{ tags: ["a"] }, { tags: ["b"] }] },
-    ];
-    expect(entitySources(mergeAll(pieces.map((p) => p.value)), pieces)).toEqual({ "[0]": ["u1", "u2"], "[1]": ["u2"] });
-  });
-});
-
-describe("merge helpers", () => {
-  test("entities agreeing on shared fields merge; conflicting ones stay apart", () => {
-    expect(
-      mergeEntities([
-        { name: "A", price: null },
-        { name: "A", price: 3 },
-        { name: "A", price: 4 },
-        { name: "A", price: 3 },
-      ]),
-    ).toEqual([
-      { name: "A", price: 3 },
-      { name: "A", price: 4 },
-    ]);
-  });
-
-  test("scalars keep the first non-empty value; objects merge deeply", () => {
-    expect(mergeAll([{ a: "", b: { c: 1 } }, { a: "x", b: { d: 2 } }, { a: "y" }])).toEqual({ a: "x", b: { c: 1, d: 2 } });
-  });
-
-  test("splitSchema keeps $defs and required on both sides", () => {
-    const { multi, single } = splitSchema(
-      {
-        $defs: { P: { type: "string" } },
-        type: "object",
-        properties: { a: { type: "array" }, b: { $ref: "#/$defs/P" } },
-        required: ["a", "b"],
-      },
-      ["a.items"],
-    );
-    expect(multi).toMatchObject({ properties: { a: { type: "array" } }, required: ["a"], $defs: { P: { type: "string" } } });
-    expect(single).toMatchObject({ properties: { b: { $ref: "#/$defs/P" } }, required: ["b"], $defs: { P: { type: "string" } } });
   });
 });

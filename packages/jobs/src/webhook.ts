@@ -1,9 +1,7 @@
 import { createHmac } from "node:crypto";
-import { Deadline } from "@searxng-js/sex-deadline";
-import { log } from "@searxng-js/sex-server/log";
-import { fetchWithin } from "../../fetch-within.ts";
-import { WEBHOOK_SIGNATURE_HEADER, type WebhookConfig } from "../../schemas.ts";
-import type { Engine } from "../engine.ts";
+import { safeFetch } from "@searxng-js/sex-egress";
+import type { JobsContext } from "./context.ts";
+import { WEBHOOK_SIGNATURE_HEADER, type WebhookConfig } from "./schemas.ts";
 import type { JobRecord, Task, WebhookPayload } from "./types.ts";
 
 type WebhookTask = Extract<Task, { type: "webhook" }>;
@@ -31,7 +29,7 @@ const webhookOf = (job: JobRecord) => {
  * that cannot be queued is logged and dropped, because a job does not depend on its receiver.
  */
 export async function sendWebhook(
-  engine: Engine,
+  ctx: JobsContext,
   job: JobRecord,
   event: WebhookEvent,
   data: unknown[] = [],
@@ -49,9 +47,9 @@ export async function sendWebhook(
     ...(error === undefined ? {} : { error }),
   };
   try {
-    await engine.jobs.scheduler.add([{ task: { type: "webhook", jobId: job.id, taskId: crypto.randomUUID(), attempt: 1, payload } }]);
+    await ctx.jobs.scheduler.add([{ task: { type: "webhook", jobId: job.id, taskId: crypto.randomUUID(), attempt: 1, payload } }]);
   } catch (err) {
-    log.warn("webhook could not be queued", { url: hook.url, error: String(err) });
+    ctx.logger?.warn("webhook could not be queued", { url: hook.url, error: String(err) });
   }
 }
 
@@ -60,17 +58,18 @@ export async function sendWebhook(
  * and the POST loses that attempt, as for every webhook). A failed attempt queues the next one as a new task after the
  * backoff, until `WEBHOOK_MAX_ATTEMPTS`; the body, `webhookId` included, is the same each time.
  */
-export async function deliverWebhook(engine: Engine, task: WebhookTask): Promise<void> {
-  const { store, scheduler } = engine.jobs;
+export async function deliverWebhook(ctx: JobsContext, task: WebhookTask): Promise<void> {
+  const { store, scheduler } = ctx.jobs;
   const job = await store.get(task.jobId);
   const hook = job && webhookOf(job);
   if (!hook || !(await store.claimEffect(task.jobId, task.taskId, "webhook"))) return;
 
   const body = JSON.stringify(task.payload);
-  const { webhookSecret } = engine.config;
+  const { webhookSecret } = ctx.jobSettings;
   let failure: { message: string; retry: boolean };
   try {
-    const res = await fetchWithin(hook.url, Deadline.start(ATTEMPT_TIMEOUT_MS), {
+    const res = await safeFetch(hook.url, {
+      signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
       method: "POST",
       body,
       headers: {
@@ -78,9 +77,9 @@ export async function deliverWebhook(engine: Engine, task: WebhookTask): Promise
         ...hook.headers,
         ...(webhookSecret ? { [WEBHOOK_SIGNATURE_HEADER]: signBody(webhookSecret, body) } : {}),
       },
-      allowPrivateNetwork: engine.config.allowPrivateNetwork,
-      proxy: engine.config.proxyUrl,
-      userAgent: engine.config.userAgent,
+      allowPrivateNetwork: ctx.settings.allowPrivateNetwork,
+      proxy: ctx.settings.proxyUrl,
+      userAgent: ctx.settings.userAgent,
       maxBodyBytes: 1024 * 1024,
     });
     if (res.status >= 200 && res.status < 300) return;
@@ -92,10 +91,10 @@ export async function deliverWebhook(engine: Engine, task: WebhookTask): Promise
 
   const context = { url: hook.url, job: task.jobId, event: task.payload.type, attempt: task.attempt, error: failure.message };
   if (!failure.retry || task.attempt >= WEBHOOK_MAX_ATTEMPTS) {
-    log.warn("webhook delivery failed", context);
+    ctx.logger?.warn("webhook delivery failed", context);
     return;
   }
-  log.debug("webhook delivery failed, retrying", context);
+  ctx.logger?.debug("webhook delivery failed, retrying", context);
   await scheduler.add([
     {
       task: { ...task, taskId: crypto.randomUUID(), attempt: task.attempt + 1 },

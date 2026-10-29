@@ -1,11 +1,10 @@
 // A task the queue gave up on (interrupted too many times) must not strand its job in "scraping" (#78).
 // The real crash is in durability.test.ts; here the dead-letter queue is filled without one, in memory.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { abandonTask, type Task, type WebhookPayload } from "@searxng-js/sex-jobs";
 import { Queue, Worker } from "bunqueue/client";
 import type { Engine } from "../src/engine/engine.ts";
-import type { Task, WebhookPayload } from "../src/engine/jobs/index.ts";
 import { BunqueueTaskQueue } from "../src/engine/jobs/queue.ts";
-import { abandonTask } from "../src/engine/tasks.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
 describe("the queue hands over the tasks in its dead-letter queue", () => {

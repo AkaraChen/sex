@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/server";
+import type { JobRecord } from "@searxng-js/sex-jobs";
 import { guard, json, registerFetchAndSearch, ToolMessageError } from "@searxng-js/sex-server/mcp/tools";
 import { z } from "zod";
 import type { Engine } from "../engine/engine.ts";
-import type { JobRecord } from "../engine/jobs/index.ts";
 import { BatchScrapeRequest, CrawlRequest, type Document, ExtractRequest, MapRequest } from "../schemas.ts";
 import { VERSION } from "../version.ts";
 

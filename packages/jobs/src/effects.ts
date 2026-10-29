@@ -1,7 +1,7 @@
-import type { Document } from "../../schemas.ts";
-import type { Engine } from "../engine.ts";
-import { sendWebhook } from "./index.ts";
+import type { Document } from "@searxng-js/sex-scrape";
+import type { JobsContext } from "./context.ts";
 import type { JobRecord } from "./types.ts";
+import { sendWebhook } from "./webhook.ts";
 
 /**
  * The side effects of one task, each performed at most once however often the queue delivers the task. Handlers
@@ -27,12 +27,12 @@ export interface TaskEffects {
   started(): Promise<void>;
 }
 
-export function taskEffects(engine: Engine, job: JobRecord, taskId: string | undefined): TaskEffects {
-  const { store } = engine.jobs;
+export function taskEffects(ctx: JobsContext, job: JobRecord, taskId: string | undefined): TaskEffects {
+  const { store } = ctx.jobs;
   return {
     async page(document) {
       const fresh = await store.pushDocument(job.id, document, taskId, true);
-      if (fresh) await sendWebhook(engine, job, "page", [document]);
+      if (fresh) await sendWebhook(ctx, job, "page", [document]);
       return fresh;
     },
     async failure(url, message, code) {
@@ -42,10 +42,10 @@ export function taskEffects(engine: Engine, job: JobRecord, taskId: string | und
         taskId,
         { dropFromTotal: true },
       );
-      if (fresh) await sendWebhook(engine, job, "page", [{ metadata: { sourceURL: url } }], message);
+      if (fresh) await sendWebhook(ctx, job, "page", [{ metadata: { sourceURL: url } }], message);
     },
     async started() {
-      if (await store.claimEffect(job.id, taskId, "started")) await sendWebhook(engine, job, "started");
+      if (await store.claimEffect(job.id, taskId, "started")) await sendWebhook(ctx, job, "started");
     },
   };
 }

@@ -1,8 +1,7 @@
 // Batch bookkeeping: a failed enqueue never strands a job in "scraping", and a redelivered page task counts once.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { runTask, type Task } from "@searxng-js/sex-jobs";
 import type { Engine } from "../src/engine/engine.ts";
-import type { Task } from "../src/engine/jobs/index.ts";
-import { runTask } from "../src/engine/tasks.ts";
 import { testEngine, waitFor } from "./helpers.ts";
 
 const body = Array.from({ length: 4 }, (_, i) => `<p>Paragraph ${i + 1}. ${"Lorem ipsum dolor sit amet. ".repeat(8)}</p>`).join("");

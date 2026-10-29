@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { Task } from "@searxng-js/sex-jobs";
 import { BunqueueTaskQueue } from "../src/engine/jobs/queue.ts";
-import type { Task } from "../src/engine/jobs/types.ts";
 
 describe("task queue delays", () => {
   test("a delay beyond the 2^31-1 ms timer limit does not fire immediately", async () => {

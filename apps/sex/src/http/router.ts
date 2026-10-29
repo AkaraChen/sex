@@ -1,10 +1,10 @@
 import { JSON_SCHEMA_OUTPUT_REGISTRY, ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { badRequest } from "@searxng-js/sex-errors";
+import { type JobRecord, PAGE_BUDGET_CHARS } from "@searxng-js/sex-jobs";
 import { scrapeUpload } from "@searxng-js/sex-scrape";
 import { coreRoutes, procedureBase } from "@searxng-js/sex-server/http/procedures";
 import { z } from "zod";
 import type { Engine } from "../engine/engine.ts";
-import { type JobRecord, PAGE_BUDGET_CHARS } from "../engine/jobs/index.ts";
 import {
   ActiveCrawlsResponse,
   BatchScrapeRequest,

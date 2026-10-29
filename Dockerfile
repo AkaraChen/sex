@@ -13,6 +13,9 @@ COPY packages/docs/package.json packages/docs/
 COPY packages/store/package.json packages/store/
 COPY packages/scrape/package.json packages/scrape/
 COPY packages/search/package.json packages/search/
+COPY packages/map/package.json packages/map/
+COPY packages/documents-s3/package.json packages/documents-s3/
+COPY packages/jobs/package.json packages/jobs/
 COPY packages/server/package.json packages/server/
 COPY packages/testing/package.json packages/testing/
 COPY apps/sex/package.json apps/sex/

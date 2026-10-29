@@ -17,9 +17,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type DocumentLog, type DocumentRef, FsDocumentLog, MemoryDocumentLog, S3DocumentLog } from "../src/engine/jobs/documents.ts";
-import { SqliteJobStore } from "../src/engine/jobs/sqlite.ts";
-import type { Document } from "../src/schemas.ts";
+import {
+  type DocumentLog,
+  type DocumentRef,
+  FsDocumentLog,
+  MemoryDocumentLog,
+  openS3,
+  S3DocumentLog,
+  SqliteJobStore,
+} from "@searxng-js/sex-jobs";
+import type { Document } from "@searxng-js/sex-scrape";
 
 const dir = mkdtempSync(join(tmpdir(), "sex-store-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -43,8 +50,8 @@ const s3Url = process.env.SEX_TEST_S3_URL;
 const s3 = s3Url
   ? (() => {
       const url = new URL(s3Url);
-      const prefix = `${url.pathname.replace(/^\/+|\/+$/g, "")}/store-contract-${Bun.randomUUIDv7()}`.replace(/^\//, "");
-      return { client: new Bun.S3Client({ bucket: url.hostname }), prefix };
+      const prefix = `${url.pathname.replace(/^\/+|\/+$/g, "")}/store-contract-${crypto.randomUUID()}`.replace(/^\//, "");
+      return { client: new Bun.S3Client({ bucket: url.hostname }), bucket: decodeURIComponent(url.hostname), prefix };
     })()
   : undefined;
 /**
@@ -98,7 +105,7 @@ const backends: Array<[string, () => ReturnType<typeof recorded>]> = [
   ["memory", () => recorded(new MemoryDocumentLog())],
   ["file", () => recorded(new FsDocumentLog(join(dir, `docs-${logs++}`)))],
 ];
-if (s3) backends.push(["s3", () => recorded(new S3DocumentLog(s3.client, `${s3.prefix}/${logs++}`))]);
+if (s3) backends.push(["s3", () => recorded(new S3DocumentLog(openS3({ bucket: s3.bucket }), `${s3.prefix}/${logs++}`))]);
 
 for (const [name, makeLog] of backends) {
   describe(`job store contract (${name})`, () => {
@@ -570,14 +577,17 @@ test("a whole page of a JSONL file is one read", async () => {
 test.skipIf(!s3)("an S3 object missing from a page is left out and keeps its index row", async () => {
   if (!s3) return;
   const prefix = `${s3.prefix}/missing`;
-  const log = new S3DocumentLog(s3.client, prefix);
+  const log = new S3DocumentLog(openS3({ bucket: s3.bucket }), prefix);
   const store = new SqliteJobStore(":memory:", 60_000, log);
   const job = await store.create({ kind: "batch_scrape", options: {} });
   for (const n of [10, 20, 30]) await store.pushDocument(job.id, doc(n));
-  // Object names are UUIDv7, so they list in write order.
-  const keys = ((await s3.client.list({ prefix: `${prefix}/${job.id}/` })).contents ?? []).map((o) => o.key).sort();
+  // Object names are random, so the middle document is found by its content.
+  const keys = ((await s3.client.list({ prefix: `${prefix}/${job.id}/` })).contents ?? []).map((o) => o.key);
   expect(keys).toHaveLength(3);
-  const middle = keys[1] as string;
+  const sizes = await Promise.all(
+    keys.map(async (k) => [k, (JSON.parse(await s3.client.file(k).text()) as Document).markdown?.length] as const),
+  );
+  const middle = sizes.find(([, n]) => n === 20)?.[0] as string;
   const bytes = await s3.client.file(middle).bytes();
   await s3.client.delete(middle);
   expect(await store.documents(job.id, 0, 1e6)).toEqual({ data: [doc(10), doc(30)], nextSkip: null });
