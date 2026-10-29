@@ -81,7 +81,7 @@ jobs:
       - name: Build the published packages (packages)
         if: matrix.suite == 'packages'
         run: bun run build:packages
-      - run: bun run e2e e2e/${{ matrix.suite }}
+      - run: bun run e2e ./e2e/${{ matrix.suite }}
       - if: failure() && matrix.suite == 'infra'
         run: tail -50 "$RUNNER_TEMP/chrome.log" || true
 
@@ -101,7 +101,7 @@ jobs:
           name: binaries
           path: e2e-bin
       - run: chmod +x e2e-bin/sex e2e-bin/sex-lite
-      - run: bun run e2e e2e/load
+      - run: bun run e2e ./e2e/load
 
   # Real websites and the real (managed) SearXNG. The internet is not ours: a failure here does not block a merge.
   online:
@@ -120,4 +120,4 @@ jobs:
           name: binaries
           path: e2e-bin
       - run: chmod +x e2e-bin/sex e2e-bin/sex-lite
-      - run: bun run e2e e2e/online
+      - run: bun run e2e ./e2e/online

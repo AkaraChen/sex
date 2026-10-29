@@ -10,7 +10,7 @@
     "typecheck": "bun check",
     "lint": "biome check packages apps scripts e2e",
     "format": "biome check --write packages apps scripts e2e",
-    "test": "bun test --conditions sex-source packages apps",
+    "test": "bun test --conditions sex-source ./packages ./apps",
     "e2e": "bun test --conditions sex-source --timeout 300000",
     "verify": "bun check && bun run lint && bun run test",
     "build": "bun apps/sex/scripts/build.ts",

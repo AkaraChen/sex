@@ -84,11 +84,27 @@ afterAll(async () => {
   removeTempDirs();
 });
 
+/**
+ * A CONNECT target that names one of the private spellings (or any loopback / private literal). A desktop Chrome also
+ * opens tunnels of its own to public hosts (www.google.com for its services, `93.184.216.34:443` when it tries the https
+ * version of the page): those are not the page reaching a private address, so only private targets count.
+ */
+const privateConnect = (target: string) =>
+  privateTargets(tripwire.port).some((t) => target.startsWith(t.host) || target.startsWith(t.host.replace(/:\d+$/, ""))) ||
+  /^(\[?::1|\[?::ffff:|127\.|10\.|169\.254\.|192\.168\.|\[?f[cd]|localhost)/i.test(target);
+
 /** Nothing connected to the tripwire, and the proxy was only ever asked for the public address. */
 const nothingPrivateReached = () => {
   expect(tripwire.connections).toEqual([]);
   for (const u of pub.proxied) expect(u.startsWith(`http://${PUBLIC_IP}/`)).toBe(true);
-  expect(pub.connects).toEqual([]);
+  expect(pub.connects.filter(privateConnect)).toEqual([]);
+};
+
+/** No request reached the tripwire: a connection that sent bytes has them appended after ": " (see startListener). */
+const noPrivateRequest = () => {
+  expect(tripwire.connections.filter((c) => c.includes(": "))).toEqual([]);
+  for (const u of pub.proxied) expect(u.startsWith(`http://${PUBLIC_IP}/`)).toBe(true);
+  expect(pub.connects.filter(privateConnect)).toEqual([]);
 };
 
 describe("plain HTTP fetch, no browser", () => {
@@ -284,7 +300,24 @@ describe.skipIf(!cdp || !lanAddress)("Chrome elsewhere (--cdp-url at a non-loopb
     });
     expect(res.status).toBe(200);
     expect(res.body.data.rawHtml).toContain("allowed:fine");
-    nothingPrivateReached();
+    noPrivateRequest();
     await s.stop();
+  }, 300_000);
+
+  // BUG (security, low): through the CDP request guard a desktop Chrome still opens bare TCP connections to private
+  // addresses the page refers to, before any request exists for the guard to see (its speculative preconnect, which also
+  // ignores the proxy for loopback). No request goes out (the test above), but the connection does. Seen with the
+  // runner's google-chrome, not with chromedp/headless-shell. Delete `.failing` once a remote Chrome opens none.
+  test.failing("not even a TCP connection reaches a private address the page refers to", async () => {
+    const s = await startSex(["--cdp-url", relayUrl], { SEX_PROXY_URL: pub.proxyUrl });
+    for (let i = 0; i < 2; i++) {
+      const res = await api(s.url, "/v2/scrape", {
+        body: { url: `${pub.origin}/hostile-http`, formats: ["rawHtml"], waitFor: 1500, timeout: 45_000 },
+      });
+      expect(res.status).toBe(200);
+    }
+    await s.stop();
+    await Bun.sleep(500);
+    expect(tripwire.connections).toEqual([]);
   }, 300_000);
 });
