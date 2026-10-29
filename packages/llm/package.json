@@ -1,10 +1,12 @@
 {
   "name": "@searxng-js/sex-llm",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.0",
   "type": "module",
   "description": "LLM formats (json, summary, question, highlights), change descriptions and the prompt injection guard for @searxng-js/sex-scrape, on any OpenAI-compatible endpoint",
+  "license": "MIT",
+  "author": "akarachen",
   "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/llm" },
-  "files": ["dist", "README.md"],
+  "files": ["dist", "README.md", "LICENSE"],
   "engines": { "node": ">=24" },
   "exports": {
     ".": {

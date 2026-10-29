@@ -1,8 +1,10 @@
 {
   "name": "@searxng-js/sex-docs",
-  "version": "0.0.0",
+  "version": "0.1.0-rc.0",
   "type": "module",
   "description": "PDF, office document and image conversion (structured text, local OCR) through here-docs, for @searxng-js/sex-scrape",
+  "license": "MIT",
+  "author": "akarachen",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AkaraChen/sex.git",
@@ -10,7 +12,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=24"
