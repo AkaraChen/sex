@@ -78,7 +78,12 @@ export class Engine extends BaseEngine<Config> {
     }
     // The plugins take their own options; this is where the app's settings become them.
     this.browser = new BrowserPool(browserOptions(config));
-    this.llm = new Llm({ endpoint: config.llm, maxInputChars: config.llmMaxInputChars, timeoutMs: config.llmTimeout });
+    this.llm = new Llm({
+      endpoint: config.llm,
+      maxInputChars: config.llmMaxInputChars,
+      timeoutMs: config.llmTimeout,
+      rejectedHint: "Check SEX_LLM_MODEL (and SEX_LLM_SMALL_MODEL), SEX_LLM_BASE_URL and SEX_LLM_API_KEY.",
+    });
     this.docs = new DocsConverter({ enabled: config.docs, concurrency: config.docsConcurrency });
   }
 

@@ -5,6 +5,7 @@ export {
   type ExtractJsonOptions,
   type ExtractPlan,
   type LinkCandidate,
+  LLM_REJECTED_HINT,
   Llm,
   type LlmEndpoint,
   type LlmOptions,
