@@ -13,9 +13,22 @@ jobs:
         with:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
-      - run: bun check
-      - run: bun run lint
-      - run: bun test
+      - run: bun run verify
+
+  # Published packages run on Node too: build them, then test the dist.
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages
+      - run: bun run test:node
 
   binary:
     runs-on: ubuntu-latest
@@ -29,7 +42,7 @@ jobs:
       - name: The binary converts documents on its own (here-docs embedded, nothing beside it)
         run: |
           mkdir "$RUNNER_TEMP/alone" && cp dist/sex "$RUNNER_TEMP/alone/"
-          (cd packages/sex/test/fixtures && python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          (cd apps/sex/test/fixtures && python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &)
           sleep 1
           cd "$RUNNER_TEMP/alone"
           export XDG_CACHE_HOME="$RUNNER_TEMP/cache"
@@ -68,9 +81,9 @@ jobs:
         with:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
-      # The same release dist/sex embeds: version and SHA-256 are pinned in packages/sex/scripts/lightpanda.ts.
-      - run: bun packages/sex/scripts/lightpanda.ts "$RUNNER_TEMP/lightpanda"
-      - run: bun test packages/sex/test/browser.test.ts packages/sex/test/browser-proxy.test.ts
+      # The same release dist/sex embeds: version and SHA-256 are pinned in packages/browser/scripts/lightpanda.ts.
+      - run: bun packages/browser/scripts/lightpanda.ts "$RUNNER_TEMP/lightpanda"
+      - run: bun test --conditions sex-source --timeout 30000 apps/sex/test/browser.test.ts apps/sex/test/browser-proxy.test.ts
         env:
           SEX_TEST_LIGHTPANDA_PATH: ${{ runner.temp }}/lightpanda
 
@@ -89,7 +102,7 @@ jobs:
           google-chrome --headless=new --no-sandbox --disable-gpu --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
             --user-data-dir="$RUNNER_TEMP/chrome" about:blank >"$RUNNER_TEMP/chrome.log" 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:9222/json/version && break; sleep 1; done
-      - run: bun test packages/sex/test/browser.test.ts packages/sex/test/browser-fallback.test.ts packages/sex/test/abort.test.ts packages/sex/test/browser-proxy.test.ts packages/sex/test/egress-browser.test.ts
+      - run: bun test --conditions sex-source --timeout 30000 apps/sex/test/browser.test.ts apps/sex/test/browser-fallback.test.ts apps/sex/test/abort.test.ts apps/sex/test/browser-proxy.test.ts apps/sex/test/egress-browser.test.ts
         env:
           SEX_TEST_CDP_URL: http://127.0.0.1:9222
       - if: failure()
@@ -120,4 +133,10 @@ jobs:
             [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8333/)" != "000" ] && break
             sleep 1
           done
-      - run: bun test packages/sex/test/store-contract.test.ts packages/sex/test/durability.test.ts
+      - run: bun test --conditions sex-source --timeout 30000 apps/sex/test/store-contract.test.ts apps/sex/test/durability.test.ts packages/documents-s3/test/s3.test.ts
+      # The same bucket through the AWS SDK on Node (sex-jobs' optional peer @aws-sdk/client-s3).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: bun run build:packages
+      - run: node --test packages/documents-s3/test/s3.test.ts

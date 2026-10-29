@@ -2,11 +2,27 @@
 FROM oven/bun:1.4.3 AS source
 WORKDIR /app
 COPY package.json bun.lock bunfig.toml tsconfig.json ./
-COPY packages/core/package.json packages/core/
-COPY packages/sex/package.json packages/sex/
-COPY packages/sex-lite/package.json packages/sex-lite/
+COPY packages/errors/package.json packages/errors/
+COPY packages/deadline/package.json packages/deadline/
+COPY packages/egress/package.json packages/egress/
+COPY packages/page/package.json packages/page/
+COPY packages/searxng/package.json packages/searxng/
+COPY packages/browser/package.json packages/browser/
+COPY packages/llm/package.json packages/llm/
+COPY packages/docs/package.json packages/docs/
+COPY packages/store/package.json packages/store/
+COPY packages/scrape/package.json packages/scrape/
+COPY packages/search/package.json packages/search/
+COPY packages/map/package.json packages/map/
+COPY packages/documents-s3/package.json packages/documents-s3/
+COPY packages/jobs/package.json packages/jobs/
+COPY packages/server/package.json packages/server/
+COPY packages/testing/package.json packages/testing/
+COPY apps/sex/package.json apps/sex/
+COPY apps/sex-lite/package.json apps/sex-lite/
 RUN bun install --frozen-lockfile
 COPY packages ./packages
+COPY apps ./apps
 
 # One executable with SearXNG embedded (linux-x64 only); no browser, LLM or document converter.
 FROM source AS build-lite
@@ -25,8 +41,8 @@ EXPOSE 3002
 ENTRYPOINT ["sex-lite"]
 CMD ["serve"]
 
-# One executable with SearXNG (linux-x64 only), Lightpanda (version and SHA-256 pinned in packages/sex/scripts/lightpanda.ts;
-# downloaded here) and here-docs with its native engines embedded (see packages/sex/scripts/build.ts).
+# One executable with SearXNG (linux-x64 only), Lightpanda (version and SHA-256 pinned in packages/browser/scripts/lightpanda.ts;
+# downloaded here) and here-docs with its native engines embedded (see apps/sex/scripts/build.ts).
 FROM source AS build
 RUN bun run build
 

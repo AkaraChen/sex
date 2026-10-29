@@ -5,7 +5,7 @@
 crawl、batch scrape、extract 都是异步任务。任务按页拆分：crawl 先跑一个 `crawl-start` 任务（读 robots.txt 和 sitemap），之后每个页面是一个 `page` 任务，抓完后再把新发现的链接入队；batch 每个 URL 一个任务；extract 整体是一个任务。
 
 - **执行**：任务都在 `serve` 进程里跑，同时运行的页面数受 `SEX_CONCURRENCY` 限制。没有单独的 worker 进程。
-- **存储**：任务状态（进度、错误、去重集合，以及文档的索引）存在 `SEX_DATA_DIR/jobs.sqlite`，待执行的任务存在 `SEX_DATA_DIR/queue.sqlite`（[bunqueue](https://bunqueue.dev) 的嵌入式 broker）。`serve` 默认用 `$XDG_DATA_HOME/sex`（没设时是 `~/.local/share/sex`），Docker 镜像里是 `/data`。结束的任务在 `SEX_JOB_TTL_MS` 后删除，连同它的文档。
+- **存储**：任务状态（进度、错误、去重集合，以及文档的索引）存在 `SEX_DATA_DIR/jobs.sqlite`（`node:sqlite`；以前 `bun:sqlite` 写的文件原样可用），待执行的任务存在 `SEX_DATA_DIR/queue.sqlite`（[bunqueue](https://bunqueue.dev) 的嵌入式 broker）。`serve` 默认用 `$XDG_DATA_HOME/sex`（没设时是 `~/.local/share/sex`），Docker 镜像里是 `/data`。结束的任务在 `SEX_JOB_TTL_MS` 后删除，连同它的文档。
 - **文档**：抓到的页面（Firecrawl 的 `Document` JSON，常常一个就几百 KB）不放进 SQLite，SQLite 只记每个文档在哪、多大。存储位置由 `SEX_DOCUMENTS_URL` 决定：
   - 默认：每个任务一个只追加的 `SEX_DATA_DIR/documents/<任务 id>.jsonl`，一行一个文档。读状态页时整页一次读出，直接拼成响应，不做 JSON 解析和重新序列化。
   - `s3://bucket/prefix`：每个文档一个对象 `prefix/<任务 id>/<随机 id>.json`，用 Bun 内置的 S3 客户端，不需要额外依赖。读状态页时每个文档一个 GET，最多 8 个并发。任何 S3 兼容服务都可以（AWS S3、SeaweedFS、MinIO 等）。

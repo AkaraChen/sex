@@ -1,0 +1,43 @@
+{
+  "name": "@searxng-js/sex-egress",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "SSRF-safe outbound requests: EgressPolicy (where a server may connect to) and safeFetch (DNS-pinned fetch with a check on every redirect hop)",
+  "license": "MIT",
+  "author": "akarachen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AkaraChen/sex.git",
+    "directory": "packages/egress"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "ipaddr.js": "^2"
+  },
+  "peerDependencies": {
+    "undici": "^8"
+  },
+  "peerDependenciesMeta": {
+    "undici": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@searxng-js/sex-errors": "workspace:*",
+    "undici": "^8"
+  }
+}

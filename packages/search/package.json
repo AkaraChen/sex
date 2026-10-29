@@ -1,0 +1,28 @@
+{
+  "name": "@searxng-js/sex-search",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Web search through SearXNG (Firecrawl v2 search), optionally scraping the results",
+  "license": "MIT",
+  "author": "akarachen",
+  "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/search" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=24" },
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@searxng-js/sex-scrape": "workspace:^",
+    "@searxng-js/sex-searxng": "workspace:^",
+    "p-limit": "^7.3.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*"
+  }
+}

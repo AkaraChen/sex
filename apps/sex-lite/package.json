@@ -1,0 +1,17 @@
+{
+  "name": "sex-lite",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight sex: Firecrawl-compatible web search (SearXNG) + fetch (Defuddle) only, as a CLI, HTTP API and MCP server",
+  "bin": {
+    "sex-lite": "src/cli.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@searxng-js/sex-scrape": "workspace:*",
+    "@searxng-js/sex-search": "workspace:*",
+    "@searxng-js/sex-server": "workspace:*",
+    "citty": "^0.2.2"
+  }
+}

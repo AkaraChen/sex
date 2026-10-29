@@ -1,0 +1,51 @@
+import type { Document } from "@searxng-js/sex-scrape";
+import type { JobsContext } from "./context.ts";
+import type { JobRecord } from "./types.ts";
+import { sendWebhook } from "./webhook.ts";
+
+/**
+ * The side effects of one task, each performed at most once however often the queue delivers the task. Handlers
+ * create one per run and use it instead of calling the store and `sendWebhook` themselves, so the rule lives here:
+ * a redelivered task (one that crashed before `settle`) repeats its work but not its stored results, its counts or
+ * its webhooks. Without a taskId (tasks queued before ids existed) nothing is deduplicated.
+ *
+ * Effects follow their store write: an event is queued only when that write was new, so a crash between the write
+ * and the event loses the event (webhooks are best effort) rather than sending it twice.
+ */
+export interface TaskEffects {
+  /**
+   * Stores the page's document and, when it was new, sends the `page` webhook. The page is also added to
+   * `completed`, atomically with the document. Returns whether the document was new.
+   */
+  page(document: Document): Promise<boolean>;
+  /**
+   * Records that scraping `url` failed (with the error's `code`) and, when that was new, takes the page out of `total`
+   * (atomically with the record) and sends the `page` webhook with `success: false`.
+   */
+  failure(url: string, message: string, code?: string): Promise<void>;
+  /** Sends the job's `started` webhook, unless an earlier delivery of this task did. */
+  started(): Promise<void>;
+}
+
+export function taskEffects(ctx: JobsContext, job: JobRecord, taskId: string | undefined): TaskEffects {
+  const { store } = ctx.jobs;
+  return {
+    async page(document) {
+      const fresh = await store.pushDocument(job.id, document, taskId, true);
+      if (fresh) await sendWebhook(ctx, job, "page", [document]);
+      return fresh;
+    },
+    async failure(url, message, code) {
+      const fresh = await store.pushError(
+        job.id,
+        { id: crypto.randomUUID(), timestamp: new Date().toISOString(), url, error: message, ...(code ? { code } : {}) },
+        taskId,
+        { dropFromTotal: true },
+      );
+      if (fresh) await sendWebhook(ctx, job, "page", [{ metadata: { sourceURL: url } }], message);
+    },
+    async started() {
+      if (await store.claimEffect(job.id, taskId, "started")) await sendWebhook(ctx, job, "started");
+    },
+  };
+}

@@ -20,7 +20,7 @@ const fc = new Firecrawl({ apiUrl: "http://localhost:3002", apiKey: "anything" }
 await fc.scrape("https://example.com", { formats: ["markdown"] });
 ```
 
-`bun packages/sex/test/sdk-smoke.ts http://localhost:3002` 会用官方 JS SDK 把主要接口跑一遍。
+`bun apps/sex/test/sdk-smoke.ts http://localhost:3002` 会用官方 JS SDK 把主要接口跑一遍。
 
 **和 Firecrawl 的差异**
 
@@ -47,7 +47,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 - **一个 deadline**：一次 scrape 只有一个期限，由 `timeout`（默认 `SEX_TIMEOUT`，从开始抓取算起，排队不算）和调用方的取消共同决定；请求用到 LLM（LLM 格式 json / summary / question / highlights，或 `checkPromptInjection`）且没传 `timeout` 时，默认值是 `max(SEX_TIMEOUT, 60000)`（Firecrawl 对 json 同样把 30 秒改成 60 秒）。抓取或渲染、`waitFor`、`wait` action、`executeJavascript`、页面脚本、正文抽取和文档转换都在这个期限内；到期返回 `408 SCRAPE_TIMEOUT`，浏览器页面随即关闭并释放名额。客户端断开或任务被取消返回 `408 TIMEOUT`。
   - LLM 格式（json / summary / question / highlights）和 `checkPromptInjection` 的调用也在这个期限内，到期同样返回 `408 SCRAPE_TIMEOUT`；每次 LLM 调用的预算是 `min(SEX_LLM_TIMEOUT, 期限剩余时间)`。例外：extract 任务自己抓页面时开了 `checkPromptInjection`，它的 LLM 调用不受页面 `timeout` 约束，只受任务取消和 `SEX_LLM_TIMEOUT` 约束。
   - `waitFor` 加上所有 `wait` action 的 `milliseconds` 超过 60000 返回 `400`；`waitFor` 超过 `timeout` 的一半时不拒绝，只在 `warning` 里提醒。`wait` action 的 `milliseconds` 与 `selector` 必须二选一（以前两者都不给时默认等 1 秒）。
-- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `packages/core/src/schemas.ts` 和 `packages/sex/src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
+- 请求参数有上限，超出时返回 `400 BAD_REQUEST`，例如：`waitFor` 加上所有 `wait` action 的 `milliseconds` ≤ 60000 ms；`timeout` 在 1000–300000 ms；`formats`、`actions`、`includeTags`、`excludeTags`、`includePaths`、`excludePaths`、域名列表 ≤ 20 / 50 / 100 项不等（见 `packages/scrape/src/schemas.ts`、`packages/search/src/schemas.ts` 和 `apps/sex/src/schemas.ts`）；`urls` 批量 ≤ 10000；crawl `limit` ≤ 100000；`delay` ≤ 60 秒。
 - `includePaths` / `excludePaths` 的正则会被启发式检查：带无界量词的分组再被无界量词修饰（`(a+)+`）、或分支相互重叠的量词分组（`(a|a)*`）会返回 `400`；每条 ≤ 1000 字符、≤ 100 条，匹配前 URL 截到 2048 字符。look-around 和反向引用仍然允许。
 - LLM 相关的格式（json / summary / question / highlights）和 extract：
   - 带 JSON Schema 时，模型输出会按原始 schema 校验（Ajv，按 `$schema` 选择 draft-07 / 2019-09 / 2020-12，未写时按 2020-12；`format` 不校验）。输出不是合法 JSON 或不符合 schema 时，会把错误发回给模型修正一次，仍不符合才返回 `422 LLM_INVALID_OUTPUT`。schema 本身不合法时，在开始抓取之前就返回 `400 BAD_REQUEST`。根节点是数组的 schema 会包成 `{ items }` 发给模型（structured output 要求根节点是对象），返回时再拆开。
@@ -74,7 +74,7 @@ await fc.scrape("https://example.com", { formats: ["markdown"] });
 
 ## 错误码
 
-错误响应是 `{ "success": false, "code", "error", "retryable", "details"? }`（请求体校验失败的 400 没有 `retryable`），HTTP 状态码表示错误类别：不管重试几次结果都一样的失败不会用 502/503，因为官方 SDK 会自动重试 502（LLM 费用和延迟会翻几倍）。`retryable` 表示重试同一个请求是否可能成功。所有错误码、状态码和 `retryable` 集中定义在 `packages/core/src/errors.ts` 的 `ERRORS` 里。
+错误响应是 `{ "success": false, "code", "error", "retryable", "details"? }`（请求体校验失败的 400 没有 `retryable`），HTTP 状态码表示错误类别：不管重试几次结果都一样的失败不会用 502/503，因为官方 SDK 会自动重试 502（LLM 费用和延迟会翻几倍）。`retryable` 表示重试同一个请求是否可能成功。所有错误码、状态码和 `retryable` 集中定义在 `packages/errors/src/index.ts` 的 `ERRORS` 里。
 
 | 状态 | code | 说明 | `retryable` |
 |---|---|---|---|

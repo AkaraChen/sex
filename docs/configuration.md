@@ -21,12 +21,16 @@
 compose 只有一个 `sex` 服务：HTTP API、MCP 和任务都在同一个 sex 进程里，SearXNG 和 Lightpanda 是它的子进程，任务存在 `sex-data` volume（容器里的 `/data`）里。
 
 - compose 通过 `.env` 读取 `SEX_LLM_*`、`SEX_DOCS` 和 `SEX_SEARXNG_URL`。其它 `SEX_*` 变量（如 `SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`）不会自动传入容器，需要加到 `compose.yaml` 里 `sex` 服务的 `environment` 下。
-- 镜像里是单文件二进制 `sex`（内置 here-docs），`SEX_DOCS` 默认关闭，在 `.env` 里设 `SEX_DOCS=1` 开启。
+- 镜像里是单文件二进制 `sex`（内置 here-docs），`SEX_DOCS` 默认关闭，在 `.env` 里设 `SEX_DOCS=1` 开启；任务存在 `/data`（compose 挂了 `sex-data` volume）。
 - `dist/sex` 内置 Lightpanda，compose 给 sex 设了 `SEX_LIGHTPANDA=1`，所以没有单独的 `lightpanda` 服务：sex 进程自己启动、管理一个子进程，空闲时约 13 MB 内存。内置不等于开启，是否使用仍由 `SEX_LIGHTPANDA` 决定。详见[浏览器](browser.md)。
 
 ## sex-lite
 
-sex-lite 只认下表里 SearXNG、抓取、HTTP 相关的那些变量（`PORT`、`HOST`、`SEX_SEARXNG_*`、`SEX_ALLOW_PRIVATE_NETWORK`、`SEX_PROXY_URL`、`SEX_USER_AGENT`、`SEX_CONCURRENCY`、`SEX_TIMEOUT`、`SEX_MAX_BODY_BYTES`、`SEX_EXTRACT_WORKERS`、`SEX_LOG_LEVEL`、`SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`、`SEX_STRICT_REQUESTS`），含义相同。它支持 `markdown` / `html` / `rawHtml` / `rawBase64` / `links` / `images` / `attributes` 格式，PDF 用 unpdf 抽纯文本；需要浏览器的选项（`actions`）和 LLM 格式返回 `501`，其它路由（如 `/v2/crawl`）是 `404`。
+sex-lite 的能力和配置：
+
+- 能力：搜索（可带 `scrapeOptions`）；抓取支持 `markdown` / `html` / `rawHtml` / `rawBase64` / `links` / `images` / `attributes` 格式，HTML 用 Defuddle 提取，PDF 用 unpdf 抽纯文本。
+- 需要浏览器的选项（`actions`）和 LLM 格式（`json`、`summary` 等）返回 `501`，提示改用 sex；其它路由（如 `/v2/crawl`）是 `404`。
+- 配置：只认下表里 SearXNG、抓取、HTTP 相关的那些变量（`PORT`、`HOST`、`SEX_SEARXNG_*`、`SEX_ALLOW_PRIVATE_NETWORK`、`SEX_PROXY_URL`、`SEX_USER_AGENT`、`SEX_CONCURRENCY`、`SEX_TIMEOUT`、`SEX_MAX_BODY_BYTES`、`SEX_EXTRACT_WORKERS`、`SEX_LOG_LEVEL`、`SEX_CORS_ORIGINS`、`SEX_ALLOWED_HOSTS`、`SEX_STRICT_REQUESTS`），含义相同。
 
 ## 环境变量
 

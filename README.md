@@ -10,8 +10,10 @@
 ![Runtime: Bun](https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun)
 ![Firecrawl v2 compatible](https://img.shields.io/badge/Firecrawl-v2%20compatible-orange)
 ![MCP](https://img.shields.io/badge/MCP-streamable%20HTTP-blue)
+[![npm](https://img.shields.io/npm/v/@searxng-js/sex-scrape?label=npm)](https://www.npmjs.com/package/@searxng-js/sex-scrape)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[对比 Firecrawl](#和-firecrawl-官方自托管方案的对比) · [快速开始](#快速开始) · [使用方式](#使用方式) · [功能](#功能) · [配置](#配置) · [文档](#文档)
+[对比 Firecrawl](#和-firecrawl-官方自托管方案的对比) · [快速开始](#快速开始) · [使用方式](#使用方式) · [功能](#功能) · [作为库使用](#作为库使用) · [配置](#配置) · [文档](#文档)
 
 </div>
 
@@ -168,6 +170,27 @@ docker build --target lite -t sex-lite .
 
 sex-lite 的用法和配置变量与 sex 相同；需要浏览器或 LLM 的请求会返回 `501` 并提示改用 sex。
 
+## 作为库使用
+
+不想跑服务的话，sex 的各项能力也拆成了独立的 npm 包，Bun 和 Node 24 都能用：
+
+| 包 | 用途 |
+|---|---|
+| [`@searxng-js/sex-scrape`](packages/scrape/README.md) | 抓一个 URL，得到 Markdown、HTML、links 等（Firecrawl 的 scrape） |
+| [`@searxng-js/sex-search`](packages/search/README.md) | 用 SearXNG 搜索，可以顺带抓取结果 |
+| [`@searxng-js/sex-map`](packages/map/README.md) | 找出一个站点的全部 URL（sitemap、页面链接、`site:` 搜索） |
+| [`@searxng-js/sex-jobs`](packages/jobs/README.md) | crawl、batch scrape、extract 任务，带 SQLite 存储和 webhook |
+| [`@searxng-js/sex-egress`](packages/egress/README.md) | SSRF 安全的出站请求（`safeFetch`） |
+| [`@searxng-js/sex-page`](packages/page/README.md) | HTML / PDF 正文提取 |
+| [`@searxng-js/sex-searxng`](packages/searxng/README.md) | 连接外部 SearXNG，或把预编译的 SearXNG 作为子进程托管 |
+| [`@searxng-js/sex-browser`](packages/browser/README.md) / [`sex-llm`](packages/llm/README.md) / [`sex-docs`](packages/docs/README.md) / [`sex-store`](packages/store/README.md) | 浏览器渲染、LLM 格式、文档转换、缓存与变更追踪，作为可选能力传给 sex-scrape |
+
+```bash
+npm install @searxng-js/sex-scrape @searxng-js/sex-page
+```
+
+每个包的用法见它自己的 README。
+
 ## 配置
 
 所有设置都可以用命令行参数或 `SEX_*` 环境变量给出（优先级：参数 > 环境变量 > 默认值）。常用的几项：
@@ -224,7 +247,8 @@ sex 尽量做到和 Firecrawl v2 行为一致，主要差别：
 | [文档转换](docs/documents.md) | PDF、Office、图片 OCR |
 | [出站代理](docs/proxy.md) | `SEX_PROXY_URL`、stealth 重试和安全边界 |
 | [SearXNG](docs/searxng.md) | 内置 SearXNG 的运行方式和自定义配置 |
-| [开发](docs/development.md) | 测试、检查和可选的集成测试 |
+| [开发](docs/development.md) | 仓库结构、测试和集成测试 |
+| [架构](docs/architecture.md) | packages 与 apps 的拆分 |
 
 ## 参与开发
 
@@ -234,13 +258,17 @@ bun run verify    # 类型检查 + lint + 测试
 bun run format    # 格式化
 ```
 
-仓库是 Bun workspace：`packages/core`（两个产品共用的搜索、抓取和服务框架）、`packages/sex`（完整版）、`packages/sex-lite`（轻量版）。测试不依赖外网，需要真实浏览器或 SearXNG 的集成测试见 [docs/development.md](docs/development.md)。
+仓库是 Bun workspace：`packages/` 放库（大多发布到 npm），`apps/sex`、`apps/sex-lite` 是两个产品，只做组装。目录说明见 [docs/development.md](docs/development.md)，架构见 [docs/architecture.md](docs/architecture.md)。测试不依赖外网，需要真实浏览器或 SearXNG 的集成测试也在 docs/development.md 里。
 
 欢迎提 Issue 和 Pull Request。
 
-## 致谢与第三方许可
+## 许可
+
+sex 以 [MIT](LICENSE) 许可发布。
+
+### 致谢与第三方许可
 
 sex 建立在这些项目之上：[SearXNG](https://github.com/searxng/searxng)、[Defuddle](https://github.com/kepano/defuddle)、[Lightpanda](https://github.com/lightpanda-io/browser)、[here-docs](https://github.com/AkaraChen/here-docs)、[bunqueue](https://bunqueue.dev)、[EasyList](https://easylist.to/)，以及 [Firecrawl](https://firecrawl.dev) 的 API 设计。
 
 - **SearXNG** 二进制采用 AGPL-3.0-or-later。分发 `dist/sex` 或 Docker 镜像时需要同时提供对应源码（固定版本的 SearXNG 加 [AkaraChen/searxng](https://github.com/AkaraChen/searxng) 的构建脚本），见 `node_modules/@searxng-js/<平台>/THIRD-PARTY-NOTICES.md`。
-- **广告域名表** 派生自 EasyList 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0，随 `dist/sex` 一起分发；具体提交和校验和见 `packages/sex/scripts/adblock.ts`。
+- **广告域名表** 派生自 EasyList 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0，随 `dist/sex` 一起分发；具体提交和校验和见 `packages/browser/scripts/adblock.ts`。

@@ -4,7 +4,7 @@
 - **`--cdp-url ws://...`**（`SEX_CDP_URL`）：连接已经在运行的 CDP 浏览器，比如 Chrome。sex 不启动任何进程；地址是回环时按“本机的外部浏览器”处理（Chrome 专用，见下面的表），要用 Lightpanda 请用 `--lightpanda`；和 `--lightpanda` 同时设置时以 `--cdp-url` 为准。
 - 都不设：不用浏览器。
 
-`dist/sex`（以及 Docker 镜像）内置了 Lightpanda，`--lightpanda` 开箱即用：第一次用到时解压到 `$XDG_CACHE_HOME/sex/lightpanda-<版本>-<hash>/`（约 76 MB），之后复用。版本和每个平台的 SHA-256 固定在 `packages/sex/scripts/lightpanda.ts`（目前是 1.0.2），`bun run build` 第一次会从 GitHub Releases 下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`，压缩后让 `dist/sex` 增大约 23 MB。预编译版本只有 Linux x64 / arm64（glibc ≥ 2.35）和 macOS x64 / arm64，Windows 和 musl 没有。
+`dist/sex`（以及 Docker 镜像）内置了 Lightpanda，`--lightpanda` 开箱即用：第一次用到时解压到 `$XDG_CACHE_HOME/sex/lightpanda-<版本>-<hash>/`（约 76 MB），之后复用。版本和每个平台的 SHA-256 固定在 `packages/browser/scripts/lightpanda.ts`（目前是 1.0.2），`bun run build` 第一次会从 GitHub Releases 下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`，压缩后让 `dist/sex` 增大约 23 MB。预编译版本只有 Linux x64 / arm64（glibc ≥ 2.35）和 macOS x64 / arm64，Windows 和 musl 没有。
 
 从源码运行（`bun run dev`）时没有内置的二进制，需要自己放到 PATH 上，或用 `--lightpanda-path`（`SEX_LIGHTPANDA_PATH`）指定；`--lightpanda-path` 也会覆盖内置的版本：
 
@@ -15,7 +15,7 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 
 **子进程的回收**：`SIGINT` / `SIGTERM` 时 sex 会先关掉子进程再退出，但 `SIGKILL` 无法被捕获。所以在 Linux 上，sex 用 `setpriv --pdeathsig TERM -- lightpanda serve ...` 启动子进程（`setpriv` 属于 util-linux ≥ 2.33，Debian / Ubuntu 和 Docker 镜像里都有）：sex 被 `kill -9` 后，内核会给子进程发 `SIGTERM`，不会留下孤儿。macOS 没有对应机制（pdeathsig 是 Linux 特有的），Linux 上没有 `setpriv` 时也一样，sex 只能直接 spawn，此时 `kill -9` sex 会留下孤儿 Lightpanda 进程，需要自己清理。`lightpanda started` 日志里的 `spawn=setpriv` / `spawn=direct` 标明了实际用的是哪种方式。
 
-**出站规则与执行点**：出站规则只有一份（core 的 `EgressPolicy`：解析域名，任何一个地址是内网、回环、link-local（含云元数据 `169.254.169.254`）就拒绝，通过后给出要固定连接的 IP，按 host 缓存 30 秒）。`safeFetch`、浏览器都问它；浏览器能在哪里执行这条规则，取决于浏览器本身：
+**出站规则与执行点**：出站规则只有一份（sex-egress 的 `EgressPolicy`：解析域名，任何一个地址是内网、回环、link-local（含云元数据 `169.254.169.254`）就拒绝，通过后给出要固定连接的 IP，按 host 缓存 30 秒）。`safeFetch`、浏览器都问它；浏览器能在哪里执行这条规则，取决于浏览器本身：
 
 | 浏览器 | SSRF 检查 | 广告拦截 | 凭据限定 / 媒体拦截 |
 |---|---|---|---|
@@ -54,8 +54,8 @@ bun run dev fetch https://example.com --lightpanda --lightpanda-path ./lightpand
 - 数据：EasyList 和 EasyPrivacy 里的域名规则，也就是 `||domain^`（可带 `$third-party`）和例外规则 `@@||domain^`，约 9 万条。带路径、通配符、其它选项的规则和页面元素隐藏规则不用。
 - 匹配：按域名的 label 从后往前做后缀匹配（`ads.example.com` 命中 `cdn.ads.example.com`，不命中 `badads.example.com`），不是子串匹配；例外规则优先于拦截规则。`$third-party` 规则只在请求离开目标页所在的可注册域名时生效（没有 public suffix list，用“两段或 `co.uk` 式三段”近似）。
 - 范围：子资源和 iframe 被拦截时直接中止；目标页本身的导航（包括重定向）永远不拦（`EgressProxy` 上的差别见上）。浏览器不支持 request interception（部分 `--cdp-url` 浏览器）且没有别的策略需要它时，静默不拦截，不报错。
-- 数据怎么来：`packages/sex/scripts/adblock.ts` 固定了 EasyList 仓库的一个提交，按它的模板拉取各个子列表，提取域名后得到一个纯文本表，并固定该表的 SHA-256。`bun run build` 把它 zstd 压缩（约 600 KB）嵌入 `dist/sex`；第一次用到浏览器时解压并建 `Set`（约 30 ms，常驻内存增加约 10 MiB），之后每次查询不到 1 µs。从源码运行时，第一次用到会下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`；下载失败只打一条警告，不拦截，不影响抓取。升级规则：改 `EASYLIST_COMMIT`，运行 `bun packages/sex/scripts/adblock.ts` 取新 hash 填进 `ADBLOCK_TABLE_SHA256`。
-- 开销：CDP 路径要让浏览器把每个请求交给 sex 决定，这一步（CDP 往返）才是成本，查表本身可以忽略；本机的外部浏览器上广告在 `EgressProxy` 里按 host 拒绝，不需要 CDP 拦截。开了 `--allow-private-network`（`search` / `fetch` 默认就开）且没有其它策略时，Lightpanda 和远程浏览器上的 `blockAds` 会把 CDP 拦截打开。在 Lightpanda 上，一个有 50 个子资源且没有一个命中广告表的页面，实测增加约 2–5%（约 80 µs / 请求）；真实的广告多的新闻页面里，被拦掉 4–13 个请求，页面反而更快，正文不变。复测：`bun packages/sex/scripts/bench-adblock.ts`。
+- 数据怎么来：`packages/browser/scripts/adblock.ts` 固定了 EasyList 仓库的一个提交，按它的模板拉取各个子列表，提取域名后得到一个纯文本表，并固定该表的 SHA-256。`bun run build` 把它 zstd 压缩（约 600 KB）嵌入 `dist/sex`；第一次用到浏览器时解压并建 `Set`（约 30 ms，常驻内存增加约 10 MiB），之后每次查询不到 1 µs。从源码运行时，第一次用到会下载并校验，缓存在 `$XDG_CACHE_HOME/sex-build`；下载失败只打一条警告，不拦截，不影响抓取。升级规则：改 `EASYLIST_COMMIT`，运行 `bun packages/browser/scripts/adblock.ts` 取新 hash 填进 `ADBLOCK_TABLE_SHA256`。
+- 开销：CDP 路径要让浏览器把每个请求交给 sex 决定，这一步（CDP 往返）才是成本，查表本身可以忽略；本机的外部浏览器上广告在 `EgressProxy` 里按 host 拒绝，不需要 CDP 拦截。开了 `--allow-private-network`（`search` / `fetch` 默认就开）且没有其它策略时，Lightpanda 和远程浏览器上的 `blockAds` 会把 CDP 拦截打开。在 Lightpanda 上，一个有 50 个子资源且没有一个命中广告表的页面，实测增加约 2–5%（约 80 µs / 请求）；真实的广告多的新闻页面里，被拦掉 4–13 个请求，页面反而更快，正文不变。复测：`bun packages/browser/scripts/bench-adblock.ts`。
 - **`SEX_BLOCK_MEDIA`**（`--block-media`）：另外拦截图片和音视频请求（按资源类型，不是扩展名），默认关。文本抓取不需要这些字节；`screenshot` 本来就不支持。
 
-**EasyList 的出处与许可**：广告域名表来自 [EasyList](https://easylist.to/) 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0。sex 只取其中的域名，派生出的域名表随 `dist/sex` 一起分发；具体的提交和校验和见 `packages/sex/scripts/adblock.ts`。
+**EasyList 的出处与许可**：广告域名表来自 [EasyList](https://easylist.to/) 和 EasyPrivacy（[easylist/easylist](https://github.com/easylist/easylist)），双许可 GPLv3 / CC BY-SA 3.0。sex 只取其中的域名，派生出的域名表随 `dist/sex` 一起分发；具体的提交和校验和见 `packages/browser/scripts/adblock.ts`。

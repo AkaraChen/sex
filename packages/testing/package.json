@@ -1,0 +1,13 @@
+{
+  "name": "@searxng-js/sex-testing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Test fixtures: a fixture website, a mock SearXNG, a counting proxy, a text PDF. Only for tests; Bun only",
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  }
+}

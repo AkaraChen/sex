@@ -12,7 +12,7 @@ SSRF 防护在代理之前仍然生效：
 
 **LLM 和 S3 不走 `SEX_PROXY_URL`**：`SEX_LLM_BASE_URL` 和 `SEX_DOCUMENTS_URL` 的 S3 端点都是运维方自己配置的地址，不是用户提交的 URL。确实需要走代理时，用 Bun 认的标准环境变量 `HTTP_PROXY` / `HTTPS_PROXY`（小写也行，`NO_PROXY` 生效），已用 Bun 1.4.3 实测：`fetch`（LLM 请求用的就是它）和 `Bun.S3Client` 都读这些变量，`http://` 地址看 `HTTP_PROXY`，`https://` 地址看 `HTTPS_PROXY`。注意它是整个进程范围的：sex 访问本机 SearXNG（`127.0.0.1`）的请求也会走代理，所以要同时设 `NO_PROXY=127.0.0.1,localhost`；没显式用 `SEX_PROXY_URL` 的 `fetch` 同样受影响。
 
-**stealth 重试**（`SEX_STEALTH_PROXY_URL`）：设置后，普通抓取被拦截时换这个代理重试一次。判断“被拦截”的规则只有一处（`packages/core/src/errors.ts` 的 `isBlocked`）：响应状态是 403 或 429，或者抛出的错误在错误目录里标了 `blocked`（目前只有 `SCRAPE_SITE_ERROR`，连接被重置 / 断开）。别的状态、`PRIVATE_NETWORK_BLOCKED` 这类我们自己的拒绝都不重试。
+**stealth 重试**（`SEX_STEALTH_PROXY_URL`）：设置后，普通抓取被拦截时换这个代理重试一次。判断“被拦截”的规则只有一处（`packages/errors/src/index.ts` 的 `isBlocked`）：响应状态是 403 或 429，或者抛出的错误在错误目录里标了 `blocked`（目前只有 `SCRAPE_SITE_ERROR`，连接被重置 / 断开）。别的状态、`PRIVATE_NETWORK_BLOCKED` 这类我们自己的拒绝都不重试。
 
 - 重试在这次抓取的同一个 `Deadline` 里，剩下不到 2 秒就不重试；超时照常是 `SCRAPE_TIMEOUT`。重试本身失败时保留第一次的结果，`warning` 里说明。
 - 用了 stealth 的文档，`metadata.proxyUsed` 是 `"stealth"`，`warning` 写明重试过；没重试或重试没被采用是 `"basic"`。重试得到的响应不管状态是什么都会被采用（再被拦就是第二次的 403）。
