@@ -4,7 +4,7 @@ The SearXNG a search runs against: an external instance, or one this package run
 
 `SearxngService` starts the child on first use (or `warmup()`), starts it again after it exits, pauses restarts for a cooldown after repeated failed starts (`SEARCH_BACKEND_UNAVAILABLE`), and stops it on `close()`. The child exits when its stdin pipe closes, so it dies with its parent even on SIGKILL. With a `proxyUrl` and no `settingsPath` it writes settings with `outgoing.proxies` to a private temporary file (mode `0600`) that is deleted once SearXNG is up; proxy credentials are redacted from logs and errors.
 
-Errors are `AppError`s from the private `sex-errors` library, bundled in.
+Errors are `AppError`s, which this package exports (`import { AppError } from "@searxng-js/sex-searxng"`; every `@searxng-js/sex-*` package exports the same class): check them with `AppError.isInstance(e)`, never `instanceof`; `e.code`, `e.status` and `e.retryable` are plain fields.
 
 ## Install
 
@@ -23,7 +23,7 @@ const res = await fetch(`${base}/search?q=bun&format=json`);
 await searxng.close();
 ```
 
-Options: `url` (external instance; nothing is started), `binaryPath`, `settingsPath` (your own settings.yml, used as it is), `proxyUrl`.
+Options: `url` (external instance; nothing is started), `binaryPath`, `settingsPath` (your own settings.yml, used as it is), `proxyUrl`. Without `binaryPath`, `@searxng-js/searxng` also honours the `SEARXNG_BINARY` environment variable before falling back to its prebuilt binary; the prebuilt ones exist for linux-x64 (glibc 2.35 or later), darwin-arm64 and win32-x64, so elsewhere pass `url` or a binary.
 
 ## Node
 

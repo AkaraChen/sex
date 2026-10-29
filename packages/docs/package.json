@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-docs",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "PDF, office document and image conversion (structured text, local OCR) through here-docs, for @searxng-js/sex-scrape",
   "license": "MIT",

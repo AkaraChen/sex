@@ -6,7 +6,7 @@ SSRF-safe outbound requests for servers that fetch URLs a user supplied.
 - `safeFetch`: `fetch` that applies the policy to every redirect hop and connects to the address that was validated, so a second DNS lookup (rebinding) cannot send the request elsewhere. It also caps the body size and names failures (`SCRAPE_DNS_RESOLUTION_ERROR`, `SCRAPE_SSL_ERROR`, ...).
 - `assertPublicUrl`, `parseHttpUrl`, `networkError`, `decodeBody`, `rewriteUrl` (Google Docs / Sheets / Slides / Drive links to export URLs) and `fileKindOf`.
 
-Errors are `AppError`s from the private `sex-errors` library, bundled in; they carry `code`, `status` and `retryable`.
+Errors are `AppError`s, which this package exports (`import { AppError } from "@searxng-js/sex-egress"`; every `@searxng-js/sex-*` package exports the same class): check them with `AppError.isInstance(e)`, never `instanceof`; `e.code`, `e.status` and `e.retryable` are plain fields.
 
 ## Install
 

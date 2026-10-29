@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Web search through SearXNG (Firecrawl v2 search), optionally scraping the results",
   "license": "MIT",

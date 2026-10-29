@@ -7,7 +7,7 @@ HTML and PDF content extraction, and Markdown to HTML.
 - `ExtractPool`: runs both in worker threads so a large page cannot block the event loop (`size: 0` runs on the calling thread). A job is cut by an `AbortSignal` (`SCRAPE_TIMEOUT` when its reason is a `TimeoutError`, `TIMEOUT` otherwise) and by `taskTimeoutMs` (`EXTRACT_TIMEOUT`); the worker that ran it is replaced.
 - `markdownToHtml(markdown)`: GFM (tables, strikethrough, task lists). Raw HTML inside the Markdown is escaped, never passed through.
 
-Errors are `AppError`s from the private `sex-errors` library, bundled in.
+Errors are `AppError`s, which this package exports (`import { AppError } from "@searxng-js/sex-page"`; every `@searxng-js/sex-*` package exports the same class): check them with `AppError.isInstance(e)`, never `instanceof`; `e.code`, `e.status` and `e.retryable` are plain fields.
 
 ## Install
 

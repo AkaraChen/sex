@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Render pages in a browser (Lightpanda child process or any CDP browser) for @searxng-js/sex-scrape, with SSRF enforcement, ad blocking and the egress proxy",
   "license": "MIT",

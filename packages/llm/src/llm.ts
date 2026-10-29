@@ -473,7 +473,7 @@ function toLlmError(err: unknown, baseUrl: string): AppError {
     if (err.status >= 400 && err.status < 500 && err.status !== 408) {
       return new AppError(
         "LLM_REQUEST_REJECTED",
-        `The LLM endpoint rejected the request (${err.status})${suffix}: ${err.body.slice(0, 500)}. Check SEX_LLM_MODEL (and SEX_LLM_SMALL_MODEL), SEX_LLM_BASE_URL and SEX_LLM_API_KEY.`,
+        `The LLM endpoint rejected the request (${err.status})${suffix}: ${err.body.slice(0, 500)}. Check the model name (and the small model's), the endpoint URL and the API key.`,
         { status: err.status, requestId: id },
       );
     }

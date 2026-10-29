@@ -120,6 +120,28 @@ export async function searxng(
   }
 }
 
+/**
+ * The SearXNG base URL, without outliving the search: a managed SearXNG can take up to a minute to start on first use, and
+ * that wait must answer to the caller's cancel and the search's own timeout like every other step. The start goes on in
+ * the background and serves the next search.
+ */
+async function searxngUrl(engine: SearchContext, time: SearchTime): Promise<string> {
+  const what = "while waiting for SearXNG to start";
+  throwIfAborted(time, what);
+  const url = engine.searxng.url();
+  const signal = time.signal;
+  if (!signal) return url;
+  url.catch(() => {});
+  const over = Promise.withResolvers<never>();
+  const onAbort = () => over.reject(abortError(time, what));
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([url, over.promise]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 async function searxngOnce(
   engine: SearchContext,
   query: SearxQuery,
@@ -131,7 +153,7 @@ async function searxngOnce(
   if (query.timeRange) params.set("time_range", query.timeRange);
   if (query.language) params.set("language", query.language);
   if (query.safe) params.set("safesearch", "2");
-  const searxngUrl = await engine.searxng.url();
+  const base = await searxngUrl(engine, time);
   // One request gets the context's `timeout` of what the search has left; given more than is left it just shares the search's time.
   const limit = engine.settings.timeout;
   const left = time.deadlineAt === undefined ? Number.POSITIVE_INFINITY : time.deadlineAt - Date.now();
@@ -143,12 +165,12 @@ async function searxngOnce(
   const what = "while querying SearXNG";
   let res: Response;
   try {
-    res = await fetch(`${searxngUrl}/search?${params}`, { headers: { accept: "application/json" }, signal });
+    res = await fetch(`${base}/search?${params}`, { headers: { accept: "application/json" }, signal });
   } catch (err) {
     if (signal?.aborted) throw failure(what);
     throw new AppError(
       "SEARCH_BACKEND_UNAVAILABLE",
-      `Cannot reach SearXNG at ${searxngUrl}: ${err instanceof Error ? err.message : String(err)}`,
+      `Cannot reach SearXNG at ${base}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
   if (!res.ok) {

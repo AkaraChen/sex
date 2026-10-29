@@ -14,8 +14,8 @@ export const MapRequest = z.object({
   filterByPath: z.boolean().optional().describe("Only return URLs under the path of the (redirect-resolved) start URL. Defaults to true."),
   includePaths: z.array(z.string()).optional().describe("Regexes matched against the URL path; with any, one of them must match."),
   excludePaths: z.array(z.string()).optional().describe("Regexes matched against the URL path; a match drops the URL."),
-  useIndex: z.boolean().optional().describe("Accepted for Firecrawl compatibility and ignored: sex has no URL index."),
-  ignoreCache: z.boolean().optional().describe("Accepted for Firecrawl compatibility and ignored: sex has no map cache."),
+  useIndex: z.boolean().optional().describe("Accepted for Firecrawl compatibility and ignored: there is no URL index."),
+  ignoreCache: z.boolean().optional().describe("Accepted for Firecrawl compatibility and ignored: there is no map cache."),
 });
 export type MapRequest = z.infer<typeof MapRequest>;
 

@@ -152,13 +152,13 @@ export const notFound = (message: string) => new AppError("NOT_FOUND", message);
 export const unsupported = (what: string, hint?: string) =>
   new AppError("NOT_SUPPORTED", `${what} is not supported by this server.${hint ? ` ${hint}` : ""}`);
 
-export const BROWSER_HINT =
-  "Start with --lightpanda (spawns a local Lightpanda) or --cdp-url <ws://...> (any CDP browser), or set SEX_LIGHTPANDA=1 / SEX_CDP_URL.";
-export const LLM_HINT =
-  "Pass --llm-model (plus --llm-base-url / --llm-api-key for non-OpenAI endpoints), or set SEX_LLM_MODEL / SEX_LLM_BASE_URL / SEX_LLM_API_KEY.";
+// The defaults speak to a developer wiring the packages; an application passes its own wording (its flags, its settings)
+// through the context's `missingHints`.
+export const BROWSER_HINT = "Give the scrape context an enabled browser (for example a BrowserPool from @searxng-js/sex-browser).";
+export const LLM_HINT = "Give the scrape context an enabled LLM (for example Llm from @searxng-js/sex-llm).";
 
 export const CHANGE_TRACKING_HINT =
-  "It keeps the previous scrape of a page in SEX_DATA_DIR: set it (--data-dir, or run `sex serve`, which defaults to one).";
+  "It compares with the previous scrape of the page: give the scrape context a change tracker (for example SqliteChangeTracker from @searxng-js/sex-store).";
 
 /** A request needs a capability (browser, LLM, ...) that this deployment does not provide. `hint` says how to get it. */
 export const browserRequired = (what: string, hint = BROWSER_HINT) =>

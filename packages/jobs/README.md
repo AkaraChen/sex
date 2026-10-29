@@ -38,6 +38,10 @@ const { job } = await startBatchScrape(ctx, { urls: ["https://example.com/a", "h
 // Poll `await jobs.store.get(job.id)` until its status leaves "scraping", then read `await jobs.store.documents(job.id, 0, 10_000_000)`.
 ```
 
+## Errors
+
+Failures are `AppError`s, which this package exports (`import { AppError } from "@searxng-js/sex-jobs"`; every `@searxng-js/sex-*` package exports the same class, so one recognises another's): check them with `AppError.isInstance(e)`, never `instanceof`. `e.code` (for example `TIMEOUT`, `PRIVATE_NETWORK_BLOCKED`, `SEARCH_BACKEND_UNAVAILABLE`), `e.status` (the HTTP status a server would answer with) and `e.retryable` are plain fields.
+
 ## Node
  On Node, outbound requests go through [`undici`](https://www.npmjs.com/package/undici), an optional peer dependency of `sex-egress`: run `npm install undici` (without it a fetch fails with a `NOT_SUPPORTED` error that names the package).
 Works on Node 24 and Bun. The job store uses `node:sqlite`; on Bun it measured within noise of `bun:sqlite` on the hot path (per operation: scheduling a crawled URL 22–25 µs against 19–22, storing a document 71–79 µs against 68–70, settling a task 49–55 µs against 49–52). A `jobs.sqlite` written by the earlier `bun:sqlite` version opens as it is. `MemoryTaskQueue` keeps tasks in memory only: they are gone when the process ends. Tasks that must survive a restart need a persistent `TaskQueue` of your own; the sex app's is bunqueue (Bun only), in `apps/sex`.

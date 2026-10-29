@@ -7,7 +7,7 @@ import { z } from "zod";
 
 // ---------------------------------------------------------------- jobs
 
-/** The header that carries the HMAC of the body (see `SEX_WEBHOOK_SECRET`); sex sets it, a request may not. */
+/** The header that carries the HMAC of the body (see `jobSettings.webhookSecret`); the server sets it, a request may not. */
 export const WEBHOOK_SIGNATURE_HEADER = "X-Firecrawl-Signature";
 
 export const WebhookConfig = z.union([
@@ -59,7 +59,7 @@ export const CrawlRequest = z.object({
     .int()
     .positive()
     .optional()
-    .describe("Most pages of this job scraped at once (never more than SEX_CONCURRENCY); delay makes it 1"),
+    .describe("Most pages of this job scraped at once (never more than the configured concurrency); delay makes it 1"),
   webhook: WebhookConfig.optional(),
   scrapeOptions: ScrapeOptions.optional(),
 });
@@ -125,7 +125,7 @@ export const ActiveCrawlsResponse = z.object({
 export const ConcurrencyCheckResponse = z.object({
   success: z.literal(true),
   concurrency: z.number().describe("Tasks running now."),
-  maxConcurrency: z.number().describe("SEX_CONCURRENCY."),
+  maxConcurrency: z.number().describe("The configured concurrency."),
 });
 
 export const QueueStatusResponse = z.object({
@@ -151,7 +151,7 @@ export const BatchScrapeRequest = ScrapeOptions.extend({
     .int()
     .positive()
     .optional()
-    .describe("Most pages of this job scraped at once (never more than SEX_CONCURRENCY); delay makes it 1"),
+    .describe("Most pages of this job scraped at once (never more than the configured concurrency); delay makes it 1"),
   appendToId: z.string().optional(),
   webhook: WebhookConfig.optional(),
 });
@@ -187,7 +187,7 @@ export const ExtractRequest = z.object({
     .positive()
     .max(1000)
     .optional()
-    .describe("Most pages a URL ending in /* expands to (default SEX_EXTRACT_WILDCARD_PAGES)."),
+    .describe("Most pages a URL ending in /* expands to (default: the configured number)."),
   includeSubdomains: z.boolean().optional().describe("Whether a URL ending in /* also expands to subdomains (default true)."),
   timeout: z
     .number()
@@ -196,7 +196,7 @@ export const ExtractRequest = z.object({
     .max(3_600_000)
     .optional()
     .describe(
-      "Milliseconds the whole extract may take; past it the job fails. Without it only cancelling or SEX_LLM_TIMEOUT per call ends it.",
+      "Milliseconds the whole extract may take; past it the job fails. Without it only cancelling or the LLM's per-call timeout ends it.",
     ),
   webhook: WebhookConfig.optional().describe("Receives extract.started, extract.completed (with the result) and extract.failed"),
   scrapeOptions: ScrapeOptions.optional(),
@@ -223,7 +223,9 @@ export const ExtractStatusResponse = z.object({
 export const ParseRequest = z.object({
   file: z
     .file()
-    .describe("The file to convert: a PDF, an office document, a CSV, an image (OCR) or an HTML file. At most SEX_MAX_BODY_BYTES."),
+    .describe(
+      "The file to convert: a PDF, an office document, a CSV, an image (OCR) or an HTML file. At most the configured body size limit.",
+    ),
   options: z
     .string()
     .optional()

@@ -1,4 +1,6 @@
 export { openS3, S3DocumentLog, type S3Objects, type S3Options } from "@searxng-js/sex-documents-s3";
+// Errors are this class (bundled in every package, recognised across them by AppError.isInstance, never instanceof).
+export { AppError, type ErrorCode } from "@searxng-js/sex-errors";
 export { createJobBackend, type JobBackend, PAGE_BUDGET_CHARS, settleTask, validateWebhook } from "./backend.ts";
 export { startBatchScrape } from "./batch.ts";
 export { type JobsContext, type JobsLlm, type JobsSettings, requireLlm } from "./context.ts";

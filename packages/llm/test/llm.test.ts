@@ -74,7 +74,7 @@ describe("errors", () => {
         details: { status, requestId: "req_1" },
       });
       assert.match(err.message, /req_1/);
-      assert.match(err.message, /SEX_LLM_API_KEY/);
+      assert.match(err.message, /API key/);
     });
   }
 

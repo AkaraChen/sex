@@ -1,6 +1,6 @@
 {
   "name": "@searxng-js/sex-llm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "LLM formats (json, summary, question, highlights), change descriptions and the prompt injection guard for @searxng-js/sex-scrape, on any OpenAI-compatible endpoint",
   "license": "MIT",

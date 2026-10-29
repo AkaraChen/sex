@@ -29,6 +29,10 @@ cache.close();
 changeTracker.close();
 ```
 
+## Errors
+
+Failures are `AppError`s, which this package exports (`import { AppError } from "@searxng-js/sex-store"`; every `@searxng-js/sex-*` package exports the same class, so one recognises another's): check them with `AppError.isInstance(e)`, never `instanceof`. `e.code` (for example `TIMEOUT`, `PRIVATE_NETWORK_BLOCKED`, `SEARCH_BACKEND_UNAVAILABLE`), `e.status` (the HTTP status a server would answer with) and `e.retryable` are plain fields.
+
 ## Node
 
 Works on Node 24 and Bun: the stores use `node:sqlite` and the zstd functions of `node:zlib`, which both have. The files are the same ones the earlier Bun-only version wrote (`user_version` 1, zstd bodies), so an existing `cache.sqlite` / `change-tracking.sqlite` opens as it is. On Bun, `node:sqlite` with prepared statements kept per connection measured about the same as `bun:sqlite` (about 50 µs per `put` or `get` of a 9 KB page, compression included).

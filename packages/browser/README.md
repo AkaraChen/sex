@@ -8,7 +8,7 @@ Renders pages for [`sex-scrape`](../scrape/README.md) in a browser: a [Lightpand
 - `blockAds`: EasyList / EasyPrivacy domains (`AdBlockList.parse(table)`: one `domain`, `~domain` for third-party only, or `@domain` for an exception per line). The package does not ship the list (GPLv3 / CC BY-SA 3.0): from a source checkout it is derived by `scripts/adblock.ts` from a pinned easylist commit; in an application pass your own `adBlockList: async () => AdBlockList.parse(text)`, or call `registerEmbeddedAdblock` with a zstd file. Without a list `blockAds` has no effect.
 - `applyRequestPolicies(page, ...)` and the policies it is made of (`PrivateNetworkPolicy`, `AdBlockPolicy`, `MediaBlockPolicy`, `OriginScopedCredentialsPolicy`) are exported for code that drives a puppeteer page itself.
 
-The package reads no environment variables; log lines go to its [diagnostics channel](#diagnostics). Errors are `AppError`s from the private `sex-errors` library, bundled in. `puppeteer-core` is a dependency; Defuddle's browser bundle is inlined into `dist/index.js` as a string, so `defuddle` is not needed at runtime.
+The package reads no environment variables; log lines go to its [diagnostics channel](#diagnostics). Errors are `AppError`s, which this package exports (`import { AppError } from "@searxng-js/sex-browser"`; every `@searxng-js/sex-*` package exports the same class): check them with `AppError.isInstance(e)`, never `instanceof`; `e.code`, `e.status` and `e.retryable` are plain fields. `puppeteer-core` is a dependency; Defuddle's browser bundle is inlined into `dist/index.js` as a string, so `defuddle` is not needed at runtime.
 
 ## Install
 
