@@ -1,0 +1,15 @@
+{
+  "name": "@searxng-js/sex-diagnostics",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The log channels of the sex packages (node:diagnostics_channel) and the console-shaped helper that publishes on them; private, bundled into the published packages",
+  "sexNodeTests": true,
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  }
+}

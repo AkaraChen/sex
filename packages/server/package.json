@@ -1,0 +1,54 @@
+{
+  "name": "@searxng-js/sex-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "What sex and sex-lite share: the engine base, config parsing, the Hono + oRPC app with /v2/scrape and /v2/search, the web_fetch / web_search MCP tools and the CLI flags. Bun only; wires config into the packages",
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts"
+    },
+    "./config": {
+      "sex-source": "./src/config.ts"
+    },
+    "./engine": {
+      "sex-source": "./src/engine.ts"
+    },
+    "./log": {
+      "sex-source": "./src/log.ts"
+    },
+    "./cli": {
+      "sex-source": "./src/cli/common.ts"
+    },
+    "./http/procedures": {
+      "sex-source": "./src/http/procedures.ts"
+    },
+    "./http/server": {
+      "sex-source": "./src/http/server.ts"
+    },
+    "./mcp/tools": {
+      "sex-source": "./src/mcp/tools.ts"
+    },
+    "./testing": {
+      "sex-source": "./test/helpers.ts"
+    }
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@orpc/openapi": "^1.16.1",
+    "@orpc/server": "^1.16.1",
+    "@orpc/zod": "^1.16.1",
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-egress": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
+    "@searxng-js/sex-page": "workspace:*",
+    "@searxng-js/sex-scrape": "workspace:*",
+    "@searxng-js/sex-search": "workspace:*",
+    "@searxng-js/sex-searxng": "workspace:*",
+    "@searxng-js/sex-testing": "workspace:*",
+    "citty": "^0.2.2",
+    "hono": "^4.13.14",
+    "p-limit": "^7.3.3",
+    "zod": "^4.6.7"
+  }
+}

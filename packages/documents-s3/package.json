@@ -1,0 +1,30 @@
+{
+  "name": "@searxng-js/sex-documents-s3",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The S3 DocumentLog backend of sex-jobs (Bun.S3Client on Bun, @aws-sdk/client-s3 elsewhere); private, bundled into sex-jobs",
+  "sexNodeTests": true,
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@searxng-js/sex-errors": "workspace:*",
+    "p-limit": "^7.3.3"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-s3": "^3"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-s3": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "^3"
+  }
+}

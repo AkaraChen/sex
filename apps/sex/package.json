@@ -1,0 +1,33 @@
+{
+  "name": "sex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted Firecrawl-compatible web search (SearXNG) + fetch (Defuddle) CLI, HTTP API and MCP server",
+  "bin": {
+    "sex": "src/cli.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@orpc/openapi": "^1.16.1",
+    "@orpc/server": "^1.16.1",
+    "@orpc/zod": "^1.16.1",
+    "@searxng-js/sex-browser": "workspace:*",
+    "@searxng-js/sex-deadline": "workspace:*",
+    "@searxng-js/sex-docs": "workspace:*",
+    "@searxng-js/sex-egress": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
+    "@searxng-js/sex-jobs": "workspace:*",
+    "@searxng-js/sex-llm": "workspace:*",
+    "@searxng-js/sex-map": "workspace:*",
+    "@searxng-js/sex-page": "workspace:*",
+    "@searxng-js/sex-scrape": "workspace:*",
+    "@searxng-js/sex-search": "workspace:*",
+    "@searxng-js/sex-server": "workspace:*",
+    "@searxng-js/sex-store": "workspace:*",
+    "bunqueue": "2.9.20",
+    "citty": "^0.2.2",
+    "p-limit": "^7.3.3",
+    "zod": "^4.6.7"
+  }
+}

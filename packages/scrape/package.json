@@ -1,0 +1,27 @@
+{
+  "name": "@searxng-js/sex-scrape",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Fetch a URL and get Markdown, HTML, links and more (Firecrawl v2 scrape), with optional browser, LLM, document and cache plugins",
+  "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/scrape" },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=24" },
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@searxng-js/sex-egress": "workspace:*",
+    "@searxng-js/sex-page": "workspace:*",
+    "p-limit": "^7.3.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@searxng-js/sex-deadline": "workspace:*",
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*"
+  }
+}

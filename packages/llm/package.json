@@ -1,0 +1,29 @@
+{
+  "name": "@searxng-js/sex-llm",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "LLM formats (json, summary, question, highlights), change descriptions and the prompt injection guard for @searxng-js/sex-scrape, on any OpenAI-compatible endpoint",
+  "repository": { "type": "git", "url": "git+https://github.com/AkaraChen/sex.git", "directory": "packages/llm" },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=24" },
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "xsai": "^1.0.0-beta.3"
+  },
+  "peerDependencies": {
+    "@searxng-js/sex-scrape": "workspace:^"
+  },
+  "devDependencies": {
+    "@searxng-js/sex-deadline": "workspace:*",
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
+    "@searxng-js/sex-scrape": "workspace:*"
+  }
+}

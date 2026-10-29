@@ -1,0 +1,47 @@
+{
+  "name": "@searxng-js/sex-jobs",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Crawl, batch scrape and extract jobs (Firecrawl v2) with a SQLite job store, webhooks, and documents kept in files or S3",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AkaraChen/sex.git",
+    "directory": "packages/jobs"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "sex-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@searxng-js/sex-egress": "workspace:*",
+    "@searxng-js/sex-map": "workspace:*",
+    "@searxng-js/sex-scrape": "workspace:*",
+    "p-limit": "^7.3.3",
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-s3": "^3"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-s3": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "^3",
+    "@searxng-js/sex-diagnostics": "workspace:*",
+    "@searxng-js/sex-documents-s3": "workspace:*",
+    "@searxng-js/sex-errors": "workspace:*",
+    "@searxng-js/sex-page": "workspace:*"
+  }
+}

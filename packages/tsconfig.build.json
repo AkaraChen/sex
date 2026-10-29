@@ -1,0 +1,7 @@
+{
+  // Used by tsdown (declaration output). rolldown-plugin-dts takes the tsconfig's directory as the root it maps source
+  // files to emitted .d.ts files, so it has to contain every package that gets inlined: a published package's own
+  // tsconfig would not contain the private libraries next to it.
+  "extends": "../tsconfig.json",
+  "include": ["*/src"]
+}
