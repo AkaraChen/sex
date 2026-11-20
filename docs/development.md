@@ -41,4 +41,4 @@ SEX_TEST_SEARXNG=1 bun test --conditions sex-source packages/searxng/test/searxn
 SEX_TEST_LIGHTPANDA_PATH=./lightpanda bun test --conditions sex-source apps/sex/test/browser.test.ts    # 让 sex 自己 spawn 这个 Lightpanda 二进制（取法见「浏览器」一节），跑同一套用例，另加子进程用例：首次 spawn、被杀后重启、close 后无残留、sex 被 SIGKILL 后无孤儿
 ```
 
-其它检查：`bun check`（类型检查），`bun run lint`（Biome）。`bun run build:packages` 用 tsdown 构建要发布的包，`bun run test:node` 在 Node 上对 dist 跑它们的测试（包的测试用 `node:test`，Bun 和 Node 都能跑；需要整个引擎、`Bun.serve` 或真浏览器的测试留在 `apps/sex/test`，用 `bun:test`）；版本用 changesets 管理（`bun run changeset`）。
+其它检查：`bun check`（类型检查），`bun run lint`（Biome）。`bun run build:packages` 用一次 tsdown workspace 构建（单进程、包之间并行）构建要发布的包，可以带包目录的 glob 只构建其中几个（`bun run build:packages scrape 'doc*'`）；包之间不需要构建顺序，因为配置都用 `sex-source` 条件解析到兄弟包的 `src/`，不读它们的 dist。`bun run test:node` 在 Node 上对 dist 跑它们的测试（包的测试用 `node:test`，Bun 和 Node 都能跑；需要整个引擎、`Bun.serve` 或真浏览器的测试留在 `apps/sex/test`，用 `bun:test`）；版本用 changesets 管理（`bun run changeset`）。

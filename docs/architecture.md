@@ -218,7 +218,7 @@ flowchart LR
 - 测试按包名 import。Bun 带 `sex-source` 跑源码，Node 跑要发布的 `dist`。
 - 测试文件只用可擦除的 TS 语法，因为 Node 只剥离类型，不支持 enum 和构造函数参数属性。
 - apps、只给 apps 用的私有库（`sex-server`）和跨包集成测试保持 `bun:test`，只在 Bun 上跑。
-- CI 两个 job：Bun 跑 `bun test --conditions sex-source`；Node 24 先 `bun run build:packages`，再对发布包和打包进发布包的私有库的测试跑 `node --test`。
+- CI 两个 job：Bun 跑 `bun run verify`（`bun test --parallel=4`，每个测试文件一个进程）；Node 24 先 `bun run build:packages`，再对发布包和打包进发布包的私有库的测试跑 `node --test`。
 
 ## 落地顺序
 

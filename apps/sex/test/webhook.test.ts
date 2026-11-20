@@ -356,6 +356,9 @@ describe("webhook events of jobs", () => {
     await engine.crawl({ url: DEAD, limit: 1, sitemap: "skip", ignoreRobotsTxt: true, webhook: webhook() });
     const failed = await waitFor(() => events().find((e) => e.type === "crawl.page"));
     expect(failed).toMatchObject({ success: false, data: [{ metadata: { sourceURL: DEAD } }] });
+    // Let the crawl finish before the next test clears `receiver.hits`: its crawl.completed would otherwise arrive
+    // during the extract test, whose assertion lists every event received.
+    await eventOf("crawl.completed");
   });
 
   test("an extract sends started and completed, the result in completed", async () => {

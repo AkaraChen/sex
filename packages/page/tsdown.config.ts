@@ -3,7 +3,8 @@ import { defineConfig, type UserConfig } from "tsdown";
 
 // The pool starts the worker from `dist/extract-worker.js`, next to `dist/index.js`. It is a separate build, not a second
 // entry of the first, so index.js stays one file with no shared chunk. dist is cleared here because the two builds run side by side.
-rmSync("dist", { recursive: true, force: true });
+// Resolved from this file, not the cwd: `tsdown -W` at the repo root evaluates every package's config from there.
+rmSync(new URL("./dist", import.meta.url), { recursive: true, force: true });
 
 // Node cannot `import ... with { type: "text" }`, which is how Bun gets page-script.js as a string: the build turns that
 // import into a string module, so the published dist carries the script text.
