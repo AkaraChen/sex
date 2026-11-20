@@ -225,10 +225,7 @@ describe("a configuration that cannot work fails at start", () => {
 });
 
 describe("an HTML response without markup", () => {
-  // BUG (not security): a response served as text/html whose body has no tags at all (even an empty body: a bare "Forbidden",
-  // an empty 200) is a 500 EXTRACT_FAILED "Cannot destructure property 'firstElementChild' from null or undefined value", also
-  // for a 403, where the caller should get the status. Reproduce: respond 200 text/html with body `hello`, POST /v2/scrape.
-  test.failing("is a document with its status code, not EXTRACT_FAILED", async () => {
+  test("is a document with its status code, not EXTRACT_FAILED", async () => {
     const bare = site(
       (_req, url) =>
         new Response(url.pathname === "/empty" ? "" : "Forbidden", {
