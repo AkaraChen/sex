@@ -16,9 +16,9 @@
     }
   },
   "dependencies": {
-    "defuddle": "^0.19.6",
-    "linkedom": "^0.18.14",
-    "unpdf": "^1.9.1"
+    "defuddle": "^0.19.11",
+    "linkedom": "^0.18.15",
+    "unpdf": "^2.2.1"
   },
   "peerDependencies": {
     "marked": "^18"

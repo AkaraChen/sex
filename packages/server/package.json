@@ -35,9 +35,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
-    "@orpc/openapi": "^1.16.1",
-    "@orpc/server": "^1.16.1",
-    "@orpc/zod": "^1.16.1",
+    "@orpc/openapi": "^1.16.4",
+    "@orpc/server": "^1.16.4",
+    "@orpc/zod": "^1.16.4",
     "@searxng-js/sex-diagnostics": "workspace:*",
     "@searxng-js/sex-egress": "workspace:*",
     "@searxng-js/sex-errors": "workspace:*",
@@ -47,7 +47,7 @@
     "@searxng-js/sex-searxng": "workspace:*",
     "@searxng-js/sex-testing": "workspace:*",
     "citty": "^0.2.2",
-    "hono": "^4.13.14",
+    "hono": "^4.13.19",
     "p-limit": "^7.3.3",
     "zod": "^4.6.7"
   }

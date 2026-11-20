@@ -19,7 +19,7 @@
     "@searxng-js/sex-egress": "workspace:^",
     "@searxng-js/sex-page": "workspace:^",
     "p-limit": "^7.3.3",
-    "puppeteer-core": "^25.16.0"
+    "puppeteer-core": "^25.18.1"
   },
   "peerDependencies": {
     "@searxng-js/sex-scrape": "workspace:^"
@@ -29,6 +29,6 @@
     "@searxng-js/sex-diagnostics": "workspace:*",
     "@searxng-js/sex-errors": "workspace:*",
     "@searxng-js/sex-scrape": "workspace:*",
-    "defuddle": "^0.19.6"
+    "defuddle": "^0.19.11"
   }
 }

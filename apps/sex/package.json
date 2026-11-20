@@ -9,9 +9,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
-    "@orpc/openapi": "^1.16.1",
-    "@orpc/server": "^1.16.1",
-    "@orpc/zod": "^1.16.1",
+    "@orpc/openapi": "^1.16.4",
+    "@orpc/server": "^1.16.4",
+    "@orpc/zod": "^1.16.4",
     "@searxng-js/sex-browser": "workspace:*",
     "@searxng-js/sex-deadline": "workspace:*",
     "@searxng-js/sex-docs": "workspace:*",

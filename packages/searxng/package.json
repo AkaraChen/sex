@@ -27,6 +27,6 @@
   "devDependencies": {
     "@searxng-js/sex-diagnostics": "workspace:*",
     "@searxng-js/sex-errors": "workspace:*",
-    "yaml": "^2"
+    "yaml": "^2.9.1"
   }
 }

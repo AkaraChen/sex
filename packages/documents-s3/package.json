@@ -25,6 +25,6 @@
     }
   },
   "devDependencies": {
-    "@aws-sdk/client-s3": "^3"
+    "@aws-sdk/client-s3": "^3.1173.0"
   }
 }
