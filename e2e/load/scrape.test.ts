@@ -114,10 +114,7 @@ async function load(name: "sex" | "sex-lite", n: number) {
 test("sex: 300 concurrent scrapes", () => load("sex", scaled(300, 50)), 5 * 60_000);
 test("sex-lite: 200 concurrent scrapes", () => load("sex-lite", scaled(200, 50)), 5 * 60_000);
 
-// BUG: a 404 (or 500) answered as text/html with a body that has no markup (or an empty body, which nginx and ASP.NET
-// both send) makes extraction throw: Firecrawl returns a Document with statusCode 404; sex returns 500 EXTRACT_FAILED
-// ("Cannot destructure property 'firstElementChild' from null or undefined value"). Inside a crawl the page lands in /errors.
-test.failing("a 404 with a plain-text or empty text/html body is a document with statusCode 404", async () => {
+test("a 404 with a plain-text or empty text/html body is a document with statusCode 404", async () => {
   const bare = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",

@@ -268,10 +268,7 @@ describe("encodings and bodies", () => {
     expect(r.stdout).toContain("Paragraph 1000 of the huge page");
   });
 
-  // BUG: a 200 response with an empty body fails with EXTRACT_FAILED (Defuddle throws "Cannot destructure property
-  // 'firstElementChild'" and the stack trace goes to stderr); it should be a document with empty markdown.
-  // Repro: serve an empty body with content-type text/html, `sex-lite fetch http://127.0.0.1:PORT/empty --json`.
-  test.failing("an empty body is a document, not a crash", async () => {
+  test("an empty body is a document, not a crash", async () => {
     const r = await run(lite, ["fetch", `${pages.url}/empty`, "--json"]);
     expect(r.code).toBe(0);
     expect(r.json().data.metadata.statusCode).toBe(200);
