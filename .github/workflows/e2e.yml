@@ -63,7 +63,12 @@ jobs:
       - name: Start headless Chrome (infra)
         if: matrix.suite == 'infra'
         run: |
+          # HttpsFirstBalancedMode: since Chrome 157 the balanced HTTPS-First mode upgrades the fixtures' http://93.184.216.34
+          # URLs to https, and when the plain-HTTP counting proxy cannot tunnel a CONNECT, the upgraded request fails as
+          # ERR_BLOCKED_BY_CLIENT without falling back to http (155 fell back and loaded the page). These suites test sex's
+          # egress rules, not Chrome's upgrade preference, so it is off.
           google-chrome --headless=new --no-sandbox --disable-gpu --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+            --disable-features=HttpsFirstBalancedMode \
             --user-data-dir="$RUNNER_TEMP/chrome" about:blank >"$RUNNER_TEMP/chrome.log" 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:9222/json/version && break; sleep 1; done
           echo "SEX_E2E_CDP_URL=http://127.0.0.1:9222" >> "$GITHUB_ENV"
