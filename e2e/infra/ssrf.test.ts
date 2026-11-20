@@ -304,11 +304,11 @@ describe.skipIf(!cdp || !lanAddress)("Chrome elsewhere (--cdp-url at a non-loopb
     await s.stop();
   }, 300_000);
 
-  // BUG (security, low): through the CDP request guard a desktop Chrome still opens bare TCP connections to private
-  // addresses the page refers to, before any request exists for the guard to see (its speculative preconnect, which also
-  // ignores the proxy for loopback). No request goes out (the test above), but the connection does. Seen with the
-  // runner's google-chrome, not with chromedp/headless-shell. Delete `.failing` once a remote Chrome opens none.
-  test.failing("not even a TCP connection reaches a private address the page refers to", async () => {
+  // Through the CDP request guard a desktop Chrome used to open bare TCP connections to private addresses the page
+  // refers to, before any request exists for the guard to see (its speculative preconnect, which also ignores the proxy
+  // for loopback). Seen with an older runner google-chrome, not with chromedp/headless-shell; it no longer does, so this
+  // asserts the property rather than documenting the bug.
+  test("not even a TCP connection reaches a private address the page refers to", async () => {
     const s = await startSex(["--cdp-url", relayUrl], { SEX_PROXY_URL: pub.proxyUrl });
     for (let i = 0; i < 2; i++) {
       const res = await api(s.url, "/v2/scrape", {

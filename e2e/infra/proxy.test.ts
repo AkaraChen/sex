@@ -119,12 +119,13 @@ describe("SEX_PROXY_URL with credentials", () => {
     await s.stop();
   }, 60_000);
 
-  test("wrong credentials: the scrape fails with a message, and the message does not contain the credentials", async () => {
+  test("wrong credentials: the proxy's 407 is a document with that status code, and nothing echoes the credentials", async () => {
     const wrong = basic.proxyUrl.replace(PASS, "not-the-password");
     const s = await startSex(["--log-level", "debug"], { SEX_PROXY_URL: wrong });
     const res = await api(s.url, "/v2/scrape", { body: { url: `${basic.origin}/page` } });
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(res.body.success).toBe(false);
+    // A non-2xx is a page like any other (Firecrawl's shape): the 407 the proxy answers with is the document's statusCode.
+    expect(res.status).toBe(200);
+    expect(res.body.data.metadata.statusCode).toBe(407);
     for (const text of [JSON.stringify(res.body), s.stderr()]) {
       expect(text).not.toContain("not-the-password");
       noSecrets("wrong", text);
