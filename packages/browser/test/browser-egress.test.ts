@@ -56,6 +56,15 @@ describe("planEgress: where each rule is enforced", () => {
     assert.ok(lightpandaArgv("lp", 1, { concurrency: 1, allowPrivateNetwork: false }).includes("--block-private-networks"));
   });
 
+  test("Lightpanda with a private-network allowlist goes through the EgressProxy, since its own flag knows no list", () => {
+    assert.partialDeepStrictEqual(planEgress("lightpanda", { checkPrivateNetwork: true, allowlist: true }, true), {
+      proxy: true,
+      requestGuard: false,
+    });
+    const allowlist = { allow: ["10.0.0.0/8"] };
+    assert.ok(!lightpandaArgv("lp", 1, { concurrency: 1, allowPrivateNetwork: allowlist }).includes("--block-private-networks"));
+  });
+
   test("Chrome on this machine: EgressProxy for SSRF and ads, CDP interception not used for either", () => {
     assert.partialDeepStrictEqual(planEgress("local-cdp", strict, true), {
       proxy: true,

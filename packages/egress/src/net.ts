@@ -1,6 +1,7 @@
 import type { LookupFunction } from "node:net";
 import { AppError, badRequest, type ErrorCode } from "@searxng-js/sex-errors";
 import { egressFor, MAX_PINNED_ADDRESSES } from "./egress.ts";
+import type { PrivateNetworkAccess } from "./private-network.ts";
 
 const MAX_REDIRECTS = 10;
 /** Default body size cap of `safeFetch`. */
@@ -14,7 +15,8 @@ export interface FetchOptions {
    * of "time ran out" translate the error themselves.
    */
   signal: AbortSignal;
-  allowPrivateNetwork: boolean;
+  /** Which private addresses may be fetched (`EgressPolicyOptions.allowPrivateNetwork`). */
+  allowPrivateNetwork: PrivateNetworkAccess;
   /**
    * Outbound proxy (`config.proxyUrl`). Required so a call site cannot forget it: pass `undefined` for a direct connection.
    * With a proxy the proxy resolves the host name, so the request cannot be pinned to the validated address; see `safeFetch`.
@@ -54,7 +56,7 @@ export function parseHttpUrl(raw: string): URL {
 }
 
 /** Rejects URLs that point at loopback/private/link-local hosts unless allowed (see `EgressPolicy.resolve`). */
-export async function assertPublicUrl(url: URL, allowPrivateNetwork: boolean, requireResolvable = false): Promise<void> {
+export async function assertPublicUrl(url: URL, allowPrivateNetwork: PrivateNetworkAccess, requireResolvable = false): Promise<void> {
   await egressFor(allowPrivateNetwork).resolve(url, requireResolvable);
 }
 
@@ -118,7 +120,7 @@ export async function safeFetch(rawUrl: string, opts: FetchOptions): Promise<Fet
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const addresses = await egressFor(opts.allowPrivateNetwork).resolve(url, !!opts.proxy);
       // Connect to the validated addresses themselves (first one that connects wins), not to a fresh DNS answer.
-      // Without a lookup result (IP literal, private networks allowed) the URL is fetched as is, and so is every URL
+      // Without a lookup result (IP literal, every check off) the URL is fetched as is, and so is every URL
       // behind a proxy, which does its own lookup.
       const targets = addresses.length && !opts.proxy ? addresses.slice(0, MAX_PINNED_ADDRESSES) : [undefined];
       let res: Response | undefined;

@@ -2,4 +2,5 @@
 export { AppError, type ErrorCode } from "@searxng-js/sex-errors";
 export * from "./egress.ts";
 export * from "./net.ts";
+export * from "./private-network.ts";
 export * from "./rewrite.ts";

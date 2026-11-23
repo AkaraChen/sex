@@ -6,7 +6,7 @@ import { delimiter, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { zstdDecompressSync } from "node:zlib";
 import { Deadline } from "@searxng-js/sex-deadline";
-import { type EgressPolicy, egressFor, MARKUP_TYPE, networkError } from "@searxng-js/sex-egress";
+import { type EgressPolicy, egressFor, MARKUP_TYPE, networkError, type PrivateNetworkAccess } from "@searxng-js/sex-egress";
 import { AppError } from "@searxng-js/sex-errors";
 import { PAGE_SCRIPT, type PageExtractOptions, type PageExtractResult } from "@searxng-js/sex-page";
 import type { Action, BrowserScrapeOptions, BrowserScrapeResult, ScrapeBrowser } from "@searxng-js/sex-scrape";
@@ -144,7 +144,8 @@ export function lightpandaArgv(
     String(64 * 1024 * 1024),
     // Lightpanda refuses private addresses after DNS resolution (see browser-egress.ts). That layer refuses the loopback
     // `EgressProxy` too, so behind `SEX_PROXY_URL`, where the page goes through the proxy, the proxy does the checking.
-    ...(config.allowPrivateNetwork || config.proxyUrl ? [] : ["--block-private-networks"]),
+    // An allowlist cannot be expressed to Lightpanda: then the `EgressProxy` checks too (`planEgress`).
+    ...(config.allowPrivateNetwork !== false || config.proxyUrl ? [] : ["--block-private-networks"]),
   ];
 }
 
@@ -152,8 +153,8 @@ export function lightpandaArgv(
 export interface BrowserPoolOptions {
   /** Pages rendered at once. */
   concurrency: number;
-  /** Skip the private-network rules everywhere (see browser-egress.ts). */
-  allowPrivateNetwork: boolean;
+  /** `true` skips the private-network rules everywhere (see browser-egress.ts); an allowlist opens what it names. */
+  allowPrivateNetwork: PrivateNetworkAccess;
   /** An upstream forward proxy for the browser's traffic (credentials allowed in the URL). */
   proxyUrl?: string;
   /** Run a Lightpanda child process. */
@@ -413,7 +414,11 @@ export class BrowserPool implements ScrapeBrowser {
   private async scrapeInner(opts: BrowserScrapeOptions, deadline: Deadline): Promise<BrowserScrapeResult> {
     const plan = planEgress(
       this.route,
-      { checkPrivateNetwork: !this.policy.allowPrivateNetwork, proxyUrl: this.config.proxyUrl },
+      {
+        checkPrivateNetwork: !this.policy.allowPrivateNetwork,
+        allowlist: this.policy.allowlist !== undefined,
+        proxyUrl: this.config.proxyUrl,
+      },
       !!opts.blockAds,
     );
     const adList = plan.adsInProxy || plan.adsInCdp ? await this.adBlockList() : undefined;

@@ -13,7 +13,8 @@
  * got there. A remote one cannot reach it, so the only place left is CDP request interception, which misses requests made
  * before interception is on, service workers and WebSockets. Lightpanda enforces the rule in its own network layer, but that
  * layer refuses the loopback proxy as well, so behind `SEX_PROXY_URL` (the proxy is what chains to the upstream) the flag is
- * left off and the `EgressProxy` takes over. With `--allow-private-network` no SSRF check exists anywhere.
+ * left off and the `EgressProxy` takes over; the same with a private-network allowlist, which the flag cannot express. With
+ * `--allow-private-network` no SSRF check exists anywhere.
  */
 
 export type BrowserKind = "lightpanda" | "local-cdp" | "remote-cdp";
@@ -56,11 +57,16 @@ export interface EgressPlan {
   adsInCdp: boolean;
 }
 
-export function planEgress(kind: BrowserKind, rules: { checkPrivateNetwork: boolean; proxyUrl?: string }, blockAds: boolean): EgressPlan {
+export function planEgress(
+  kind: BrowserKind,
+  rules: { checkPrivateNetwork: boolean; allowlist?: boolean; proxyUrl?: string },
+  blockAds: boolean,
+): EgressPlan {
   const checks = rules.checkPrivateNetwork;
   switch (kind) {
     case "lightpanda": {
-      const proxy = !!rules.proxyUrl;
+      // `--block-private-networks` knows no allowlist, so with one the flag is off and the `EgressProxy` checks.
+      const proxy = !!rules.proxyUrl || (checks && !!rules.allowlist);
       return { kind, proxy, upstream: rules.proxyUrl, adsInProxy: false, requestGuard: false, adsInCdp: blockAds };
     }
     case "local-cdp": {
