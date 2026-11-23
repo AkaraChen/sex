@@ -204,6 +204,24 @@ describe("parsing entries", () => {
     }
   });
 
+  test("each refusal names its reason", () => {
+    const reasons = Object.fromEntries(
+      ["http://10.0.0.1/", "10.0.0.1:0", "10.0.0.0/33", "169.254.0.0/16", "localhost", "::1", "a b"].map((entry) => {
+        const parsed = parseAllowEntry(entry);
+        return [entry, "reason" in parsed ? parsed.reason : undefined];
+      }),
+    );
+    assert.deepEqual(reasons, {
+      "http://10.0.0.1/": "url",
+      "10.0.0.1:0": "port",
+      "10.0.0.0/33": "prefix",
+      "169.254.0.0/16": "never",
+      localhost: "loopback",
+      "::1": "loopback",
+      "a b": "syntax",
+    });
+  });
+
   test("a network wider than link-local or loopback is accepted (those addresses stay refused when checked)", () => {
     assert.ok(!("message" in parseAllowEntry("0.0.0.0/0")));
     assert.ok(!("message" in parseAllowEntry("169.0.0.0/8")));

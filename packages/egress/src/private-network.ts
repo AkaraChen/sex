@@ -29,9 +29,17 @@ export type PrivateNetworkRule =
   | { kind: "network"; entry: string; range: [ipaddr.IPv4 | ipaddr.IPv6, number]; port: number | undefined }
   | { kind: "host"; entry: string; host: string; wildcard: boolean; port: number | undefined };
 
+/**
+ * `syntax`: not a network, address or host name (or not a string); `url`: a URL instead of a host; `port`: a bad port;
+ * `prefix`: a bad prefix length; `never`: link-local or metadata only; `loopback`: loopback, which has its own switch.
+ */
+export type EntryErrorReason = "syntax" | "url" | "port" | "prefix" | "never" | "loopback";
+
 /** An entry that was not understood or can never take effect, with why. */
 export interface PrivateNetworkEntryError {
   entry: string;
+  /** What is wrong, for a program (a settings form words it itself): see `EntryErrorReason`. */
+  reason: EntryErrorReason;
   message: string;
 }
 
@@ -127,16 +135,16 @@ function splitPort(entry: string): { target: string; port?: string } | string {
 /** One entry to a rule, or why it cannot be one. */
 export function parseAllowEntry(raw: string): PrivateNetworkRule | PrivateNetworkEntryError {
   const entry = raw.trim();
-  const fail = (message: string): PrivateNetworkEntryError => ({ entry: raw, message });
+  const fail = (message: string, reason: EntryErrorReason = "syntax"): PrivateNetworkEntryError => ({ entry: raw, reason, message });
   if (entry === "") return fail("empty entry");
-  if (entry.includes("://")) return fail("write a network or a host name, not a URL");
+  if (entry.includes("://")) return fail("write a network or a host name, not a URL", "url");
   if (!ENTRY_CHARS.test(entry)) return fail("not a network, address or host name");
   const split = splitPort(entry);
   if (typeof split === "string") return fail(split);
   let port: number | undefined;
   if (split.port !== undefined) {
     const parsed = parsePort(split.port);
-    if (typeof parsed === "string") return fail(parsed);
+    if (typeof parsed === "string") return fail(parsed, "port");
     port = parsed;
   }
   const target = split.target.toLowerCase();
@@ -145,7 +153,8 @@ export function parseAllowEntry(raw: string): PrivateNetworkRule | PrivateNetwor
   const family = isIP(base);
   if (family !== 0) {
     const max = family === 4 ? 32 : 128;
-    if (bits !== undefined && (!/^\d{1,3}$/.test(bits) || Number(bits) > max)) return fail(`/${bits} is not a prefix length (0-${max})`);
+    if (bits !== undefined && (!/^\d{1,3}$/.test(bits) || Number(bits) > max))
+      return fail(`/${bits} is not a prefix length (0-${max})`, "prefix");
     const prefix = bits === undefined ? max : Number(bits);
     const cidr = `${base}/${prefix}`;
     const first = family === 4 ? ipaddr.IPv4.networkAddressFromCIDR(cidr) : ipaddr.IPv6.networkAddressFromCIDR(cidr);
@@ -154,8 +163,8 @@ export function parseAllowEntry(raw: string): PrivateNetworkRule | PrivateNetwor
     // addresses inside it stay refused when checked).
     const firstClass = classifyAddress(first.toString());
     if (firstClass === classifyAddress(last.toString())) {
-      if (firstClass === "never") return fail("link-local and cloud metadata addresses are never allowed");
-      if (firstClass === "loopback") return fail("loopback is opened by the switch for local services, not by the list");
+      if (firstClass === "never") return fail("link-local and cloud metadata addresses are never allowed", "never");
+      if (firstClass === "loopback") return fail("loopback is opened by the switch for local services, not by the list", "loopback");
     }
     return { kind: "network", entry: raw, range: [first, prefix], port };
   }
@@ -174,7 +183,7 @@ export function parseAllowEntry(raw: string): PrivateNetworkRule | PrivateNetwor
     return fail("not a network, address or host name");
   }
   if (ascii === "localhost" || ascii.endsWith(".localhost")) {
-    return fail("loopback is opened by the switch for local services, not by the list");
+    return fail("loopback is opened by the switch for local services, not by the list", "loopback");
   }
   return { kind: "host", entry: raw, host: ascii, wildcard, port };
 }
@@ -184,7 +193,8 @@ export function parsePrivateNetworkAllowlist(list: PrivateNetworkAllowlist): Par
   const rules: PrivateNetworkRule[] = [];
   const errors: PrivateNetworkEntryError[] = [];
   for (const raw of list.allow) {
-    const rule = typeof raw === "string" ? parseAllowEntry(raw) : { entry: String(raw), message: "not a string" };
+    const rule =
+      typeof raw === "string" ? parseAllowEntry(raw) : { entry: String(raw), reason: "syntax" as const, message: "not a string" };
     if ("message" in rule) errors.push(rule);
     else rules.push(rule);
   }
