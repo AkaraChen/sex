@@ -31,6 +31,33 @@ console.log(res.status, res.contentType, res.body.byteLength);
 
 A URL that points at a private address rejects with `code: "PRIVATE_NETWORK_BLOCKED"` before any connection is made.
 
+## Private networks
+
+`allowPrivateNetwork` takes three forms:
+
+- `false`: only public addresses.
+- `true`: no checks at all, and no pinning (tests, a tool run against `localhost`).
+- an allowlist, which opens exactly what it names and keeps every check and the pinning:
+
+```ts
+const intranet = { allow: ["192.168.1.0/24", "fd12:3456::/32", "10.0.0.5:8080", "docs.corp.internal", "*.lab.internal"], loopback: false };
+await safeFetch("http://docs.corp.internal/handbook", { ...opts, allowPrivateNetwork: intranet });
+```
+
+After the host is resolved, every address must be public, or be opened by the list; otherwise the request is refused:
+
+- a network entry (CIDR, IPv4 or IPv6, or one address) opens the private addresses inside it; IPv4 embedded in IPv6 (mapped, NAT64, 6to4) is judged as IPv4;
+- a host-name entry (`*.name` for the names under it) opens the private addresses that name resolves to;
+- `:port` (`[v6]:port` for IPv6) limits an entry to that port; without it every port is open. A URL without a port is on 80 / 443;
+- loopback (`127.0.0.0/8`, `::1`, the unspecified address, `localhost`) only with `loopback: true`, never through an entry;
+- link-local (`169.254.0.0/16`, `fe80::/10`) and the metadata addresses in `NEVER_ALLOWED` (`fd00:ec2::254`, `100.100.100.200`, `168.63.129.16`) are refused whatever the list says. `NEVER_ALLOWED` is refused with `allowPrivateNetwork: false` as well.
+
+An allowed address is pinned like a public one, and every redirect hop is checked again, so a redirect or a second DNS answer outside the list is refused. The error's `details` are `{ host, address?, reason }`, `reason` being `private`, `loopback` or `never`.
+
+`parsePrivateNetworkAllowlist(list)` returns the rules and the entries it could not use (`errors`, each with a message); those are left out and the rest apply. `parseAllowEntry(entry)` checks one entry, for a settings form. `egressFor(list)` keeps one policy, and its address cache, per list object: pass the same object while the list is unchanged.
+
+With a `proxy` the proxy connects, so an allowed request is not pinned (as for public addresses): the proxy must be able to reach the address, and rebinding between this check and its own lookup is for the proxy to stop.
+
 ## Node
 
 Works on Node 24 and Bun. On Node:

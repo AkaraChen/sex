@@ -6,6 +6,7 @@ import {
   type FetchedResponse,
   fileKindOf,
   MARKUP_TYPE,
+  type PrivateNetworkAccess,
   parseHttpUrl,
   rewriteUrl,
 } from "@searxng-js/sex-egress";
@@ -40,8 +41,12 @@ import type { Document, FormatOption, ScrapeOptions } from "./schemas.ts";
 
 /** How scrapes fetch pages. The package reads nothing from the environment: whoever composes the context fills this in. */
 export interface ScrapeSettings {
-  /** Allow fetching loopback / private / link-local addresses. */
-  allowPrivateNetwork: boolean;
+  /**
+   * Which loopback / private addresses may be fetched: `false` none, `true` all (no checks at all), or an allowlist
+   * (`PrivateNetworkAllowlist` from sex-egress; checked and pinned on every hop). Keep the same allowlist object for as long
+   * as it is unchanged: the address cache belongs to it.
+   */
+  allowPrivateNetwork: PrivateNetworkAccess;
   /** Outbound http(s) proxy for every fetch of a page (credentials allowed). */
   proxyUrl?: string;
   /**

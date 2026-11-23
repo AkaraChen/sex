@@ -10,7 +10,14 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { AppError } from "@searxng-js/sex-errors";
-import ipaddr from "ipaddr.js";
+import {
+  allowlistAllows,
+  classifyAddress,
+  type ParsedAllowlist,
+  type PrivateNetworkAccess,
+  type PrivateNetworkAllowlist,
+  parsePrivateNetworkAllowlist,
+} from "./private-network.ts";
 
 /** How many of a name's addresses a connection tries, in order. */
 export const MAX_PINNED_ADDRESSES = 4;
@@ -20,23 +27,7 @@ const TTL_MS = 30_000;
 const NEGATIVE_TTL_MS = 5_000;
 const MAX_CACHED_HOSTS = 1024;
 
-const v4Blocked = (a: ipaddr.IPv4) => a.range() !== "unicast";
-const fromParts = (hi: number, lo: number) => new ipaddr.IPv4([hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]);
-
-/** True for anything that is not a globally routable unicast address (IPv6 forms embedding IPv4 are unwrapped). */
-export function isPrivateIp(ip: string): boolean {
-  if (!isIP(ip)) return false;
-  const addr = ipaddr.parse(ip);
-  if (addr.kind() === "ipv4") return v4Blocked(addr as ipaddr.IPv4);
-  const v6 = addr as ipaddr.IPv6;
-  if (v6.isIPv4MappedAddress()) return v4Blocked(v6.toIPv4Address());
-  const p = v6.parts;
-  if (p.slice(0, 6).every((x) => x === 0)) return true; // ::, ::1 and deprecated IPv4-compatible ::a.b.c.d
-  const range = v6.range();
-  if (range === "rfc6052") return v4Blocked(fromParts(p[6] ?? 0, p[7] ?? 0)); // NAT64 64:ff9b::/96
-  if (range === "6to4") return v4Blocked(fromParts(p[1] ?? 0, p[2] ?? 0)); // 2002:AABB:CCDD::/48
-  return range !== "unicast"; // teredo, ULA, link-local, multicast, reserved, ...
-}
+export { isPrivateIp } from "./private-network.ts";
 
 /** A host name to its addresses; an empty list when it does not resolve. */
 export type Resolver = (host: string) => Promise<string[]>;
@@ -44,44 +35,57 @@ export type Resolver = (host: string) => Promise<string[]>;
 const systemResolver: Resolver = (host) => lookup(host, { all: true }).then((all) => all.map((a) => a.address));
 
 export interface EgressPolicyOptions {
-  /** Skip every check (`--allow-private-network`): nothing is refused and nothing is pinned. */
-  allowPrivateNetwork: boolean;
+  /**
+   * `false`: only public addresses. `true`: skip every check (`--allow-private-network`): nothing is refused and nothing is
+   * pinned. An allowlist: public addresses plus what it opens, checked and pinned like public ones (see private-network.ts).
+   */
+  allowPrivateNetwork: PrivateNetworkAccess;
   /** Tests swap the resolver and the clock. */
   resolver?: Resolver;
   now?: () => number;
 }
 
 export class EgressPolicy {
+  /** True only when every check is off; an allowlist still checks (and is in `allowlist`). */
   readonly allowPrivateNetwork: boolean;
+  /** The parsed allowlist, when there is one; entries that did not parse are in its `errors` and have no effect. */
+  readonly allowlist: ParsedAllowlist | undefined;
   private readonly resolver: Resolver;
   private readonly now: () => number;
   private readonly cache = new Map<string, { expires: number; addresses: Promise<string[]> }>();
 
   constructor(opts: EgressPolicyOptions) {
-    this.allowPrivateNetwork = opts.allowPrivateNetwork;
+    const access = opts.allowPrivateNetwork;
+    this.allowPrivateNetwork = access === true;
+    this.allowlist = typeof access === "object" ? parsePrivateNetworkAllowlist(access) : undefined;
     this.resolver = opts.resolver ?? systemResolver;
     this.now = opts.now ?? Date.now;
   }
 
   /**
-   * Resolves the URL's host and refuses it (`PRIVATE_NETWORK_BLOCKED`) if any address is not public. Returns the validated
-   * addresses of a DNS name, which the caller connects to instead of looking the name up again; empty for an IP literal, when
-   * private networks are allowed, or when the name does not resolve. With `requireResolvable` (a proxy will resolve the name on
-   * its own) a name that does not resolve here is refused: a name only the proxy's resolver knows could be an internal one.
+   * Resolves the URL's host and refuses it (`PRIVATE_NETWORK_BLOCKED`) if any address may not be connected to: anything not
+   * public, unless the allowlist opens it. Returns the validated addresses of a DNS name, which the caller connects to
+   * instead of looking the name up again; empty for an IP literal, when every check is off, or when the name does not
+   * resolve. With `requireResolvable` (a proxy will resolve the name on its own) a name that does not resolve here is
+   * refused: a name only the proxy's resolver knows could be an internal one.
+   *
+   * The error's `details` say why: `{ host, address?, reason }`, `reason` being `private` (no rule opens it), `loopback`
+   * (the loopback switch is off) or `never` (link-local or cloud metadata, which no rule opens).
    */
   async resolve(url: Pick<URL, "hostname" | "href">, requireResolvable = false): Promise<readonly string[]> {
     if (this.allowPrivateNetwork) return [];
-    const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    if (host === "localhost" || host.endsWith(".localhost")) {
-      throw new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${url.href}`);
+    const host = url.hostname
+      .replace(/^\[|\]$/g, "")
+      .toLowerCase()
+      .replace(/\.$/, "");
+    if ((host === "localhost" || host.endsWith(".localhost")) && !this.allowlist?.loopback) {
+      throw blocked(url, { host, reason: "loopback" });
     }
     const literal = isIP(host) !== 0;
     const addresses = literal ? [host] : await this.addressesOf(host);
-    if (addresses.some(isPrivateIp)) {
-      throw new AppError(
-        "PRIVATE_NETWORK_BLOCKED",
-        `Refusing to fetch private address: ${url.href} (start with --allow-private-network to permit)`,
-      );
+    for (const address of addresses) {
+      const reason = this.refusal(url, host, address);
+      if (reason) throw blocked(url, { host, address, reason });
     }
     if (requireResolvable && !addresses.length) {
       throw new AppError(
@@ -90,6 +94,14 @@ export class EgressPolicy {
       );
     }
     return literal ? [] : addresses;
+  }
+
+  /** Why `address` (one of `host`'s) is refused, or undefined when it may be connected to. */
+  private refusal(url: Pick<URL, "href">, host: string, address: string): BlockReason | undefined {
+    const cls = classifyAddress(address);
+    if (cls === "public") return undefined;
+    if (!this.allowlist) return cls === "never" ? "never" : "private";
+    return allowlistAllows(this.allowlist, new URL(url.href), host, address) ? undefined : cls;
   }
 
   /** `resolve` as a yes / no, for callers that abort a request instead of reporting why. */
@@ -115,14 +127,38 @@ export class EgressPolicy {
   }
 }
 
-const shared = new Map<boolean, EgressPolicy>();
+type BlockReason = "private" | "loopback" | "never";
 
-/** The process-wide policy for a mode, so every enforcement point shares one address cache. */
-export function egressFor(allowPrivateNetwork: boolean): EgressPolicy {
-  let policy = shared.get(allowPrivateNetwork);
+function blocked(url: Pick<URL, "href">, details: { host: string; address?: string; reason: BlockReason }): AppError {
+  const what =
+    details.reason === "never"
+      ? "link-local and cloud metadata addresses are never fetched"
+      : details.reason === "loopback"
+        ? "loopback is not allowed"
+        : "the address is in a private network";
+  return new AppError("PRIVATE_NETWORK_BLOCKED", `Refusing to fetch private address: ${url.href} (${what})`, details);
+}
+
+const shared = new Map<boolean, EgressPolicy>();
+const sharedAllowlists = new WeakMap<PrivateNetworkAllowlist, EgressPolicy>();
+
+/**
+ * The process-wide policy for a mode, so every enforcement point shares one address cache. An allowlist gets one policy per
+ * object: pass the same object for as long as the list is unchanged, and a new one when it changes.
+ */
+export function egressFor(access: PrivateNetworkAccess): EgressPolicy {
+  if (typeof access === "object") {
+    let policy = sharedAllowlists.get(access);
+    if (!policy) {
+      policy = new EgressPolicy({ allowPrivateNetwork: access });
+      sharedAllowlists.set(access, policy);
+    }
+    return policy;
+  }
+  let policy = shared.get(access);
   if (!policy) {
-    policy = new EgressPolicy({ allowPrivateNetwork });
-    shared.set(allowPrivateNetwork, policy);
+    policy = new EgressPolicy({ allowPrivateNetwork: access });
+    shared.set(access, policy);
   }
   return policy;
 }
