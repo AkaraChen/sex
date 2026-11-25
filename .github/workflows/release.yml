@@ -27,17 +27,33 @@ jobs:
             target: bun-darwin-arm64
             asset: sex-darwin-arm64
     runs-on: ${{ matrix.os }}
+    env:
+      FIRECRAWL_LOCAL_VERSION: "0.1.1"
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
-      # When the firecrawl-local fork ships binaries, download the one matching this platform here, verify its
-      # SHA-256, and pass SEX_LOCAL_BINARY / SEX_LOCAL_VERSION to the build below (see docs/fork.md).
+      # Nothing of firecrawl-local is vendored or forked: the release builds the pinned upstream crate. The binary
+      # that ends up in dist/sex is therefore an unmodified AGPL-3.0 build, and nobody needs Rust to run sex.
+      - name: Build firecrawl-local (upstream, pinned)
+        env:
+          TMPDIR: ${{ runner.temp }}
+          # The crate asks for fat LTO, which needs ~15 GB and 20+ minutes on a runner. CI builds the same source
+          # without it: the release has to fit, and the difference is a few percent of scrape throughput.
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: |
+          cargo install firecrawl-local --version "$FIRECRAWL_LOCAL_VERSION" --locked --root "$RUNNER_TEMP/firecrawl"
+          "$RUNNER_TEMP/firecrawl/bin/firecrawl-local" --version
       - run: bun run build
         env:
           SEX_TARGET: ${{ matrix.target }}
+          SEX_LOCAL_VERSION: ${{ env.FIRECRAWL_LOCAL_VERSION }}
+          SEX_LOCAL_BINARY: ${{ runner.temp }}/firecrawl/bin/firecrawl-local
       - name: The darwin target needs an arm64 runner
         if: matrix.target == 'bun-darwin-arm64'
         run: test "$(uname -m)" = "arm64"
@@ -79,10 +95,12 @@ jobs:
           set -euo pipefail
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           cat > NOTES.md <<'EOF'
-          sex: one binary, with firecrawl-local and SearXNG as child processes.
+          sex: one binary. firecrawl-local and SearXNG run as child processes and are embedded.
 
-          firecrawl-local is not embedded yet (the fork is not released): put a `firecrawl-local` binary on PATH,
-          or set SEX_LOCAL_PATH / SEX_LOCAL_URL. /v2/parse needs `here-docs` on PATH or SEX_PARSE_PATH.
+          firecrawl-local is an unmodified build of the pinned upstream crate (AGPL-3.0):
+          https://crates.io/crates/firecrawl-local — source: https://github.com/firecrawl/firecrawl (apps/local)
+
+          /v2/parse needs `here-docs` on PATH or SEX_PARSE_PATH.
           EOF
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" artifacts/* --clobber

@@ -80,7 +80,7 @@ SEX_LOCAL_VERSION=0.1.1 bun run build   # 把 firecrawl-local 也嵌进去，运
 
 只有这两个平台发二进制，因为 `@searxng-js/searxng` 只给它们预编译的 SearXNG；其他地方需要 `SEX_SEARXNG_URL`。
 
-**firecrawl-local 还没嵌进发布产物**（fork 未发布）：把 `firecrawl-local` 放到 `PATH`，或设 `SEX_LOCAL_PATH` / `SEX_LOCAL_URL`。fork 出来之后，release workflow 里预留的那一步会下载它、校验 SHA-256 并传 `SEX_LOCAL_BINARY`。`/v2/parse` 用的 here-docs 也不打进产物，需要单独装。
+**发布产物自带 firecrawl-local**：release workflow 用 `cargo install firecrawl-local --version $FIRECRAWL_LOCAL_VERSION` 编出固定版本、再嵌进 `dist/sex`，运行时解压到 `$XDG_CACHE_HOME`。这样用户两台机器上都不需要 Rust。`/v2/parse` 用的 here-docs 不打进产物，需要单独装（`npm i -g here-docs`，或 `SEX_PARSE_PATH`）。
 
 
 ## 配置
@@ -94,6 +94,7 @@ SEX_LOCAL_VERSION=0.1.1 bun run build   # 把 firecrawl-local 也嵌进去，运
 | `SEX_ALLOW_PRIVATE` | 允许 firecrawl-local 访问 loopback 和私网（元数据地址始终拒绝） |
 | `SEX_SEARXNG_URL`, `SEX_SEARXNG_PATH` | 外部 SearXNG，或子进程用的二进制 |
 | `SEX_PARSE_PATH`, `SEX_PARSE_TIMEOUT` | `/v2/parse` 用的 here-docs（默认 `PATH`），以及转换超时（默认 120 s） |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | 透传给 firecrawl-local 的普通抓取（reqwest 默认读）；浏览器不读 |
 | `SEX_LOG_LEVEL`, `SEX_TIMEOUT` | stderr 日志级别、子进程启动与请求超时 |
 
 **`FIRECRAWL_CLOUD` 强制为 `off`**，不可配置：sex 不会把 URL 送给 Firecrawl 云端。
@@ -108,12 +109,17 @@ SEX_LOCAL_VERSION=0.1.1 bun run build   # 把 firecrawl-local 也嵌进去，运
 - 浏览器 `actions`
 - 持久化 crawl / batch 和 webhook
 - `maxAge` / `storeInCache` / changeTracking
-- `proxy` / stealth
+- `proxy: "stealth"` 与 stealth 重试（普通抓取仍可用 `HTTPS_PROXY`）
 - `blockAds`、`fastMode`
 
-## fork
+## 上游，不改
 
-`/v2/parse`、`--proxy`、按请求的网络策略、adblock、actions 都需要改 firecrawl-local 本身——**除了 `/v2/parse`**：它是 `packages/parse`，跑 here-docs 子进程，不需要 fork，也不分发 AGPL 代码。剩下的 patch 顺序和封装规则在 [`docs/fork.md`](docs/fork.md)。上游 `firecrawl-local` 是 AGPL-3.0，sex 始终以**子进程 + HTTP** 使用它，从不链接它的 crate。
+sex **不使用 fork**，只跑 crates.io 上发布的 `firecrawl-local`（当前 `0.1.1`）。发布产物由 CI 用 `cargo install firecrawl-local --version <pin>` 编出来再嵌进 `dist/sex`，所以用户既不需要 Rust，也不需要单独装它。
+
+- **不 patch**：没有任何本地修改。升级 = 改版本号 + 重跑流水线。
+- **网络策略**跟上游一致，只有两种：默认 `PublicOnly`（拒绝 loopback、私网、元数据地址），或 `SEX_ALLOW_PRIVATE=1` 传 `--allow-private`。没有 CIDR allowlist。
+- **代理**：上游没有 proxy 选项。普通抓取走 reqwest，`Client::builder()` 默认读 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`，所以 HTTP 抓取用系统代理不用改代码；**浏览器不读这些变量**——Chrome 被它自己的 loopback SOCKS5 guard proxy 接管，要给 JS 页面走代理只能配系统代理（gsettings / KDE）。
+- **AGPL**：`firecrawl-local` 是 AGPL-3.0。sex 以独立进程 + HTTP 使用它，从不链接 crate；嵌进去的是**未修改**的上游构建，发布时附版本与源码地址。
 
 ## 开发
 

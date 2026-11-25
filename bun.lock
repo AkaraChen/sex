@@ -12,7 +12,7 @@
     },
     "apps/sex": {
       "name": "@searxng-js/sex",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "dependencies": {
         "@modelcontextprotocol/server": "^2.4.0",
         "@searxng-js/sex-local": "workspace:*",
@@ -24,15 +24,15 @@
     },
     "packages/local": {
       "name": "@searxng-js/sex-local",
-      "version": "1.0.0",
+      "version": "1.0.1",
     },
     "packages/parse": {
       "name": "@searxng-js/sex-parse",
-      "version": "1.0.0",
+      "version": "1.0.1",
     },
     "packages/search": {
       "name": "@searxng-js/sex-search",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "dependencies": {
         "@searxng-js/searxng": "0.1.0",
         "zod": "^4.6.7",

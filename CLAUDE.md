@@ -19,7 +19,6 @@ thin layer in front (HTTP, MCP, CLI, warnings). Bun only.
 - `apps/sex` — `config.ts` (env only), `engine.ts` (`scrape`: filter formats/options with a warning, then delegate;
   `search`: SearXNG; `parse`: here-docs; map/crawl/batch: pass-through), `http.ts` (Hono, `/v2/*`), `mcp.ts`
   (`web_fetch`, `web_search` over stdio), `cli.ts`, `scripts/build.ts`.
-- `docs/fork.md` — the patch list for the firecrawl-local fork.
 
 Packages export TypeScript source (`exports: "./src/index.ts"`); there is no package build step. Only the app is
 built (`bun run build` → `dist/sex`).
@@ -35,8 +34,9 @@ built (`bun run build` → `dist/sex`).
 - `bun run lint` / `bun run format` — Biome
 - CI: `.github/workflows/ci.yml` (check, lint, test, build). Release: pushing a `v*` tag runs
   `.github/workflows/release.yml`, which builds `sex-linux-x64` and `sex-darwin-arm64` with SHA-256 files on native
-  runners. Only those two platforms have a prebuilt SearXNG; the firecrawl-local fork is not embedded yet
-  (`SEX_LOCAL_BINARY` is the hook).
+  runners. Only those two platforms have a prebuilt SearXNG. The release also runs
+  `cargo install firecrawl-local --version $FIRECRAWL_LOCAL_VERSION` and embeds that binary (`SEX_LOCAL_BINARY`), so
+  the published artifact carries an unmodified upstream build.
 
 ## Rules
 
@@ -53,13 +53,17 @@ built (`bun run build` → `dist/sex`).
 - **Warnings travel.** A partial result carries `warning`; errors map in `apps/sex/src/errors.ts` (sidecar 4xx passes
   through, 5xx/401/403 → 502, unreachable → 503, timeout → 504).
 - Timeouts cross `packages/local` as `CallTime` (`signal` + `deadlineAt`), never as a duration string.
-- AGPL: firecrawl-local runs as a **separate process**. Never link the crate and never copy its source into this
-  repository.
+- **No fork.** Upstream `firecrawl-local` is pinned by version and never patched. Its network policy is one boolean
+  (`SEX_ALLOW_PRIVATE` → `--allow-private`), matching upstream: do not add an allowlist. Its reqwest fetches honour
+  `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` by default; Chrome does not (upstream puts it behind its own loopback
+  SOCKS5 guard proxy), so there is no browser proxy and no stealth retry.
+- **AGPL.** firecrawl-local runs as a separate process: never link the crate, never copy its source here, and the
+  binary a release embeds is an unmodified `cargo install` of the pinned version.
 
 ## Gotchas
 
-- `/v2/parse` is not firecrawl-local's and is not a fork patch: it spawns the `here-docs` CLI. Without that binary
-  the route is a 503 `PARSE_UNAVAILABLE`; tests use a stub script.
+- `/v2/parse` is not firecrawl-local's: it spawns the `here-docs` CLI. Without that binary the route is a 503
+  `PARSE_UNAVAILABLE`; tests use a stub script.
 - firecrawl-local needs a Chrome/Chromium on the machine for JavaScript pages; `SEX_CHROME_PATH` overrides the search.
 - Crawl and batch are in firecrawl-local's memory and disappear after an hour.
 - `includeDomains` costs one query per domain, capped at 5 with a warning.

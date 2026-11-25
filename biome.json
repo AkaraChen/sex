@@ -1,6 +1,6 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.6.9/schema.json",
-  "files": { "includes": ["packages/**/*.ts", "apps/**/*.ts"] },
+  "files": { "includes": ["packages/**/*.ts", "apps/**/*.ts", "!**/*.gen.ts"] },
   "formatter": { "enabled": true, "indentStyle": "space", "lineWidth": 120 },
   "linter": { "enabled": true, "rules": { "preset": "none" } }
 }
