@@ -7,6 +7,8 @@ import type { Logger } from "./log.ts";
 const LOCAL_FORMATS = new Set(["markdown", "html", "rawHtml", "links"]);
 const IGNORED = [
   "actions",
+  "blockAds",
+  "fastMode",
   "json",
   "summary",
   "changeTracking",

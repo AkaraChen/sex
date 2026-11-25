@@ -87,6 +87,16 @@ test("qdr:h is answered as a day with a warning", async () => {
   expect(warnings.join()).toContain("qdr:h");
 });
 
+test("Firecrawl-only fields are reported, not ignored", async () => {
+  const { warnings } = await searchWeb(client(), {
+    query: "test",
+    scrapeOptions: { formats: ["markdown"] },
+    country: "us",
+  });
+  expect(warnings.join()).toContain("scrapeOptions");
+  expect(warnings.join()).toContain("country");
+});
+
 test("every query failing is a SearchBackendError", async () => {
   const failing = createClient({ baseUrl: "http://127.0.0.1:9" });
   await expect(searchWeb(failing, { query: "test" })).rejects.toBeInstanceOf(SearchBackendError);

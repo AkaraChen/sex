@@ -30,6 +30,11 @@ export const SearchRequest = z
     timeout: z.number().int().min(1000).max(300_000).optional(),
     /** Accepted for Firecrawl compatibility; results are not scraped here. */
     scrapeOptions: z.unknown().optional(),
+    /** Accepted for Firecrawl compatibility; reported as unsupported. */
+    country: z.string().optional(),
+    location: z.string().optional(),
+    zeroDataRetention: z.boolean().optional(),
+    ignoreInvalidURLs: z.boolean().optional(),
   })
   .loose();
 export type SearchRequest = z.infer<typeof SearchRequest>;
@@ -109,6 +114,10 @@ export async function searchWeb(
 ): Promise<{ data: SearchData; warnings: string[] }> {
   const warnings: string[] = [];
   const limit = request.limit ?? DEFAULT_LIMIT;
+  if (request.scrapeOptions) warnings.push("scrapeOptions is not supported: results are not scraped");
+  if (request.country) warnings.push("country is not supported and was ignored");
+  if (request.location) warnings.push("location is not supported and was ignored");
+  if (request.zeroDataRetention) warnings.push("zeroDataRetention is not supported");
   const sources = (request.sources ?? ["web"]).map(normalize).filter(Boolean);
   const categories = (request.categories ?? []).map(normalize).filter(Boolean);
   const domains = request.includeDomains?.slice(0, MAX_INCLUDE_DOMAINS) ?? [];

@@ -80,13 +80,19 @@ afterAll(async () => {
 });
 
 test("/v2/scrape passes through the Document and warns about dropped options", async () => {
-  const response = await post("/v2/scrape", { url: "https://example.com", formats: ["markdown", "json"], actions: [] });
+  const response = await post("/v2/scrape", {
+    url: "https://example.com",
+    formats: ["markdown", "json"],
+    actions: [],
+    blockAds: true,
+  });
   expect(response.status).toBe(200);
   const body = await response.json();
   expect(body.success).toBe(true);
   expect(body.data.markdown).toBe("# hello");
   expect(body.data.warning).toContain("json");
   expect(body.data.warning).toContain("actions");
+  expect(body.data.warning).toContain("blockAds");
   expect(scrapeBodies.at(-1)).toContain('"formats":["markdown"]');
   expect(scrapeBodies.at(-1)).not.toContain("actions");
 });
