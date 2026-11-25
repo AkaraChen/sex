@@ -1,33 +1,17 @@
 {
   "compilerOptions": {
-    // Environment setup & latest features
-    "lib": ["ESNext"],
     "target": "ESNext",
     "module": "Preserve",
-    "moduleDetection": "force",
-    "jsx": "react-jsx",
-    "allowJs": true,
-    "types": ["bun"],
-
-    // Bundler mode
     "moduleResolution": "bundler",
-    // here-docs ships TypeScript source under the "bun" export condition (no dist/ in a Bun install).
-    // sex-source: workspace packages resolve to their src/ (see each package's exports); only the monorepo uses it.
-    "customConditions": ["bun", "sex-source"],
-    "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
-    "noEmit": true,
-
-    // Best practices
+    "lib": ["ESNext", "DOM", "DOM.AsyncIterable", "DOM.Iterable"],
+    "types": ["bun"],
     "strict": true,
-    "skipLibCheck": true,
-    "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-
-    // Some stricter flags (disabled by default)
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noPropertyAccessFromIndexSignature": false
-  }
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["packages/**/*.ts", "apps/**/*.ts"]
 }

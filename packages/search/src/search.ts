@@ -1,399 +1,242 @@
-import { setTimeout as sleepFor } from "node:timers/promises";
-import { AppError, badRequest, toAppError, unsupported } from "@searxng-js/sex-errors";
-import { assertScrapeCapabilities, type CallTime, type Document, type ScrapeContext, scrapeUrl } from "@searxng-js/sex-scrape";
-import type { SearxngService } from "@searxng-js/sex-searxng";
-import type { LimitFunction } from "p-limit";
-import { log } from "./log.ts";
-import { matchesQueryOperators, planOperatorQuery } from "./operators.ts";
-import type { SearchData, SearchRequest } from "./schemas.ts";
+import type { Result, SearxngClient, TimeRange } from "@searxng-js/searxng";
+import { z } from "zod";
 
-/** Where search gets its results: only the base URL of a SearXNG that is up (a `SearxngService` fits). */
-export type SearxngEndpoint = Pick<SearxngService, "url">;
-
-/** What a search runs on: SearXNG, plus everything a scrape needs for `scrapeOptions`. */
-export type SearchContext = ScrapeContext & {
-  readonly searxng: SearxngEndpoint;
-  /** Caps the per-domain SearXNG queries of includeDomains across all concurrent searches. */
-  readonly searchDomainLimit: LimitFunction;
-};
-
-/**
- * The time a search has. `timeoutMs` is only for the error message ("Timed out after 60000ms"); `caller` tells a cancel from
- * the time running out when `signal` is the caller's merged with the timer.
- */
-export interface SearchTime extends CallTime {
-  timeoutMs?: number;
-  caller?: AbortSignal;
+/** The time one search has. */
+export interface CallTime {
+  signal?: AbortSignal;
+  deadlineAt?: number;
 }
 
-const isTimeout = (signal: AbortSignal | undefined) => (signal?.reason as { name?: string } | undefined)?.name === "TimeoutError";
+const SourceName = z.enum(["web", "news", "images"]);
+const CategoryName = z.enum(["github", "research", "pdf", "developer", "gov"]);
+const Source = z.union([SourceName, z.object({ type: SourceName }).loose()]);
+const Category = z.union([CategoryName, z.object({ type: CategoryName }).loose()]);
 
-/** What a step of a search throws once its time is over: the search's own `TIMEOUT` (a cancel, or the time running out). */
-function abortError(time: SearchTime, what?: string): AppError {
-  const suffix = what ? ` ${what}` : "";
-  const cancelled = time.caller ? time.caller.aborted && !isTimeout(time.caller) : !!time.signal?.aborted && !isTimeout(time.signal);
-  if (cancelled) return new AppError("TIMEOUT", `Request cancelled${suffix}`);
-  return new AppError("TIMEOUT", `Timed out${time.timeoutMs === undefined ? "" : ` after ${time.timeoutMs}ms`}${suffix}`);
-}
+/** Firecrawl v2 `/v2/search` input: what sex accepts and what SearXNG can answer. */
+export const SearchRequest = z
+  .object({
+    query: z.string().min(1).max(2000),
+    limit: z.number().int().min(1).max(100).optional(),
+    sources: z.array(Source).optional(),
+    categories: z.array(Category).optional(),
+    includeDomains: z.array(z.string()).max(50).optional(),
+    excludeDomains: z.array(z.string()).max(50).optional(),
+    /** `qdr:h`, `qdr:d`, `qdr:w`, `qdr:m`, `qdr:y`; `qdr:h` is answered as `qdr:d`. */
+    tbs: z.string().optional(),
+    /** Strict safe search. */
+    safe: z.boolean().optional(),
+    /** A SearXNG language tag such as `en`, `zh-CN` or `all`. */
+    lang: z.string().optional(),
+    timeout: z.number().int().min(1000).max(300_000).optional(),
+    /** Accepted for Firecrawl compatibility; results are not scraped here. */
+    scrapeOptions: z.unknown().optional(),
+  })
+  .loose();
+export type SearchRequest = z.infer<typeof SearchRequest>;
 
-const throwIfAborted = (time: SearchTime, what?: string) => {
-  if (time.signal?.aborted) throw abortError(time, what);
-};
-
-/** Waits `ms`, or until the time is over (then throws like `throwIfAborted`). */
-async function pause(time: SearchTime, ms: number, what: string): Promise<void> {
-  throwIfAborted(time, what);
-  try {
-    await sleepFor(ms, undefined, { signal: time.signal });
-  } catch {
-    throw abortError(time, what);
-  }
-}
-
-interface SearxResult {
-  url?: string;
+export interface SearchWebResult {
+  url: string;
   title?: string;
-  content?: string;
-  publishedDate?: string | null;
-  thumbnail?: string;
-  thumbnail_src?: string;
-  img_src?: string;
-  resolution?: string;
+  description?: string;
+  position: number;
   category?: string;
 }
 
-interface SearxQuery {
-  q: string;
-  categories: string;
-  timeRange?: string;
-  language?: string;
-  safe?: boolean;
+export interface SearchNewsResult {
+  url: string;
+  title?: string;
+  snippet?: string;
+  date?: string;
+  imageUrl?: string;
+  position: number;
+  category?: string;
 }
 
-const MAX_PAGES = 5;
-/** Results per source when the request has no `limit`. The HTTP route asks for 10 (Firecrawl's default). */
-export const DEFAULT_LIMIT = 5;
-const TIME_RANGES: Record<string, string> = { h: "day", d: "day", w: "week", m: "month", y: "year" };
+export interface SearchImageResult {
+  url: string;
+  title?: string;
+  imageUrl?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+  position: number;
+}
 
-// SearXNG marks matched terms with private-use characters.
-export const clean = (s: string | undefined | null) =>
-  (s ?? "")
-    .replace(/[\ue000\ue001]/g, "")
-    .replace(/\\n/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+export interface SearchData {
+  web?: SearchWebResult[];
+  news?: SearchNewsResult[];
+  images?: SearchImageResult[];
+}
 
-function hostMatches(url: string, domain: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    const d = domain.toLowerCase().replace(/^\*?\./, "");
-    return host === d || host.endsWith(`.${d}`);
-  } catch {
-    return false;
+export class SearchBackendError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status = 502, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SearchBackendError";
+    this.status = status;
   }
 }
 
-/** Wait before the one retry of a SearXNG request that failed on the network or with a 5xx. */
-const RETRY_DELAY_MS = 400;
+/** Firecrawl's categories on SearXNG's. */
+const CATEGORY: Record<string, string> = {
+  github: "it",
+  developer: "it",
+  research: "science",
+  pdf: "files",
+  gov: "general",
+};
 
-/** "engine: reason" for every engine SearXNG reports as unresponsive (captcha, timeout, ...). */
-function unresponsiveEngines(body: { unresponsive_engines?: unknown }): string[] {
-  const list = Array.isArray(body.unresponsive_engines) ? body.unresponsive_engines : [];
-  return list.flatMap((e) => (Array.isArray(e) && typeof e[0] === "string" ? [`${e[0]}: ${e[1] ?? "unresponsive"}`] : []));
-}
+/** `tbs` on SearXNG's `time_range`. */
+const TBS: Record<string, TimeRange> = {
+  "qdr:h": "day",
+  "qdr:d": "day",
+  "qdr:w": "week",
+  "qdr:m": "month",
+  "qdr:y": "year",
+};
 
-/** Queries SearXNG, retrying once on a retryable failure (network error, 5xx) within the caller's deadline. Unresponsive engines are appended to `unresponsive`. */
-export async function searxng(
-  engine: SearchContext,
-  query: SearxQuery,
-  pageno: number,
-  time: SearchTime,
-  unresponsive?: string[],
-): Promise<SearxResult[]> {
-  try {
-    return await searxngOnce(engine, query, pageno, time, unresponsive);
-  } catch (err) {
-    if (!AppError.isInstance(err) || !err.retryable) throw err;
-    log.debug("retrying SearXNG request", { error: err.message });
-    await pause(time, RETRY_DELAY_MS, "before retrying the SearXNG request");
-    return searxngOnce(engine, query, pageno, time, unresponsive);
-  }
-}
+const MAX_INCLUDE_DOMAINS = 5;
+const DEFAULT_LIMIT = 10;
 
 /**
- * The SearXNG base URL, without outliving the search: a managed SearXNG can take up to a minute to start on first use, and
- * that wait must answer to the caller's cancel and the search's own timeout like every other step. The start goes on in
- * the background and serves the next search.
+ * Searches `client` in the Firecrawl v2 shape. `includeDomains` costs one query per domain (SearXNG cannot OR `site:`),
+ * so only the first `MAX_INCLUDE_DOMAINS` are used.
  */
-async function searxngUrl(engine: SearchContext, time: SearchTime): Promise<string> {
-  const what = "while waiting for SearXNG to start";
-  throwIfAborted(time, what);
-  const url = engine.searxng.url();
-  const signal = time.signal;
-  if (!signal) return url;
-  url.catch(() => {});
-  const over = Promise.withResolvers<never>();
-  const onAbort = () => over.reject(abortError(time, what));
-  signal.addEventListener("abort", onAbort, { once: true });
-  try {
-    return await Promise.race([url, over.promise]);
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-  }
-}
-
-async function searxngOnce(
-  engine: SearchContext,
-  query: SearxQuery,
-  pageno: number,
-  time: SearchTime,
-  unresponsive?: string[],
-): Promise<SearxResult[]> {
-  const params = new URLSearchParams({ q: query.q, format: "json", categories: query.categories, pageno: String(pageno) });
-  if (query.timeRange) params.set("time_range", query.timeRange);
-  if (query.language) params.set("language", query.language);
-  if (query.safe) params.set("safesearch", "2");
-  const base = await searxngUrl(engine, time);
-  // One request gets the context's `timeout` of what the search has left; given more than is left it just shares the search's time.
-  const limit = engine.settings.timeout;
-  const left = time.deadlineAt === undefined ? Number.POSITIVE_INFINITY : time.deadlineAt - Date.now();
-  const own = limit < left ? AbortSignal.timeout(limit) : undefined;
-  const signal = own ? AbortSignal.any([...(time.signal ? [time.signal] : []), own]) : time.signal;
-  // The search's time being over (or a cancel) is the search's error; otherwise the request's own limit ran out.
-  const failure = (what: string) =>
-    time.signal?.aborted ? abortError(time, what) : new AppError("TIMEOUT", `Timed out after ${limit}ms ${what}`);
-  const what = "while querying SearXNG";
-  let res: Response;
-  try {
-    res = await fetch(`${base}/search?${params}`, { headers: { accept: "application/json" }, signal });
-  } catch (err) {
-    if (signal?.aborted) throw failure(what);
-    throw new AppError(
-      "SEARCH_BACKEND_UNAVAILABLE",
-      `Cannot reach SearXNG at ${base}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  if (!res.ok) {
-    const hint = res.status === 403 ? " (is the json format enabled in SearXNG settings.yml?)" : "";
-    // A 5xx may pass on a second try; a 4xx is a configuration problem.
-    throw new AppError("SEARCH_BACKEND_ERROR", `SearXNG returned HTTP ${res.status}${hint}`, undefined, { retryable: res.status >= 500 });
-  }
-  let body: { results?: SearxResult[]; unresponsive_engines?: unknown };
-  try {
-    body = (await res.json()) as typeof body;
-  } catch {
-    if (signal?.aborted) throw failure(what);
-    const type = res.headers.get("content-type") ?? "none";
-    throw new AppError("SEARCH_BACKEND_ERROR", `SearXNG returned a non-JSON response (content-type: ${type})`);
-  }
-  unresponsive?.push(...unresponsiveEngines(body));
-  return body.results ?? [];
-}
-
-/** Runs one SearXNG query across pages until `want` results pass `accept`. */
-async function collect(
-  engine: SearchContext,
-  query: SearxQuery,
-  want: number,
-  accept: (r: SearxResult) => boolean,
-  time: SearchTime,
-  unresponsive?: string[],
-): Promise<SearxResult[]> {
-  const seen = new Set<string>();
-  const out: SearxResult[] = [];
-  for (let page = 1; page <= MAX_PAGES && out.length < want; page++) {
-    const results = await searxng(engine, query, page, time, unresponsive);
-    let added = 0;
-    for (const r of results) {
-      if (!r.url || seen.has(r.url)) continue;
-      seen.add(r.url);
-      if (!accept(r)) continue;
-      out.push(r);
-      added++;
-      if (out.length >= want) break;
-    }
-    if (results.length === 0 || added === 0) break;
-  }
-  return out;
-}
-
-/** Firecrawl's `category` of a result: by URL first, then by the SearXNG category it came from. */
-export function categoryOf(r: SearxResult): string | undefined {
-  try {
-    const url = new URL(r.url as string);
-    const host = url.hostname.toLowerCase();
-    if (host === "github.com" || host.endsWith(".github.com")) return "github";
-    if (url.pathname.toLowerCase().endsWith(".pdf")) return "pdf";
-    if (host.endsWith(".gov") || host.includes(".gov.")) return "gov";
-  } catch {}
-  if (r.category === "science") return "research";
-  if (r.category === "it") return "developer";
-  return undefined;
-}
-
-function sourceList(req: SearchRequest): Array<"web" | "news" | "images"> {
-  const list = (req.sources?.length ? req.sources : ["web" as const]).map((s) => (typeof s === "string" ? s : s.type));
-  return Array.from(new Set(list));
-}
-
-/** Trims and lowercases a domain filter, drops a leading `*.` / `.`, and rejects anything that is not a hostname. */
-export function normalizeDomain(raw: string): string {
-  const d = raw
-    .trim()
-    .toLowerCase()
-    .replace(/^\*?\./, "");
-  const label = "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?";
-  if (!new RegExp(`^${label}(\\.${label})*$`).test(d) || d.length > 253) throw badRequest(`Invalid domain in includeDomains: ${raw}`);
-  return d;
-}
-
-export async function search(
-  engine: SearchContext,
-  req: SearchRequest,
-  signal?: AbortSignal,
-): Promise<{ data: SearchData; warning?: string }> {
-  const limit = req.limit ?? DEFAULT_LIMIT;
-  if (req.zeroDataRetention) throw unsupported("zeroDataRetention");
-  const wantsScrape = !!req.scrapeOptions?.formats?.length;
-  if (wantsScrape) assertScrapeCapabilities(engine, req.scrapeOptions);
-  if (req.includeDomains?.length && req.excludeDomains?.length) {
-    throw new AppError("BAD_REQUEST", "includeDomains and excludeDomains cannot both be specified");
-  }
-  const includeDomains = req.includeDomains?.map(normalizeDomain);
-  // Without a request timeout the whole search (pages and scrapes) still gets a deadline. It keeps the plain TIMEOUT code
-  // it always had: SCRAPE_TIMEOUT names the scrape of a page, not a search.
-  const timeoutMs = req.timeout ?? Math.max(engine.settings.timeout * 2, 60_000);
-  const time: SearchTime = {
-    signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]),
-    deadlineAt: Date.now() + timeoutMs,
-    timeoutMs,
-    caller: signal,
-  };
-  const unresponsive: string[] = [];
-
-  const categories = (req.categories ?? []).map((c) => (typeof c === "string" ? c : c.type));
-  const mods: string[] = [];
-  const webCats = new Set<string>();
-  for (const c of categories) {
-    if (c === "github") mods.push("site:github.com");
-    else if (c === "pdf") mods.push("filetype:pdf");
-    else if (c === "gov") mods.push("site:gov");
-    else if (c === "research") webCats.add("science");
-    else if (c === "developer") webCats.add("it");
-  }
-  for (const d of req.excludeDomains ?? []) mods.push(`-site:${d}`);
-  const timeRange = req.tbs?.match(/qdr:([hdwmy])/)?.[1];
+export async function searchWeb(
+  client: SearxngClient,
+  request: SearchRequest,
+  time?: CallTime,
+): Promise<{ data: SearchData; warnings: string[] }> {
   const warnings: string[] = [];
-  if (req.tbs && !timeRange) warnings.push(`tbs "${req.tbs}" is not supported and was ignored (only qdr:h, qdr:d, qdr:w, qdr:m, qdr:y)`);
-  for (const name of ["country", "location"] as const) {
-    if (req[name]) warnings.push(`${name} is not supported by SearXNG and was ignored`);
+  const limit = request.limit ?? DEFAULT_LIMIT;
+  const sources = (request.sources ?? ["web"]).map(normalize).filter(Boolean);
+  const categories = (request.categories ?? []).map(normalize).filter(Boolean);
+  const domains = request.includeDomains?.slice(0, MAX_INCLUDE_DOMAINS) ?? [];
+  if (request.includeDomains && request.includeDomains.length > MAX_INCLUDE_DOMAINS) {
+    warnings.push(`Only the first ${MAX_INCLUDE_DOMAINS} includeDomains are searched`);
   }
-  const base = {
-    timeRange: timeRange ? TIME_RANGES[timeRange] : undefined,
-    language: req.lang,
-    safe: req.safe,
-  };
-  const plan = planOperatorQuery(req.query);
-  const q = [plan.query, ...mods].join(" ");
-  const accept = (r: SearxResult) => {
-    if (!r.url) return false;
-    if (!matchesQueryOperators(r, plan)) return false;
-    if (req.excludeDomains?.some((d) => hostMatches(r.url as string, d))) return false;
-    if (includeDomains?.length && !includeDomains.some((d) => hostMatches(r.url as string, d))) return false;
-    return true;
-  };
 
-  const run = async (categories: string): Promise<SearxResult[]> => {
-    if (!includeDomains?.length) return collect(engine, { ...base, q, categories }, limit, accept, time, unresponsive);
-    // One site: query per domain, interleaved, since multi-site syntax is not portable across engines.
-    const perDomain = await Promise.all(
-      includeDomains.map((d) =>
-        engine.searchDomainLimit(() => collect(engine, { ...base, q: `${q} site:${d}`, categories }, limit, accept, time, unresponsive)),
-      ),
-    );
-    const merged: SearxResult[] = [];
-    const seen = new Set<string>();
-    for (let i = 0; merged.length < limit && perDomain.some((list) => i < list.length); i++) {
-      for (const list of perDomain) {
-        const r = list[i];
-        if (r?.url && !seen.has(r.url) && merged.length < limit) {
-          seen.add(r.url);
-          merged.push(r);
-        }
-      }
-    }
-    return merged;
-  };
+  let timeRange: TimeRange | undefined;
+  if (request.tbs) {
+    timeRange = TBS[request.tbs.toLowerCase()];
+    if (request.tbs.toLowerCase() === "qdr:h")
+      warnings.push("qdr:h is answered as qdr:d (SearXNG has no hourly range)");
+    if (!timeRange) warnings.push(`tbs "${request.tbs}" is not supported`);
+  }
 
-  const data: SearchData = {};
-  const failures: unknown[] = [];
-  let succeeded = 0;
+  const signals: AbortSignal[] = [];
+  if (time?.signal) signals.push(time.signal);
+  if (time?.deadlineAt !== undefined) signals.push(AbortSignal.timeout(Math.max(1, time.deadlineAt - Date.now())));
+  if (request.timeout) signals.push(AbortSignal.timeout(request.timeout));
+  const signal = signals.length ? AbortSignal.any(signals) : undefined;
+
+  const excludes = (request.excludeDomains ?? []).map((domain) => `-site:${domain}`);
+  const baseQuery = [request.query, ...excludes].join(" ");
+  const queries: Array<{ source: string; domain?: string; q: string; categories: string }> = [];
+  for (const source of sources) {
+    const base =
+      source === "news"
+        ? "news"
+        : source === "images"
+          ? "images"
+          : categories
+              .map((c) => CATEGORY[c])
+              .filter(Boolean)
+              .join(",") || "general";
+    if (domains.length === 0) queries.push({ source, q: baseQuery, categories: base });
+    else
+      for (const domain of domains)
+        queries.push({ source, domain, q: `${baseQuery} site:${domain}`, categories: base });
+  }
+
+  const results = new Map<string, Result[]>();
+  const failures: string[] = [];
   await Promise.all(
-    sourceList(req).map(async (source) => {
+    queries.map(async ({ source, domain, q, categories: category }) => {
       try {
-        if (source === "web") {
-          const results = await run(webCats.size ? [...webCats].join(",") : "general");
-          data.web = results.map((r, i) => ({
-            url: r.url as string,
-            title: clean(r.title),
-            description: clean(r.content),
-            position: i + 1,
-            category: categoryOf(r),
-          }));
-        } else if (source === "news") {
-          const results = await run("news");
-          data.news = results.map((r, i) => ({
-            url: r.url,
-            title: clean(r.title),
-            snippet: clean(r.content),
-            date: r.publishedDate ?? undefined,
-            imageUrl: r.thumbnail || r.img_src || undefined,
-            position: i + 1,
-            category: categoryOf(r),
-          }));
-        } else if (source === "images") {
-          const results = await run("images");
-          data.images = results.map((r, i) => {
-            const [w, h] = (r.resolution ?? "").split(/\s*[x×]\s*/).map((n) => Number.parseInt(n, 10));
-            return {
-              url: r.url,
-              title: clean(r.title),
-              imageUrl: r.img_src || r.thumbnail_src || undefined,
-              imageWidth: Number.isFinite(w) ? w : undefined,
-              imageHeight: Number.isFinite(h) ? h : undefined,
-              position: i + 1,
-            };
-          });
-        } else {
-          throw badRequest(`Unknown source: ${source}`);
-        }
-        succeeded++;
+        const response = await client.search(
+          {
+            q,
+            categories: category,
+            language: request.lang,
+            safeSearch: request.safe ? 2 : undefined,
+            timeRange,
+          },
+          { signal },
+        );
+        results.set(source, [...(results.get(source) ?? []), ...response.results]);
       } catch (err) {
-        failures.push(err);
-        warnings.push(`${source}: ${toAppError(err).message}`);
+        failures.push(`${source}${domain ? ` (${domain})` : ""}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }),
   );
-  // Fail the whole request only when no source succeeded; partial results come back with a warning.
-  if (!succeeded && failures.length) throw failures[0];
-  const empty = !data.web?.length && !data.news?.length && !data.images?.length;
-  if (empty && unresponsive.length) warnings.push(`No results; unresponsive engines: ${[...new Set(unresponsive)].join(", ")}`);
 
-  if (wantsScrape) {
-    const scrapeOne = async <T extends { url?: string }>(item: T): Promise<T & Document> => {
-      if (!item.url) return item;
-      try {
-        const { document } = await scrapeUrl(engine, item.url, req.scrapeOptions, { signal: time.signal, deadlineAt: time.deadlineAt });
-        return { ...item, ...document };
-      } catch (err) {
-        const e = toAppError(err);
-        log.debug("search result scrape failed", { url: item.url, error: e.message });
-        return { ...item, metadata: { sourceURL: item.url, statusCode: e.status, error: e.message } };
-      }
-    };
-    if (data.web) data.web = await Promise.all(data.web.map(scrapeOne));
-    if (data.news) data.news = await Promise.all(data.news.map(scrapeOne));
+  if (failures.length === queries.length && queries.length > 0) {
+    throw new SearchBackendError(`SearXNG search failed: ${failures[0]}`);
   }
+  for (const failure of failures) warnings.push(failure);
 
-  return { data, warning: warnings.length ? warnings.join("; ") : undefined };
+  const data: SearchData = {};
+  for (const source of sources) {
+    const seen = new Set<string>();
+    const list = (results.get(source) ?? []).filter((result) => {
+      if (!result.url || seen.has(result.url)) return false;
+      seen.add(result.url);
+      return true;
+    });
+    if (source === "web") data.web = list.slice(0, limit).map(toWeb);
+    else if (source === "news") data.news = list.slice(0, limit).map(toNews);
+    else data.images = list.slice(0, limit).map(toImage);
+  }
+  return { data, warnings };
+}
+
+function normalize(value: string | { type: string } | undefined): string {
+  return typeof value === "string" ? value : (value?.type ?? "");
+}
+
+function toWeb(result: Result, index: number): SearchWebResult {
+  return {
+    url: result.url as string,
+    title: clean(result.title),
+    description: clean(result.content),
+    position: index + 1,
+    category: result.category || undefined,
+  };
+}
+
+function toNews(result: Result, index: number): SearchNewsResult {
+  return {
+    url: result.url as string,
+    title: clean(result.title),
+    snippet: clean(result.content),
+    date: result.publishedDate ?? undefined,
+    imageUrl: result.thumbnail || result.img_src || undefined,
+    position: index + 1,
+    category: result.category || undefined,
+  };
+}
+
+function toImage(result: Result, index: number): SearchImageResult {
+  const [width, height] = String(result.resolution ?? "")
+    .split(/\s*[x×]\s*/)
+    .map((part) => Number.parseInt(part, 10));
+  return {
+    url: result.url as string,
+    title: clean(result.title),
+    imageUrl: result.img_src || result.thumbnail_src || undefined,
+    imageWidth: Number.isFinite(width) ? width : undefined,
+    imageHeight: Number.isFinite(height) ? height : undefined,
+    position: index + 1,
+  };
+}
+
+function clean(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  return (
+    text
+      .replace(/<[^>]*>/g, "")
+      .replace(/\s+/g, " ")
+      .trim() || undefined
+  );
 }
