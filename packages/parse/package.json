@@ -1,0 +1,12 @@
+{
+  "name": "@searxng-js/sex-parse",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Convert an uploaded file to Markdown by running the here-docs CLI as a subprocess",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src"]
+}

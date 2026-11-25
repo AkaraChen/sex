@@ -14,6 +14,10 @@ export interface Config {
   /** A running SearXNG. Without one, a child process is started. */
   searxngUrl?: string;
   searxngPath?: string;
+  /** The here-docs CLI `/v2/parse` runs. Default: `here-docs` on PATH. */
+  parsePath?: string;
+  /** How long a document conversion gets. Default: 120 s. */
+  parseTimeoutMs?: number;
   /** How long a child gets to start, and the default per-request timeout. */
   timeoutMs: number;
 }
@@ -34,6 +38,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     allowPrivate: flag(env.SEX_ALLOW_PRIVATE),
     searxngUrl: text(env.SEX_SEARXNG_URL),
     searxngPath: text(env.SEX_SEARXNG_PATH),
+    parsePath: text(env.SEX_PARSE_PATH),
+    parseTimeoutMs: integer(env.SEX_PARSE_TIMEOUT, 120_000, "SEX_PARSE_TIMEOUT"),
     timeoutMs: integer(env.SEX_TIMEOUT, 30_000, "SEX_TIMEOUT"),
   };
 }

@@ -13,9 +13,12 @@ thin layer in front (HTTP, MCP, CLI, warnings). Bun only.
 - `packages/search` (`@searxng-js/sex-search`) — `Searxng` (managed child via `@searxng-js/searxng`, or an external
   URL) and `searchWeb` (Firecrawl v2 search shape: `web`/`news`/`images`, categories, `tbs`, domains; one SearXNG
   query per `includeDomain`, because SearXNG cannot OR `site:`).
+- `packages/parse` (`@searxng-js/sex-parse`) — `/v2/parse` without a fork: the bytes go to the **here-docs** CLI on
+  stdin (`- --filename <name> --json`), its `{ markdown, warnings }` comes back. One process per file, so the native
+  OCR engines stay out of sex's process. Not bundled: `SEX_PARSE_PATH`, else `here-docs` on PATH, else 503.
 - `apps/sex` — `config.ts` (env only), `engine.ts` (`scrape`: filter formats/options with a warning, then delegate;
-  `search`: SearXNG; map/crawl/batch/parse: pass-through), `http.ts` (Hono, `/v2/*`), `mcp.ts` (`web_fetch`,
-  `web_search` over stdio), `cli.ts`, `scripts/build.ts`.
+  `search`: SearXNG; `parse`: here-docs; map/crawl/batch: pass-through), `http.ts` (Hono, `/v2/*`), `mcp.ts`
+  (`web_fetch`, `web_search` over stdio), `cli.ts`, `scripts/build.ts`.
 - `docs/fork.md` — the patch list for the firecrawl-local fork.
 
 Packages export TypeScript source (`exports: "./src/index.ts"`); there is no package build step. Only the app is
@@ -27,8 +30,13 @@ built (`bun run build` → `dist/sex`).
 - `bun run dev` — `apps/sex/src/cli.ts serve`
 - `bun run test` — `bun test ./packages ./apps` (mock HTTP servers; no Rust, Chrome or SearXNG needed)
 - `bun run check` — `tsc --noEmit`
-- `bun run build` — `dist/sex`; `SEX_LOCAL_BINARY=/path/to/firecrawl-local` embeds the binary
+- `bun run build` — `dist/sex`; `SEX_TARGET=bun-linux-x64` picks the platform,
+  `SEX_LOCAL_BINARY=/path/to/firecrawl-local` embeds the binary
 - `bun run lint` / `bun run format` — Biome
+- CI: `.github/workflows/ci.yml` (check, lint, test, build). Release: pushing a `v*` tag runs
+  `.github/workflows/release.yml`, which builds `sex-linux-x64` and `sex-darwin-arm64` with SHA-256 files on native
+  runners. Only those two platforms have a prebuilt SearXNG; the firecrawl-local fork is not embedded yet
+  (`SEX_LOCAL_BINARY` is the hook).
 
 ## Rules
 
@@ -36,6 +44,9 @@ built (`bun run build` → `dist/sex`).
   `Bun.serve`, `bun:sqlite` if a cache ever comes back.
 - **One seam.** Nothing outside `packages/local` may import `firecrawl-local` details or fetch its routes. A second
   scraper is a new implementation of that package, not an `if` in the app.
+- **Parse is a subprocess, not a fork.** `/v2/parse` goes through `packages/parse` → the `here-docs` CLI. Never import
+  here-docs into sex (its native engines cannot load from a compiled binary) and never add a parse route to the
+  firecrawl-local fork.
 - **Refused, not ignored.** Options and formats firecrawl-local cannot honour are deleted from the request and named
   in `data.warning` (`engine.ts` `IGNORED`, `LOCAL_FORMATS`). Add new ones there.
 - **Self-hosted.** `FIRECRAWL_CLOUD=off` is set by `LocalService` and is not configurable. No URL goes to Firecrawl.
@@ -47,8 +58,8 @@ built (`bun run build` → `dist/sex`).
 
 ## Gotchas
 
-- `/v2/parse` does not exist upstream. Until the fork's route lands, `sex parse` answers 404 from the child; the tests
-  use a mock.
+- `/v2/parse` is not firecrawl-local's and is not a fork patch: it spawns the `here-docs` CLI. Without that binary
+  the route is a 503 `PARSE_UNAVAILABLE`; tests use a stub script.
 - firecrawl-local needs a Chrome/Chromium on the machine for JavaScript pages; `SEX_CHROME_PATH` overrides the search.
 - Crawl and batch are in firecrawl-local's memory and disappear after an hour.
 - `includeDomains` costs one query per domain, capped at 5 with a warning.

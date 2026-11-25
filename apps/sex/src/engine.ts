@@ -1,4 +1,5 @@
 import { type CallTime, LocalService } from "@searxng-js/sex-local";
+import { Parser } from "@searxng-js/sex-parse";
 import { type SearchData, type SearchRequest, Searxng, searchWeb } from "@searxng-js/sex-search";
 import type { Config } from "./config.ts";
 import type { Logger } from "./log.ts";
@@ -39,6 +40,7 @@ export interface ScrapeResult {
 export class Engine {
   readonly local: LocalService;
   readonly searxng: Searxng;
+  readonly parser: Parser;
 
   constructor(
     readonly config: Config,
@@ -59,6 +61,7 @@ export class Engine {
       binaryPath: config.searxngPath,
       onOutput: (line) => log.debug("searxng", { output: line }),
     });
+    this.parser = new Parser({ path: config.parsePath, timeoutMs: config.parseTimeoutMs });
   }
 
   /** Scrapes through firecrawl-local and answers the Firecrawl v2 scrape shape. */
@@ -131,8 +134,21 @@ export class Engine {
     return (await this.local.client()).batchCancel(id, { signal });
   }
 
-  async parse(file: Blob, options?: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    return (await this.local.client()).parse(file, options, { signal });
+  /** `/v2/parse`: the file goes to here-docs as a subprocess, and its Markdown comes back as a Document. */
+  async parse(file: Blob, options?: unknown, signal?: AbortSignal): Promise<ScrapeResult> {
+    const filename = (file as File).name || "upload";
+    const warnings: string[] = [];
+    const requested = (options as { formats?: unknown } | undefined)?.formats;
+    if (Array.isArray(requested)) {
+      const ignored = requested.filter((format) => format !== "markdown");
+      if (ignored.length) warnings.push(`unsupported format(s): ${ignored.join(", ")}`);
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const parsed = await this.parser.parse({ bytes, filename }, { signal });
+    const data: Record<string, unknown> = { markdown: parsed.markdown, metadata: { sourceURL: filename } };
+    const all = [...parsed.warnings, ...warnings];
+    if (all.length) data.warning = all.join("; ");
+    return { success: true, data };
   }
 
   /** Starts both child processes. Failures are logged, not fatal: the first request pays for them. */

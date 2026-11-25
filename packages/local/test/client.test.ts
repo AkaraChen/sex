@@ -16,7 +16,6 @@ beforeAll(() => {
       if (request.headers.get("authorization") !== "Bearer secret") {
         return Response.json({ success: false, error: "unauthorized" }, { status: 401 });
       }
-      if (url.pathname === "/v2/parse") return Response.json({ success: true, data: { markdown: "# doc" } });
       if (body.includes('"slow"')) await new Promise((resolve) => setTimeout(resolve, 200));
       if (body.includes('"bad"')) {
         return Response.json({ success: false, error: "Invalid URL", code: "BAD_REQUEST" }, { status: 400 });
@@ -67,12 +66,4 @@ test("an unreachable child is LOCAL_UNAVAILABLE", async () => {
   const error = await client.scrape({ url: "https://example.com" }).catch((err) => err);
   expect(error).toBeInstanceOf(LocalError);
   expect(error.code).toBe("LOCAL_UNAVAILABLE");
-});
-
-test("parse sends the file and its name as multipart", async () => {
-  const client = createClient({ baseUrl: base(), token: "secret" });
-  const response = await client.parse(new File(["hello"], "upload.txt"), { formats: ["markdown"] });
-  expect(response.data?.markdown).toBe("# doc");
-  expect(bodies.at(-1)).toContain("upload.txt");
-  expect(bodies.at(-1)).toContain('"formats"');
 });

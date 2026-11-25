@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import { Engine } from "../src/engine.ts";
 import { createApp } from "../src/http.ts";
@@ -7,12 +10,30 @@ import { createLogger } from "../src/log.ts";
 let sidecar: ReturnType<typeof Bun.serve>;
 let searxng: ReturnType<typeof Bun.serve>;
 let app: ReturnType<typeof createApp>;
+let dir: string;
+let hereDocs: string;
 const scrapeBodies: string[] = [];
+
+/** Stands in for the here-docs CLI: reads stdin, answers its `{ markdown, warnings }` shape. */
+const HERE_DOCS = `#!/usr/bin/env bun
+const input = await Bun.stdin.text();
+const at = process.argv.indexOf("--filename");
+const filename = at === -1 ? "upload" : process.argv[at + 1];
+console.log(JSON.stringify({
+  markdown: \`# doc \${filename} (\${input.length} bytes)\`,
+  warnings: [{ code: "ocr", message: "ocr skipped" }],
+}));
+`;
 
 const post = (path: string, body: unknown) =>
   app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-beforeAll(() => {
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "sex-app-test-"));
+  hereDocs = join(dir, "here-docs");
+  await writeFile(hereDocs, HERE_DOCS);
+  await chmod(hereDocs, 0o755);
+
   sidecar = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -33,7 +54,6 @@ beforeAll(() => {
         return Response.json({ success: true, id: "c1", status: "scraping", total: 3, completed: 1 });
       if (url.pathname.startsWith("/v2/batch/scrape/"))
         return Response.json({ success: true, id: "b1", status: "scraping" });
-      if (url.pathname === "/v2/parse") return Response.json({ success: true, data: { markdown: "# doc" } });
       return Response.json({ success: true, id: "c1" });
     },
   });
@@ -68,6 +88,7 @@ beforeAll(() => {
     localUrl: sidecar.url.origin,
     localToken: "secret",
     searxngUrl: searxng.url.origin,
+    parsePath: hereDocs,
     allowPrivate: false,
     timeoutMs: 2000,
   };
@@ -77,6 +98,7 @@ beforeAll(() => {
 afterAll(async () => {
   await sidecar.stop(true);
   await searxng.stop(true);
+  await rm(dir, { recursive: true, force: true });
 });
 
 test("/v2/scrape passes through the Document and warns about dropped options", async () => {
@@ -145,12 +167,15 @@ test("crawl and batch status pass through by id", async () => {
   expect((await batch.json()).status).toBe("scraping");
 });
 
-test("/v2/parse forwards the file", async () => {
+test("/v2/parse converts the upload through the here-docs subprocess", async () => {
   const form = new FormData();
   form.append("file", new File(["hello"], "a.pdf"));
   const response = await app.request("/v2/parse", { method: "POST", body: form });
   expect(response.status).toBe(200);
-  expect((await response.json()).data.markdown).toBe("# doc");
+  const body = await response.json();
+  expect(body.data.markdown).toBe("# doc a.pdf (5 bytes)");
+  expect(body.data.warning).toContain("ocr skipped");
+  expect(body.data.metadata.sourceURL).toBe("a.pdf");
 });
 
 test("/v2/parse without a file is a 400", async () => {

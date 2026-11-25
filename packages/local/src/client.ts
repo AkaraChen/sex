@@ -46,8 +46,6 @@ export interface LocalClient {
   batch(body: Record<string, unknown>, time?: CallTime): Promise<JsonResponse>;
   batchStatus(id: string, time?: CallTime): Promise<JsonResponse>;
   batchCancel(id: string, time?: CallTime): Promise<JsonResponse>;
-  /** `POST /v2/parse`: a file in, a Document out. The route is part of the fork. */
-  parse(file: Blob, options?: unknown, time?: CallTime): Promise<JsonResponse>;
   health(): Promise<boolean>;
 }
 
@@ -107,12 +105,6 @@ export function createClient(options: ClientOptions): LocalClient {
     batch: (body, time) => post("/v2/batch/scrape", body, time),
     batchStatus: (id, time) => request(`/v2/batch/scrape/${encodeURIComponent(id)}`, { method: "GET" }, time),
     batchCancel: (id, time) => request(`/v2/batch/scrape/${encodeURIComponent(id)}`, { method: "DELETE" }, time),
-    parse: (file, formOptions, time) => {
-      const form = new FormData();
-      form.append("file", file, (file as File).name ?? "upload");
-      if (formOptions !== undefined) form.append("options", JSON.stringify(formOptions));
-      return request("/v2/parse", { method: "POST", body: form }, time);
-    },
     health: async () => {
       try {
         const response = await f(`${base}/health`, {

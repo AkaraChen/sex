@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { basename } from "node:path";
 import { parseArgs } from "node:util";
 import type { SearchRequest } from "@searxng-js/sex-search";
 import { loadConfig } from "./config.ts";
@@ -112,7 +113,7 @@ async function main(argv: string[]): Promise<void> {
       if (!path) return fail("parse needs a file");
       const file = Bun.file(path);
       if (!(await file.exists())) return fail(`no such file: ${path}`);
-      console.log(JSON.stringify(await engine.parse(new File([await file.arrayBuffer()], file.name ?? path)), null, 2));
+      console.log(JSON.stringify(await engine.parse(new File([await file.arrayBuffer()], basename(path))), null, 2));
       await engine.close();
       return;
     }

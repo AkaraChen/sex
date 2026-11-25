@@ -18,6 +18,7 @@ A self-hosted Firecrawl v2 API in three processes:
 
 - **firecrawl-local** 抓取：fetch、浏览器、清洗、文档解析。它是 Firecrawl 官方的 Rust 重写，跟云端共用 `apps/api/native` 的清洗代码。
 - **SearXNG** 搜索。这是 firecrawl-local 唯一交给 Firecrawl 云的东西，sex 在本地答掉。
+- **here-docs** 转换上传的文件（`/v2/parse`）。另一个子进程，MIT，底层就是 `@firecrawl/anydoc` 与 `@firecrawl/pdf-inspector`。
 - **sex** 只做中间那层：HTTP API、MCP、CLI，以及两边对不上的东西的告警。
 
 没有队列、数据库、worker。两个子进程，一个 HTTP 面。旧的 17 个包只剩 `packages/local` 和 `packages/search`，**src 1507 行**（原来 13800）。Bun only，没有 Node 支持，也没有逐包构建。
@@ -30,7 +31,7 @@ A self-hosted Firecrawl v2 API in three processes:
 | `POST /v2/search` | SearXNG | `web` / `news` / `images`、分类、时间、域名过滤 |
 | `POST /v2/map` | firecrawl-local | 原样透传 |
 | `/v2/crawl*`、`/v2/batch/scrape*` | firecrawl-local | 原样透传；job 在它的内存里，1 小时后过期 |
-| `POST /v2/parse` | firecrawl-local | **等 fork 的 `/v2/parse` 路由**；现在会透传成 404 |
+| `POST /v2/parse` | here-docs | 上传文件 → Markdown；here-docs 是独立子进程，没有 fork |
 | `web_fetch` / `web_search` | sex | `sex mcp`，stdio |
 | `sex search/scrape/map/parse` | sex | CLI，stdout 只放结果，日志走 stderr |
 
@@ -47,7 +48,7 @@ bun install
 bun run dev                       # http://127.0.0.1:3002，会自动拉起两个子进程
 ```
 
-`firecrawl-local` 需要在本机（`PATH`，或 `SEX_LOCAL_PATH`）；还没有装的话，`SEX_LOCAL_URL` 指向一个已经跑着的实例。SearXNG 不需要准备，`@searxng-js/searxng` 带预编译二进制。
+`firecrawl-local` 需要在本机（`PATH`，或 `SEX_LOCAL_PATH`）；还没有装的话，`SEX_LOCAL_URL` 指向一个已经跑着的实例。SearXNG 不需要准备，`@searxng-js/searxng` 带预编译二进制。`/v2/parse` 需要 `here-docs`（`npm i -g here-docs`，或 `SEX_PARSE_PATH` 指向它的 `dist/cli.js`）；没装时这条路由返回 503，别的照常。
 
 ```bash
 curl -s localhost:3002/v2/scrape -H 'content-type: application/json' \
@@ -60,12 +61,27 @@ curl -s localhost:3002/v2/search -H 'content-type: application/json' \
 ## 构建
 
 ```bash
-bun run build                                    # dist/sex（单文件，Bun + 内嵌 SearXNG）
+bun run build                          # dist/sex（单文件，Bun + 内嵌 SearXNG）
+SEX_TARGET=bun-linux-x64 bun run build  # 指定目标平台
 SEX_LOCAL_BINARY=/path/to/firecrawl-local \
-SEX_LOCAL_VERSION=0.1.1 bun run build            # 把 firecrawl-local 也嵌进去，运行时解压到 $XDG_CACHE_HOME/sex
+SEX_LOCAL_VERSION=0.1.1 bun run build   # 把 firecrawl-local 也嵌进去，运行时解压到 $XDG_CACHE_HOME/sex
 ```
 
 `dist/sex` 是最小的部署单位。不嵌 firecrawl-local 时，它在运行时从 `PATH` / `SEX_LOCAL_PATH` 找。
+
+## 发布
+
+`v*` 标签触发 `.github/workflows/release.yml`：在原生 runner 上各构建一个二进制，附 SHA-256，发到 GitHub Release。
+
+| 资产 | 平台 |
+| --- | --- |
+| `sex-linux-x64` | linux x64，glibc ≥ 2.35 |
+| `sex-darwin-arm64` | macOS arm64 |
+
+只有这两个平台发二进制，因为 `@searxng-js/searxng` 只给它们预编译的 SearXNG；其他地方需要 `SEX_SEARXNG_URL`。
+
+**firecrawl-local 还没嵌进发布产物**（fork 未发布）：把 `firecrawl-local` 放到 `PATH`，或设 `SEX_LOCAL_PATH` / `SEX_LOCAL_URL`。fork 出来之后，release workflow 里预留的那一步会下载它、校验 SHA-256 并传 `SEX_LOCAL_BINARY`。`/v2/parse` 用的 here-docs 也不打进产物，需要单独装。
+
 
 ## 配置
 
@@ -77,6 +93,7 @@ SEX_LOCAL_VERSION=0.1.1 bun run build            # 把 firecrawl-local 也嵌进
 | `SEX_CHROME_PATH`, `SEX_BROWSER` | JS 页面的 Chrome；`auto` / `never` / `always` |
 | `SEX_ALLOW_PRIVATE` | 允许 firecrawl-local 访问 loopback 和私网（元数据地址始终拒绝） |
 | `SEX_SEARXNG_URL`, `SEX_SEARXNG_PATH` | 外部 SearXNG，或子进程用的二进制 |
+| `SEX_PARSE_PATH`, `SEX_PARSE_TIMEOUT` | `/v2/parse` 用的 here-docs（默认 `PATH`），以及转换超时（默认 120 s） |
 | `SEX_LOG_LEVEL`, `SEX_TIMEOUT` | stderr 日志级别、子进程启动与请求超时 |
 
 **`FIRECRAWL_CLOUD` 强制为 `off`**，不可配置：sex 不会把 URL 送给 Firecrawl 云端。
@@ -96,7 +113,7 @@ SEX_LOCAL_VERSION=0.1.1 bun run build            # 把 firecrawl-local 也嵌进
 
 ## fork
 
-`/v2/parse`、`--proxy`、按请求的网络策略、adblock、actions 都需要改 firecrawl-local 本身。patch 顺序和封装规则在 [`docs/fork.md`](docs/fork.md)。上游 `firecrawl-local` 是 AGPL-3.0，sex 始终以**子进程 + HTTP** 使用它，从不链接它的 crate。
+`/v2/parse`、`--proxy`、按请求的网络策略、adblock、actions 都需要改 firecrawl-local 本身——**除了 `/v2/parse`**：它是 `packages/parse`，跑 here-docs 子进程，不需要 fork，也不分发 AGPL 代码。剩下的 patch 顺序和封装规则在 [`docs/fork.md`](docs/fork.md)。上游 `firecrawl-local` 是 AGPL-3.0，sex 始终以**子进程 + HTTP** 使用它，从不链接它的 crate。
 
 ## 开发
 
@@ -107,6 +124,7 @@ bun run lint    # Biome
 ```
 
 - `packages/local` — 唯一知道 firecrawl-local 存在的地方：spawn、`/health`、token、重启与冷却、嵌入、HTTP 客户端。
+- `packages/parse` — 把上传的字节喂给 here-docs 子进程，拿回 `{ markdown, warnings }`；OCR 引擎不进 sex 的进程。
 - `packages/search` — 托管 SearXNG + Firecrawl v2 search 形状。
 - `apps/sex` — `engine.ts`（过滤与转发）、`http.ts`、`mcp.ts`、`cli.ts`。
 

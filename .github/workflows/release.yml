@@ -1,0 +1,84 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to release (for example v1.0.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Only the platforms `@searxng-js/searxng` ships a prebuilt binary for get a self-contained build. Elsewhere
+    # SEX_SEARXNG_URL is required, so there is nothing to gain from a release asset.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: bun-linux-x64
+            asset: sex-linux-x64
+          - os: macos-14
+            target: bun-darwin-arm64
+            asset: sex-darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      # When the firecrawl-local fork ships binaries, download the one matching this platform here, verify its
+      # SHA-256, and pass SEX_LOCAL_BINARY / SEX_LOCAL_VERSION to the build below (see docs/fork.md).
+      - run: bun run build
+        env:
+          SEX_TARGET: ${{ matrix.target }}
+      - name: Rename and smoke test
+        run: |
+          mv dist/sex "${{ matrix.asset }}"
+          chmod +x "${{ matrix.asset }}"
+          "./${{ matrix.asset }}" version
+      - name: Checksum
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          cat > NOTES.md <<'EOF'
+          sex: one binary, with firecrawl-local and SearXNG as child processes.
+
+          firecrawl-local is not embedded yet (the fork is not released): put a `firecrawl-local` binary on PATH,
+          or set SEX_LOCAL_PATH / SEX_LOCAL_URL. /v2/parse needs `here-docs` on PATH or SEX_PARSE_PATH.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "$TAG" artifacts/* --title "$TAG" --notes-file NOTES.md
+          fi

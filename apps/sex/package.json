@@ -1,11 +1,13 @@
 {
   "name": "@searxng-js/sex",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
     "@searxng-js/sex-local": "workspace:*",
+    "@searxng-js/sex-parse": "workspace:*",
     "@searxng-js/sex-search": "workspace:*",
     "hono": "^4.13.19",
     "zod": "^4.6.7"

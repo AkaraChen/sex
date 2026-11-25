@@ -1,5 +1,6 @@
-// Builds dist/sex. A Bun executable with the JavaScript bundled; `SEX_LOCAL_BINARY` embeds a firecrawl-local build of a
-// specific version (the release pipeline's job), otherwise the binary is looked up on PATH at runtime.
+// Builds dist/sex. A Bun executable with the JavaScript bundled. `SEX_TARGET` picks the platform
+// (bun-linux-x64, bun-darwin-arm64, ...), `SEX_LOCAL_BINARY` embeds a firecrawl-local build of a specific version
+// (the release pipeline's job), otherwise the binary is looked up on PATH at runtime.
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -25,13 +26,18 @@ await import("./cli.ts");
   entry = generated;
 }
 
+const target = process.env.SEX_TARGET as Bun.Build.CompileTarget | undefined;
+const outfile = join(root, "dist", "sex");
 await mkdir(join(root, "dist"), { recursive: true });
 const result = await Bun.build({
   entrypoints: [entry],
-  compile: { outfile: join(root, "dist", "sex") },
+  compile: { outfile, ...(target ? { target } : {}) },
 });
 if (!result.success) {
   for (const log of result.logs) console.error(log);
   process.exit(1);
 }
-console.log(`dist/sex${binary ? ` (firecrawl-local embedded from ${binary})` : ""}`);
+const size = (await Bun.file(outfile).size) / 1024 / 1024;
+console.log(
+  `dist/sex  ${target ?? "host"}  ${size.toFixed(1)} MB${binary ? `  firecrawl-local embedded from ${binary}` : ""}`,
+);

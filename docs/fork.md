@@ -5,14 +5,15 @@ outside, kept as small, independent patches so a version bump is a rebase, not a
 
 | Patch | Adds | Why it cannot live in sex |
 | --- | --- | --- |
-| `POST /v2/parse` | multipart file → markdown, reusing `documents.rs` (`pdf-inspector`, `anydoc`) | Upstream parses documents only after fetching a URL, and `guard.rs` refuses `file://` |
 | `--proxy` / `FIRECRAWL_LOCAL_PROXY` | proxy for `reqwest` and the browser's `proxy.chrome_args()` | Upstream has no proxy option; its cloud fallback is the competing feature |
 | per-request network policy | `--allow-private` per request, CIDR allowlist | Upstream's policy is one boolean for the process |
 | adblock | the `||domain^` / `@@||domain^` table sex already ships | Upstream has no adblocking |
 | `actions` | CDP execution after load | Upstream deliberately ignores them |
 
-Order: `/v2/parse` first (it deletes sex's two-instance workaround), then `--proxy`, then the network policy,
-adblock and actions.
+Order: proxy, network policy, adblock, actions.
+
+`/v2/parse` is **not** a patch: it is `packages/parse`, a separate `here-docs` subprocess (MIT, `@firecrawl/anydoc` and
+`@firecrawl/pdf-inspector` underneath). No fork is needed for it, and no AGPL code is redistributed.
 
 ## Shape of a patch
 
