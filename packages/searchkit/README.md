@@ -2,8 +2,8 @@
 
 Normalized multi-provider web search: one `SearchProvider` contract, thirteen adapters, and a
 `createSearch` orchestrator that is a ~100-line loop — explicit fallback and two time budgets,
-nothing else. Zero runtime dependencies, no build step, `sideEffects: false` so a bundle keeps
-only the adapters it imports.
+nothing else. No build step; outbound HTTP is [ky](https://github.com/sindresorhus/ky)'s job (the
+one dependency), and `sideEffects: false` means a bundle keeps only the adapters it imports.
 
 A fork of [Belweave/searchSDK](https://github.com/Belweave/searchSDK) (MIT), copied at rev `05f9324`
 and ours to change since; `NOTICE` keeps the attribution, the forked-from revision, and a log of

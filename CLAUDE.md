@@ -8,8 +8,9 @@ thin layer in front (HTTP, MCP, CLI, warnings). Bun only.
 - `packages/local` (`@searxng-js/sex-local`) — the **only** module that knows firecrawl-local exists. `host.ts`
   spawns the binary (`serve --host --port --token`, waits for `/health`, `setpriv --pdeathsig TERM` on Linux,
   SIGTERM→SIGKILL on stop), `resolveBinary` (explicit path → embedded via `registerEmbedded` → `PATH`), `client.ts`
-  (HTTP, error mapping, timeouts), `service.ts` (lazy start, restart after exit, 3 failures/60 s → 30 s cooldown).
-  Forced `FIRECRAWL_CLOUD=off`. No egress code: SSRF is firecrawl-local's `guard.rs`.
+  (HTTP via ky, error mapping, one timeout per call that a caller deadline only shortens), `service.ts` (lazy
+  start, restart after exit, 3 failures/60 s → 30 s cooldown). Forced `FIRECRAWL_CLOUD=off`. No egress code: SSRF
+  is firecrawl-local's `guard.rs`.
 - `packages/searchkit` (`@searxng-js/searchkit`) — a fork of Belweave/searchSDK (MIT, forked at rev `05f9324`;
   attribution and the change log live in its `NOTICE`). The normalized `SearchProvider` contract, thirteen provider
   adapters, and `createSearch` — explicit fallback and two time budgets, ~100 lines, no cache/dedup/batch. The code
@@ -58,6 +59,9 @@ built (`bun run build` → `dist/sex`).
   firecrawl-local fork.
 - **Refused, not ignored.** Options and formats firecrawl-local cannot honour are deleted from the request and named
   in `data.warning` (`engine.ts` `IGNORED`, `LOCAL_FORMATS`). Add new ones there.
+- **Outbound HTTP is ky's job.** Both transport clients (`packages/local`'s `client.ts`, searchkit's `jsonRequest`)
+  run on ky instances whose hooks do the cross-cutting work — auth header in `beforeRequest`, error classification
+  in `beforeError` — so call sites stay failure-free. Do not hand-roll fetch mechanics again.
 - **Self-hosted.** `FIRECRAWL_CLOUD=off` is set by `LocalService` and is not configurable. No URL goes to Firecrawl.
 - **Warnings travel.** A partial result carries `warning`; errors map in `apps/sex/src/errors.ts` (sidecar 4xx passes
   through, 5xx/401/403 → 502, unreachable → 503, timeout → 504).

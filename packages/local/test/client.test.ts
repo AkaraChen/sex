@@ -54,6 +54,15 @@ test("a missing token is a 401 from the child", async () => {
   expect(error.status).toBe(401);
 });
 
+test("a caller cancellation is a TIMEOUT too", async () => {
+  const client = createClient({ baseUrl: base(), token: "secret" });
+  const controller = new AbortController();
+  controller.abort();
+  const error = await client.scrape({ url: "https://example.com" }, { signal: controller.signal }).catch((err) => err);
+  expect(error).toBeInstanceOf(LocalError);
+  expect(error.code).toBe("TIMEOUT");
+});
+
 test("the client's timeout aborts the request", async () => {
   const client = createClient({ baseUrl: base(), token: "secret", timeoutMs: 50 });
   const error = await client.scrape({ url: "https://example.com", slow: true }).catch((err) => err);

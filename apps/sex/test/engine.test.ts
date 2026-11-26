@@ -60,9 +60,10 @@ const searxngResult = {
 test("a configured provider answers through the whole stack", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
-    if (String(input).startsWith("https://api.tavily.com/"))
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.startsWith("https://api.tavily.com/"))
       return Response.json({ results: [{ url: "https://t.test/", title: "T", content: "stubbed" }] });
-    throw new Error(`unexpected fetch: ${String(input)}`);
+    throw new Error(`unexpected fetch: ${url}`);
   }) as typeof fetch;
   try {
     const e = engine({ searchChain: ["tavily"], searchKeys: { tavily: "k" }, searxngUrl: "http://127.0.0.1:9" });
@@ -79,7 +80,7 @@ test("a configured provider answers through the whole stack", async () => {
 test("when the provider falls over, SearXNG answers and the warning says so", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input);
+    const url = input instanceof Request ? input.url : String(input);
     if (url.startsWith("https://api.tavily.com/")) return new Response("busy", { status: 429 });
     if (url.includes("/search")) return Response.json({ results: [searxngResult] });
     throw new Error(`unexpected fetch: ${url}`);

@@ -1,3 +1,5 @@
+import ky, { type BeforeErrorState, type Hooks, HTTPError, TimeoutError } from "ky";
+
 /** The time one call has: the caller's cancellation and, optionally, a wall-clock deadline. */
 export interface CallTime {
   signal?: AbortSignal;
@@ -50,73 +52,93 @@ export interface LocalClient {
 }
 
 export function createClient(options: ClientOptions): LocalClient {
-  const f = options.fetch ?? fetch;
   const base = options.baseUrl.replace(/\/$/, "");
   const timeoutMs = options.timeoutMs ?? 60_000;
+  const hooks: Hooks = { beforeError: [toLocalError(base)] };
+  if (options.token) {
+    const token = options.token;
+    hooks.beforeRequest = [({ request }) => void request.headers.set("authorization", `Bearer ${token}`)];
+  }
+  const client = ky.create({ retry: 0, ...(options.fetch ? { fetch: options.fetch } : {}), hooks });
 
-  async function request(path: string, init: RequestInit, time?: CallTime): Promise<JsonResponse> {
-    const headers: Record<string, string> = { ...(options.token ? { authorization: `Bearer ${options.token}` } : {}) };
-    if (init.body !== undefined && !(init.body instanceof FormData)) headers["content-type"] = "application/json";
-
-    const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)];
-    if (time?.signal) signals.push(time.signal);
-    if (time?.deadlineAt !== undefined) signals.push(AbortSignal.timeout(Math.max(1, time.deadlineAt - Date.now())));
-
-    let response: Response;
-    try {
-      response = await f(`${base}${path}`, { ...init, headers, signal: AbortSignal.any(signals) });
-    } catch (err) {
-      if (signals.some((signal) => signal.aborted)) {
-        throw new LocalError(499, "TIMEOUT", "Timed out", "", { cause: err });
-      }
-      throw new LocalError(
-        503,
-        "LOCAL_UNAVAILABLE",
-        `firecrawl-local is not reachable at ${base}: ${message(err)}`,
-        "",
-        {
-          cause: err,
-        },
-      );
-    }
-
+  async function request(
+    method: "DELETE" | "GET" | "POST",
+    path: string,
+    time: CallTime | undefined,
+    body?: Record<string, unknown>,
+  ): Promise<JsonResponse> {
+    // ky owns the timer: a caller deadline just shortens the same one timeout.
+    const timeout =
+      time?.deadlineAt === undefined ? timeoutMs : Math.min(timeoutMs, Math.max(1, time.deadlineAt - Date.now()));
+    const response = await client(`${base}/${path}`, {
+      method,
+      ...(body === undefined ? {} : { json: body }),
+      timeout,
+      ...(time?.signal ? { signal: time.signal } : {}),
+    });
     const text = await response.text();
-    if (!response.ok) {
-      const parsed = parseJson(text);
-      const error = typeof parsed?.error === "string" ? parsed.error : text.slice(0, 300);
-      throw new LocalError(response.status, codeOf(parsed, response.status), error || `HTTP ${response.status}`, text);
-    }
     const parsed = parseJson(text);
-    if (parsed === undefined) {
+    if (parsed === undefined)
       throw new LocalError(502, "BAD_RESPONSE", `firecrawl-local answered a non-JSON body (${response.status})`, text);
-    }
     return parsed as JsonResponse;
   }
 
-  const post = (path: string, body: Record<string, unknown>, time?: CallTime) =>
-    request(path, { method: "POST", body: JSON.stringify(body) }, time);
+  const post = (path: string, body: Record<string, unknown>, time?: CallTime) => request("POST", path, time, body);
 
   return {
-    scrape: (body, time) => post("/v2/scrape", body, time),
-    map: (body, time) => post("/v2/map", body, time),
-    crawl: (body, time) => post("/v2/crawl", body, time),
-    crawlStatus: (id, time) => request(`/v2/crawl/${encodeURIComponent(id)}`, { method: "GET" }, time),
-    crawlCancel: (id, time) => request(`/v2/crawl/${encodeURIComponent(id)}`, { method: "DELETE" }, time),
-    batch: (body, time) => post("/v2/batch/scrape", body, time),
-    batchStatus: (id, time) => request(`/v2/batch/scrape/${encodeURIComponent(id)}`, { method: "GET" }, time),
-    batchCancel: (id, time) => request(`/v2/batch/scrape/${encodeURIComponent(id)}`, { method: "DELETE" }, time),
+    scrape: (body, time) => post("v2/scrape", body, time),
+    map: (body, time) => post("v2/map", body, time),
+    crawl: (body, time) => post("v2/crawl", body, time),
+    crawlStatus: (id, time) => request("GET", `v2/crawl/${encodeURIComponent(id)}`, time),
+    crawlCancel: (id, time) => request("DELETE", `v2/crawl/${encodeURIComponent(id)}`, time),
+    batch: (body, time) => post("v2/batch/scrape", body, time),
+    batchStatus: (id, time) => request("GET", `v2/batch/scrape/${encodeURIComponent(id)}`, time),
+    batchCancel: (id, time) => request("DELETE", `v2/batch/scrape/${encodeURIComponent(id)}`, time),
     health: async () => {
       try {
-        const response = await f(`${base}/health`, {
-          headers: options.token ? { authorization: `Bearer ${options.token}` } : {},
-          signal: AbortSignal.timeout(1000),
-        });
-        return response.ok;
+        return (await client(`${base}/health`, { timeout: 1000, throwHttpErrors: false })).ok;
       } catch {
         return false;
       }
     },
   };
+}
+
+/** The middleware: every ky failure leaves here as the one LocalError its caller needs. */
+function toLocalError(base: string) {
+  return ({ error }: BeforeErrorState): Error => {
+    if (error instanceof HTTPError) {
+      // ky pre-parses the failed body into `error.data`; the response keeps only status and headers.
+      const parsed =
+        typeof error.data === "object" && error.data !== null ? (error.data as Record<string, unknown>) : undefined;
+      const text = typeof error.data === "string" ? error.data : parsed === undefined ? "" : JSON.stringify(parsed);
+      const detail = typeof parsed?.error === "string" ? parsed.error : text.slice(0, 300);
+      return new LocalError(
+        error.response.status,
+        codeOf(parsed, error.response.status),
+        detail || `HTTP ${error.response.status}`,
+        text,
+        { cause: error },
+      );
+    }
+    if (error instanceof TimeoutError || isAbort(error))
+      return new LocalError(499, "TIMEOUT", "Timed out", "", { cause: error });
+    return new LocalError(
+      503,
+      "LOCAL_UNAVAILABLE",
+      `firecrawl-local is not reachable at ${base}: ${error instanceof Error ? error.message : String(error)}`,
+      "",
+      { cause: error },
+    );
+  };
+}
+
+/** A caller cancellation surfaces as an AbortError somewhere in the cause chain. */
+function isAbort(err: unknown): boolean {
+  for (let e = err; e instanceof Error; e = e.cause instanceof Error ? e.cause : undefined) {
+    if (e.name === "AbortError") return true;
+  }
+  return false;
 }
 
 function parseJson(text: string): Record<string, unknown> | undefined {
@@ -130,8 +152,4 @@ function parseJson(text: string): Record<string, unknown> | undefined {
 
 function codeOf(parsed: Record<string, unknown> | undefined, status: number): string {
   return typeof parsed?.code === "string" ? parsed.code : `HTTP_${status}`;
-}
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

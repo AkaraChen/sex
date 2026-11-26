@@ -10,5 +10,8 @@
     "./host": "./src/host.ts",
     "./client": "./src/client.ts"
   },
-  "files": ["src"]
+  "files": ["src"],
+  "dependencies": {
+    "ky": "^2.2.0"
+  }
 }

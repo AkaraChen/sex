@@ -1,3 +1,4 @@
+import ky, { type BeforeErrorState, HTTPError, type KyInstance, ResponseSizeError } from "ky";
 import { SearchError } from "./errors.ts";
 import type { AdapterOptions, FetchTransport, SearchErrorCode, SearchResult, SearchUsage } from "./types.ts";
 import { configuration, optionalNumber, optionalString, optionalStrings, record, resultUrl } from "./validation.ts";
@@ -20,65 +21,59 @@ export function retryAfter(value: string | null): number | undefined {
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
 }
 
-/** Bodies over this size are not a search answer; stop reading at ten MiB. */
+/** Bodies over this size are not a search answer; ky stops the read and reports it. */
 const MAX_BYTES = 10 * 1024 * 1024;
 
-/**
- * One POST/GET, JSON in, JSON out. Fixed origins (no redirects), no cookies, the caller's signal
- * as the only timer, and every failure arriving as a SearchError code.
- */
+function codeFor(status: number): SearchErrorCode {
+  if (status === 401 || status === 402 || status === 403 || status === 432 || status === 433) return "auth";
+  if (status === 429) return "rate_limit";
+  if (status >= 500 || status === 408) return "unavailable";
+  return "provider_error";
+}
+
+/** The middleware: every ky failure leaves here as a SearchError code, so call sites have no failure branches. */
+function classify({ error }: BeforeErrorState): Error {
+  if (error instanceof HTTPError) {
+    const retryAfterMs = retryAfter(error.response.headers.get("retry-after"));
+    return new SearchError(codeFor(error.response.status), {
+      status: error.response.status,
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    });
+  }
+  if (error instanceof ResponseSizeError) return new SearchError("invalid_response", { cause: error });
+  return new SearchError("network", { cause: error });
+}
+
+// Fixed origin (no redirects), no cookies, no internal retry, capped body; the caller's signal is the only timer.
+const clients = new WeakMap<FetchTransport, KyInstance>();
+function oneKyPer(transport: FetchTransport): KyInstance {
+  let client = clients.get(transport);
+  if (!client) {
+    client = ky.create({
+      fetch: transport,
+      retry: 0,
+      redirect: "error",
+      credentials: "omit",
+      maxResponseSize: MAX_BYTES,
+      hooks: { beforeError: [classify] },
+    });
+    clients.set(transport, client);
+  }
+  return client;
+}
+
+/** One request, JSON in, JSON out; anything else is a SearchError that left the middleware above. */
 export async function jsonRequest(
   transport: FetchTransport,
   url: string | URL,
   init: RequestInit,
 ): Promise<Record<string, unknown>> {
-  let response: Response;
+  const response = await oneKyPer(transport)(url, init);
   try {
-    response = await transport(url, { ...init, redirect: "error", credentials: "omit" });
+    return record(await response.json());
   } catch (cause) {
-    if (cause instanceof SearchError) throw cause;
-    throw new SearchError("network", { cause });
+    throw new SearchError("invalid_response", { cause });
   }
-  if (!response.ok) {
-    const status = response.status;
-    const code: SearchErrorCode =
-      status === 401 || status === 403 || status === 402 || status === 432 || status === 433
-        ? "auth"
-        : status === 429
-          ? "rate_limit"
-          : (status >= 500 && status <= 599) || status === 408
-            ? "unavailable"
-            : "provider_error";
-    const retryAfterMs = retryAfter(response.headers.get("retry-after"));
-    void response.body?.cancel().catch(() => {});
-    throw new SearchError(code, { status, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) });
-  }
-  const decoder = new TextDecoder();
-  let text = "";
-  let received = 0;
-  const reader = response.body?.getReader();
-  try {
-    while (reader) {
-      const next = await reader.read();
-      if (next.done) break;
-      received += next.value.byteLength;
-      if (received > MAX_BYTES) throw new SearchError("invalid_response");
-      text += decoder.decode(next.value, { stream: true });
-    }
-    text += decoder.decode();
-  } catch (cause) {
-    if (cause instanceof SearchError) throw cause;
-    throw new SearchError("network", { cause });
-  } finally {
-    void response.body?.cancel().catch(() => {});
-  }
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    throw new SearchError("invalid_response");
-  }
-  return record(body);
 }
 
 /** One provider row, lifted into the normalized result by naming its fields. */

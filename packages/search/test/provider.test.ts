@@ -9,9 +9,9 @@ interface Captured {
 
 const captured: Captured = {};
 
-const tavilyFetch: searchkit.FetchTransport = async (input, init) => {
-  expect(String(input)).toBe("https://api.tavily.com/search");
-  captured.body = JSON.parse(String(init?.body));
+const tavilyFetch: searchkit.FetchTransport = async (request) => {
+  expect(request.url).toBe("https://api.tavily.com/search");
+  captured.body = (await request.json()) as Record<string, unknown>;
   return Response.json({
     results: [{ url: "https://t.test/", title: "Tavily hit", content: "the snippet", score: 0.9 }],
     usage: { credits: 1 },
@@ -84,8 +84,8 @@ test("domain filters follow the provider's declared capabilities", async () => {
 });
 
 test("a provider without domain support loses the filters to a warning, not an error", async () => {
-  const braveFetch: searchkit.FetchTransport = async (input) => {
-    expect(String(input)).not.toContain("site");
+  const braveFetch: searchkit.FetchTransport = async (request) => {
+    expect(request.url).not.toContain("site");
     return Response.json({ web: { results: [{ url: "https://b.test/", title: "B", description: "d" }] } });
   };
   const { data, warnings } = await new ProviderBackend(searchkit.brave({ apiKey: "k", fetch: braveFetch })).search({

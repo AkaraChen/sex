@@ -99,7 +99,7 @@ export interface SearchConfig {
   attemptTimeoutMs?: number;
 }
 
-export type FetchTransport = (input: string | URL, init?: RequestInit) => Promise<Response>;
+export type FetchTransport = (request: Request, init?: RequestInit) => Promise<Response>;
 export interface AdapterOptions {
   apiKey: string;
   fetch?: FetchTransport;

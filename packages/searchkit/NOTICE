@@ -22,6 +22,11 @@ the revision here. Changes since the fork so far:
   would need a build this package does not have.
 - `src/http.ts` annotates the stream read result structurally, because Bun's
   type library names that type differently from the DOM lib upstream targets.
+- Outbound HTTP is ky's (`ky@2.2.0`), middleware-style: `retry: 0`, `redirect: "error"`,
+  `credentials: "omit"` and `maxResponseSize` are instance options, and a `hooks.beforeError`
+  middleware maps every ky failure (HTTPError, ResponseSizeError, timeouts, aborts) onto the
+  SearchError codes, so no call site has a failure branch. `FetchTransport` therefore takes a
+  `Request`, matching how ky dispatches. The hand-rolled stream-cap loop is gone.
 - `searxng.ts` and `search-addon.ts` were deleted; `configuration()` moved to
   `validation.ts`; `valyu.ts` is a plain `SearchProvider` without `searchRaw`.
 - The orchestration core was rewritten small. Upstream's `createSearch` carried scopes, a
