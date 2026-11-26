@@ -74,11 +74,14 @@ export interface SearchData {
 
 export class SearchBackendError extends Error {
   readonly status: number;
+  /** Whether another backend could answer the same search later (instance down, rate limit, timeout). */
+  readonly transient: boolean;
 
-  constructor(message: string, status = 502, options?: ErrorOptions) {
+  constructor(message: string, status = 502, options?: ErrorOptions & { transient?: boolean }) {
     super(message, options);
     this.name = "SearchBackendError";
     this.status = status;
+    this.transient = options?.transient ?? (status === 408 || status === 429 || status >= 500);
   }
 }
 

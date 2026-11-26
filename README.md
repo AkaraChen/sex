@@ -17,18 +17,18 @@ A self-hosted Firecrawl v2 API in three processes:
 ```
 
 - **firecrawl-local** 抓取：fetch、浏览器、清洗、文档解析。它是 Firecrawl 官方的 Rust 重写，跟云端共用 `apps/api/native` 的清洗代码。
-- **SearXNG** 搜索。这是 firecrawl-local 唯一交给 Firecrawl 云的东西，sex 在本地答掉。
+- **搜索默认 SearXNG**，`SEX_SEARCH_PROVIDER` 可换成 tavily / brave / exa 等十三家（`packages/searchkit`，fork 自 Belweave/searchSDK，MIT 署名保留）。这是 firecrawl-local 唯一交给 Firecrawl 云的东西，sex 在本地答掉。配了 provider 时链尾自动垫 SearXNG 兜底（`!searxng` 可关）；什么都没配就是纯 SearXNG，行为和以前完全一致。
 - **here-docs** 转换上传的文件（`/v2/parse`）。另一个子进程，MIT，底层就是 `@firecrawl/anydoc` 与 `@firecrawl/pdf-inspector`。
 - **sex** 只做中间那层：HTTP API、MCP、CLI，以及两边对不上的东西的告警。
 
-没有队列、数据库、worker。两个子进程，一个 HTTP 面。旧的 17 个包只剩 `packages/local` 和 `packages/search`，**src 1507 行**（原来 13800）。Bun only，没有 Node 支持，也没有逐包构建。
+没有队列、数据库、worker。两个子进程，一个 HTTP 面。旧的 17 个包只剩 `packages/local`、`packages/parse`、`packages/search`，加一个 fork 来的 `packages/searchkit`；sex 自己的 src **2086 行**（searchkit 是 fork 的 1250 行，不算账）。Bun only，没有 Node 支持，也没有逐包构建。
 
 ## 现在能用的
 
 | 能力 | 谁做 | 说明 |
 | --- | --- | --- |
 | `POST /v2/scrape` | firecrawl-local | `formats` 只保留 `markdown` / `html` / `rawHtml` / `links`；其余被删掉并写进 `warning` |
-| `POST /v2/search` | SearXNG | `web` / `news` / `images`、分类、时间、域名过滤 |
+| `POST /v2/search` | SearXNG 或配置的 provider | 输出恒为 Firecrawl 形状（`web` / `news` / `images`）；SearXNG 全能力，provider 答不了的字段写进 `warning`，结果进 `web`；响应带 `provider` 标明谁答的 |
 | `POST /v2/map` | firecrawl-local | 原样透传 |
 | `/v2/crawl*`、`/v2/batch/scrape*` | firecrawl-local | 原样透传；job 在它的内存里，1 小时后过期 |
 | `POST /v2/parse` | here-docs | 上传文件 → Markdown；here-docs 是独立子进程，没有 fork |
@@ -93,6 +93,9 @@ SEX_LOCAL_VERSION=0.1.1 bun run build   # 把 firecrawl-local 也嵌进去，运
 | `SEX_CHROME_PATH`, `SEX_BROWSER` | JS 页面的 Chrome；`auto` / `never` / `always` |
 | `SEX_ALLOW_PRIVATE` | 允许 firecrawl-local 访问 loopback 和私网（元数据地址始终拒绝） |
 | `SEX_SEARXNG_URL`, `SEX_SEARXNG_PATH` | 外部 SearXNG，或子进程用的二进制 |
+| `SEX_SEARCH_PROVIDER` | 搜索链，逗号分隔、按序尝试，如 `tavily,brave`；`!searxng` 关掉自动垫底。**不设 = 纯 SearXNG** |
+| `SEX_SEARCH_<ID>_KEY` | 链上每家的 key，如 `SEX_SEARCH_TAVILY_KEY`；缺了启动即报错 |
+| `SEX_SEARCH_TIMEOUT` | 单次 provider 搜索的预算（默认跟随 `SEX_TIMEOUT`） |
 | `SEX_PARSE_PATH`, `SEX_PARSE_TIMEOUT` | `/v2/parse` 用的 here-docs（默认 `PATH`），以及转换超时（默认 120 s） |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | 透传给 firecrawl-local 的普通抓取（reqwest 默认读）；浏览器不读 |
 | `SEX_LOG_LEVEL`, `SEX_TIMEOUT` | stderr 日志级别、子进程启动与请求超时 |
@@ -131,8 +134,9 @@ bun run lint    # Biome
 
 - `packages/local` — 唯一知道 firecrawl-local 存在的地方：spawn、`/health`、token、重启与冷却、嵌入、HTTP 客户端。
 - `packages/parse` — 把上传的字节喂给 here-docs 子进程，拿回 `{ markdown, warnings }`；OCR 引擎不进 sex 的进程。
-- `packages/search` — 托管 SearXNG + Firecrawl v2 search 形状。
-- `apps/sex` — `engine.ts`（过滤与转发）、`http.ts`、`mcp.ts`、`cli.ts`。
+- `packages/searchkit` — fork 自 Belweave/searchSDK（MIT，fork 于 rev `05f9324`）的归一化多 provider 搜索：`createSearch`（fallback + 超时，整个编排就 index.ts 那 ~100 行）、13 个适配器、错误码分类。代码归我们所有，按 sex 的需要演化，`NOTICE` 记 fork 版本与改动。
+- `packages/search` — 托管 SearXNG + Firecrawl v2 search 形状 + 搜索链（`SearchChain`、后端、显式的 `withSearxngFallback`）。
+- `apps/sex` — `engine.ts`（组链、过滤与转发）、`http.ts`、`mcp.ts`、`cli.ts`。apps 层默认给链垫上 SearXNG；库层零魔法。
 
 包直接导出 TypeScript 源码，没有构建步骤；只有 app 会被编译。
 

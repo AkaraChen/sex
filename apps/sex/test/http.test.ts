@@ -91,6 +91,9 @@ beforeAll(async () => {
     parsePath: hereDocs,
     allowPrivate: false,
     timeoutMs: 2000,
+    searchChain: [],
+    searchExcluded: [],
+    searchKeys: {},
   };
   app = createApp(new Engine(config, createLogger("error")));
 });
@@ -135,6 +138,9 @@ test("a sidecar 401 is our misconfiguration, not the caller's", async () => {
     searxngUrl: searxng.url.origin,
     allowPrivate: false,
     timeoutMs: 2000,
+    searchChain: [],
+    searchExcluded: [],
+    searchKeys: {},
   };
   const misconfigured = createApp(new Engine(config, createLogger("error")));
   const response = await misconfigured.request("/v2/scrape", {
@@ -152,6 +158,7 @@ test("/v2/search answers the Firecrawl shape", async () => {
   expect(body.success).toBe(true);
   expect(body.id).toBeTruthy();
   expect(body.creditsUsed).toBe(0);
+  expect(body.provider).toBe("searxng");
   expect(body.data.web[0]).toMatchObject({ url: "https://a.test/", position: 1 });
 });
 
@@ -197,6 +204,9 @@ test("an unreachable firecrawl-local is a 503", async () => {
     searxngUrl: searxng.url.origin,
     allowPrivate: false,
     timeoutMs: 500,
+    searchChain: [],
+    searchExcluded: [],
+    searchKeys: {},
   };
   const failing = createApp(new Engine(config, createLogger("error")));
   const response = await failing.request("/v2/scrape", {

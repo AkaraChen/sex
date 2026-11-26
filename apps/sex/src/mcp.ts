@@ -38,8 +38,8 @@ export function buildServer(engine: Engine): McpServer {
     },
     (args, ctx) =>
       run(async () => {
-        const { data, warning } = await engine.search(args, ctx.mcpReq.signal);
-        return JSON.stringify(warning ? { ...data, warning } : data);
+        const { data, warning, provider } = await engine.search(args, ctx.mcpReq.signal);
+        return JSON.stringify({ ...data, provider, ...(warning ? { warning } : {}) });
       }),
   );
 

@@ -1,0 +1,33 @@
+searchkit is a fork of searchSDK by Belweave.
+
+Source:   https://github.com/Belweave/searchSDK
+Revision: 05f93244e9031be2ff0f47f971bcd51dd9e4aef1 (main, 2026)
+Forked:   2026-11-26, from @belweave/search-sdk 0.1.0-alpha.0 (packages/sdk/src)
+License:  MIT (see LICENSE; the upstream copyright notice stays)
+
+Copied: the normalized search core (index, types, errors, validation, reliability,
+http, testing) and the provider adapters. Not taken: the provider-native clients
+(native-*), durable operations, the gateway, WonderSearch, and the raw-response
+(`searchRaw`) ceremony around SearXNG and Valyu — sex answers SearXNG itself, with
+more capability than the upstream adapter carries.
+
+This is a fork, not a pinned copy: the code evolves to fit sex, and upstream is a
+reference, not a master. To adopt something new upstream, cherry-pick it and note
+the revision here. Changes since the fork so far:
+
+- Relative import suffixes are `.ts`, matching the repository (no build step).
+- `RetryPolicy` lives in `src/types.ts`; the (not taken) `native-transport.ts`
+  was its old home.
+- `src/index.ts` re-exports every provider adapter; upstream's subpath exports
+  would need a build this package does not have.
+- `src/http.ts` annotates the stream read result structurally, because Bun's
+  type library names that type differently from the DOM lib upstream targets.
+- `searxng.ts` and `search-addon.ts` were deleted; `configuration()` moved to
+  `validation.ts`; `valyu.ts` is a plain `SearchProvider` without `searchRaw`.
+- The orchestration core was rewritten small. Upstream's `createSearch` carried scopes, a
+  FIFO semaphore, an LRU cache, in-flight deduplication and batch search; the fork keeps a
+  sequential provider loop with a total and a per-attempt budget (`AbortSignal.timeout` +
+  clock-based classification). No cache, no dedup, no batch, no in-provider retry: the sex
+  chain owns fallback and sex asks for nothing more. The provider-response re-validation
+  (`validateProviderResponse`) went with it — our adapters build responses that fit by
+  construction.

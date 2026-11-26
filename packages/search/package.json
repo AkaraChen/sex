@@ -5,11 +5,13 @@
   "type": "module",
   "license": "MIT",
   "description": "Search the web through SearXNG in the Firecrawl v2 search shape",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts"
   },
   "files": ["src"],
   "dependencies": {
+    "@searxng-js/searchkit": "workspace:*",
     "@searxng-js/searxng": "0.1.0",
     "zod": "^4.6.7"
   }

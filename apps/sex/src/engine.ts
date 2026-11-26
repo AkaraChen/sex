@@ -1,6 +1,16 @@
 import { type CallTime, LocalService } from "@searxng-js/sex-local";
 import { Parser } from "@searxng-js/sex-parse";
-import { type SearchData, type SearchRequest, Searxng, searchWeb } from "@searxng-js/sex-search";
+import {
+  PROVIDERS,
+  ProviderBackend,
+  type SearchBackend,
+  SearchChain,
+  type SearchData,
+  type SearchRequest,
+  Searxng,
+  SearxngBackend,
+  withSearxngFallback,
+} from "@searxng-js/sex-search";
 import type { Config } from "./config.ts";
 import type { Logger } from "./log.ts";
 
@@ -36,11 +46,13 @@ export interface ScrapeResult {
   data: Record<string, unknown>;
 }
 
-/** What a scrape and a search run on: the firecrawl-local instance, SearXNG, and the configuration they were built from. */
+/** What a scrape and a search run on: the firecrawl-local instance, the search chain, and the configuration they were built from. */
 export class Engine {
   readonly local: LocalService;
   readonly searxng: Searxng;
   readonly parser: Parser;
+  /** The configured providers in order, with SearXNG answering by default and falling back at the end. */
+  readonly searchChain: SearchChain;
 
   constructor(
     readonly config: Config,
@@ -62,6 +74,40 @@ export class Engine {
       onOutput: (line) => log.debug("searxng", { output: line }),
     });
     this.parser = new Parser({ path: config.parsePath, timeoutMs: config.parseTimeoutMs });
+    this.searchChain = new SearchChain(this.buildChain());
+  }
+
+  /**
+   * `SEX_SEARCH_PROVIDER` names the chain; an empty one is SearXNG alone. A configured chain gets
+   * SearXNG appended as the fallback unless `!searxng` says otherwise — the app-side default,
+   * spelled out as the explicit `withSearxngFallback` it is.
+   */
+  private buildChain(): SearchBackend[] {
+    const searxng = new SearxngBackend(this.searxng);
+    const excluded = new Set(this.config.searchExcluded);
+    const backends: SearchBackend[] = [];
+    for (const name of this.config.searchChain) {
+      if (excluded.has(name)) continue;
+      if (name === "searxng") {
+        backends.push(searxng);
+        continue;
+      }
+      const factory = PROVIDERS[name];
+      if (!factory)
+        throw new Error(
+          `SEX_SEARCH_PROVIDER: unknown search provider "${name}" (known: searxng, ${Object.keys(PROVIDERS).sort().join(", ")})`,
+        );
+      if (!this.config.searchKeys[name])
+        throw new Error(`SEX_SEARCH_PROVIDER: "${name}" needs SEX_SEARCH_${name.toUpperCase()}_KEY`);
+      backends.push(
+        new ProviderBackend(
+          factory(this.config.searchKeys[name]),
+          this.config.searchTimeoutMs ?? this.config.timeoutMs,
+        ),
+      );
+    }
+    if (!backends.length) return [searxng];
+    return excluded.has("searxng") ? backends : withSearxngFallback(backends, searxng);
   }
 
   /** Scrapes through firecrawl-local and answers the Firecrawl v2 scrape shape. */
@@ -97,13 +143,19 @@ export class Engine {
     return { success: true, data };
   }
 
-  /** Searches SearXNG and answers the Firecrawl v2 search shape. */
-  async search(request: SearchRequest, signal?: AbortSignal): Promise<{ data: SearchData; warning?: string }> {
-    const client = await this.searxng.client();
+  /** Searches the configured chain and answers the Firecrawl v2 search shape; `provider` names who answered. */
+  async search(
+    request: SearchRequest,
+    signal?: AbortSignal,
+  ): Promise<{ data: SearchData; warning?: string; provider: string }> {
     const time: CallTime = { signal };
     if (request.timeout) time.deadlineAt = Date.now() + request.timeout;
-    const { data, warnings } = await searchWeb(client, request, time);
-    return { data, warning: warnings.length ? warnings.join("; ") : undefined };
+    const result = await this.searchChain.search(request, time);
+    return {
+      data: result.data,
+      warning: result.warnings.length ? result.warnings.join("; ") : undefined,
+      provider: result.provider,
+    };
   }
 
   async map(body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -151,9 +203,11 @@ export class Engine {
     return { success: true, data };
   }
 
-  /** Starts both child processes. Failures are logged, not fatal: the first request pays for them. */
+  /** Starts the child processes. Failures are logged, not fatal: the first request pays for them. */
   async warmup(): Promise<void> {
-    const results = await Promise.allSettled([this.local.warmup(), this.searxng.warmup()]);
+    const pending: Promise<unknown>[] = [this.local.warmup()];
+    if (this.searchChain.ids.includes("searxng")) pending.push(this.searxng.warmup());
+    const results = await Promise.allSettled(pending);
     for (const result of results) {
       if (result.status === "rejected") {
         this.log.warn("warmup failed", {
@@ -163,8 +217,12 @@ export class Engine {
     }
   }
 
-  describe(): { firecrawlLocal: string; searxng: string } {
-    return { firecrawlLocal: this.local.describe(), searxng: this.searxng.describe() };
+  describe(): { search: string; firecrawlLocal: string; searxng: string } {
+    return {
+      search: this.searchChain.ids.join(" -> "),
+      firecrawlLocal: this.local.describe(),
+      searxng: this.searxng.describe(),
+    };
   }
 
   async close(): Promise<void> {

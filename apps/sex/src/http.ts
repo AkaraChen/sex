@@ -36,8 +36,15 @@ export function createApp(engine: Engine): Hono {
 
   app.post("/v2/search", async (c) => {
     const request = parse(SearchRequest, await json(c));
-    const { data, warning } = await engine.search(request, c.req.raw.signal);
-    return c.json({ success: true as const, id: randomUUID(), creditsUsed: 0, data, ...(warning ? { warning } : {}) });
+    const { data, warning, provider } = await engine.search(request, c.req.raw.signal);
+    return c.json({
+      success: true as const,
+      id: randomUUID(),
+      creditsUsed: 0,
+      provider,
+      data,
+      ...(warning ? { warning } : {}),
+    });
   });
 
   app.post("/v2/map", async (c) => {

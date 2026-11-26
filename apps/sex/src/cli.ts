@@ -22,6 +22,7 @@ Usage:
 
 Environment: SEX_HOST, SEX_PORT, SEX_LOCAL_PATH, SEX_LOCAL_URL, SEX_LOCAL_TOKEN,
 SEX_CHROME_PATH, SEX_BROWSER, SEX_ALLOW_PRIVATE, SEX_SEARXNG_URL, SEX_SEARXNG_PATH,
+SEX_SEARCH_PROVIDER, SEX_SEARCH_<ID>_KEY, SEX_SEARCH_TIMEOUT,
 SEX_LOG_LEVEL, SEX_TIMEOUT
 `;
 
@@ -94,8 +95,8 @@ async function main(argv: string[]): Promise<void> {
       const query = positionals.join(" ");
       if (!query) return fail("search needs a query");
       const request: SearchRequest = { query, ...(values.limit ? { limit: Number(values.limit) } : {}) };
-      const { data, warning } = await engine.search(request);
-      console.log(JSON.stringify({ data, ...(warning ? { warning } : {}) }, null, 2));
+      const { data, warning, provider } = await engine.search(request);
+      console.log(JSON.stringify({ data, provider, ...(warning ? { warning } : {}) }, null, 2));
       await engine.close();
       return;
     }

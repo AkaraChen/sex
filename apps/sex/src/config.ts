@@ -20,12 +20,21 @@ export interface Config {
   parseTimeoutMs?: number;
   /** How long a child gets to start, and the default per-request timeout. */
   timeoutMs: number;
+  /** Provider names from `SEX_SEARCH_PROVIDER`, in order; empty means SearXNG only. */
+  searchChain: string[];
+  /** Names `!name` tokens removed from the chain; `!searxng` turns off the appended fallback. */
+  searchExcluded: string[];
+  /** API keys per provider, from `SEX_SEARCH_<ID>_KEY`. */
+  searchKeys: Record<string, string>;
+  /** One provider search's budget; falls back to `timeoutMs`. */
+  searchTimeoutMs?: number;
 }
 
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 const BROWSERS = ["auto", "never", "always"] as const;
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+  const selection = parseSelection(env.SEX_SEARCH_PROVIDER);
   return {
     host: text(env.SEX_HOST) ?? "127.0.0.1",
     port: integer(env.SEX_PORT, 3002, "SEX_PORT"),
@@ -41,7 +50,46 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     parsePath: text(env.SEX_PARSE_PATH),
     parseTimeoutMs: integer(env.SEX_PARSE_TIMEOUT, 120_000, "SEX_PARSE_TIMEOUT"),
     timeoutMs: integer(env.SEX_TIMEOUT, 30_000, "SEX_TIMEOUT"),
+    searchChain: selection.chain,
+    searchExcluded: selection.excluded,
+    searchKeys: parseKeys(env),
+    searchTimeoutMs: text(env.SEX_SEARCH_TIMEOUT)
+      ? integer(env.SEX_SEARCH_TIMEOUT, 30_000, "SEX_SEARCH_TIMEOUT")
+      : undefined,
   };
+}
+
+/** `SEX_SEARCH_PROVIDER=tavily,brave,!searxng`: an ordered chain plus the names to drop from it. */
+function parseSelection(value: string | undefined): { chain: string[]; excluded: string[] } {
+  const raw = text(value);
+  if (!raw) return { chain: [], excluded: [] };
+  const chain: string[] = [];
+  const excluded: string[] = [];
+  for (const token of raw
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean)) {
+    if (!token.startsWith("!")) {
+      if (!chain.includes(token)) chain.push(token);
+      continue;
+    }
+    const name = token.slice(1).trim();
+    if (!name) throw new Error("SEX_SEARCH_PROVIDER: `!` needs a provider name");
+    if (!excluded.includes(name)) excluded.push(name);
+  }
+  return { chain, excluded };
+}
+
+/** Every `SEX_SEARCH_<ID>_KEY`, keyed by the lower-cased provider id. */
+function parseKeys(env: Record<string, string | undefined>): Record<string, string> {
+  const keys: Record<string, string> = {};
+  for (const [name, raw] of Object.entries(env)) {
+    const match = /^SEX_SEARCH_([A-Z0-9_]+)_KEY$/.exec(name);
+    const id = match?.[1]?.toLowerCase();
+    const value = text(raw);
+    if (id && value) keys[id] = value;
+  }
+  return keys;
 }
 
 const text = (value: string | undefined): string | undefined => value?.trim() || undefined;

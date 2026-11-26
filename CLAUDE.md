@@ -10,15 +10,24 @@ thin layer in front (HTTP, MCP, CLI, warnings). Bun only.
   SIGTERM→SIGKILL on stop), `resolveBinary` (explicit path → embedded via `registerEmbedded` → `PATH`), `client.ts`
   (HTTP, error mapping, timeouts), `service.ts` (lazy start, restart after exit, 3 failures/60 s → 30 s cooldown).
   Forced `FIRECRAWL_CLOUD=off`. No egress code: SSRF is firecrawl-local's `guard.rs`.
+- `packages/searchkit` (`@searxng-js/searchkit`) — a fork of Belweave/searchSDK (MIT, forked at rev `05f9324`;
+  attribution and the change log live in its `NOTICE`). The normalized `SearchProvider` contract, thirteen provider
+  adapters, and `createSearch` — explicit fallback and two time budgets, ~100 lines, no cache/dedup/batch. The code
+  is ours: it evolves to serve sex, upstream is a reference. Adopt upstream work by cherry-picking and noting the
+  revision.
 - `packages/search` (`@searxng-js/sex-search`) — `Searxng` (managed child via `@searxng-js/searxng`, or an external
   URL) and `searchWeb` (Firecrawl v2 search shape: `web`/`news`/`images`, categories, `tbs`, domains; one SearXNG
-  query per `includeDomain`, because SearXNG cannot OR `site:`).
+  query per `includeDomain`, because SearXNG cannot OR `site:`). Also the chain: `SearchBackend`, `SearxngBackend`,
+  `ProviderBackend` (Firecrawl shape in/out over one searchkit provider; what the normalized contract cannot carry
+  is refused with a warning), `SearchChain` (only transient failures move on) and the explicit `withSearxngFallback`.
 - `packages/parse` (`@searxng-js/sex-parse`) — `/v2/parse` without a fork: the bytes go to the **here-docs** CLI on
   stdin (`- --filename <name> --json`), its `{ markdown, warnings }` comes back. One process per file, so the native
   OCR engines stay out of sex's process. Not bundled: `SEX_PARSE_PATH`, else `here-docs` on PATH, else 503.
-- `apps/sex` — `config.ts` (env only), `engine.ts` (`scrape`: filter formats/options with a warning, then delegate;
-  `search`: SearXNG; `parse`: here-docs; map/crawl/batch: pass-through), `http.ts` (Hono, `/v2/*`), `mcp.ts`
-  (`web_fetch`, `web_search` over stdio), `cli.ts`, `scripts/build.ts`.
+- `apps/sex` — `config.ts` (env only; `SEX_SEARCH_PROVIDER` chain + `SEX_SEARCH_<ID>_KEY`), `engine.ts`
+  (`scrape`: filter formats/options with a warning, then delegate; `search`: the chain with SearXNG appended as
+  the app-side fallback unless `!searxng`; `parse`: here-docs; map/crawl/batch: pass-through), `http.ts` (Hono,
+  `/v2/*`; search responses carry `provider`), `mcp.ts` (`web_fetch`, `web_search` over stdio), `cli.ts`,
+  `scripts/build.ts`.
 
 Packages export TypeScript source (`exports: "./src/index.ts"`); there is no package build step. Only the app is
 built (`bun run build` → `dist/sex`).
@@ -59,6 +68,13 @@ built (`bun run build` → `dist/sex`).
   SOCKS5 guard proxy), so there is no browser proxy and no stealth retry.
 - **AGPL.** firecrawl-local runs as a separate process: never link the crate, never copy its source here, and the
   binary a release embeds is an unmodified `cargo install` of the pinned version.
+- **searchkit is a fork, ours to change.** MIT attribution stays in its `LICENSE` and `NOTICE`, with the
+  forked-from revision pinned there; evolve the code as sex needs and record notable changes in `NOTICE`.
+  Only `packages/search` imports it.
+- **The search chain has one output shape.** Every backend answers the Firecrawl v2 `SearchData`; searchkit's
+  normalized `SearchResult` never escapes `ProviderBackend`, and fields a provider cannot honour surface as
+  `warning`, never as silence. Falling back is a library-level explicit act (`withSearxngFallback`); the app
+  layer decides to make it the default.
 
 ## Gotchas
 
@@ -67,4 +83,8 @@ built (`bun run build` → `dist/sex`).
 - firecrawl-local needs a Chrome/Chromium on the machine for JavaScript pages; `SEX_CHROME_PATH` overrides the search.
 - Crawl and batch are in firecrawl-local's memory and disappear after an hour.
 - `includeDomains` costs one query per domain, capped at 5 with a warning.
+- A provider backend answers web only: `sources=news/images`, `categories`, `tbs`, `lang`, `safe` are dropped
+  with a warning, `limit` is capped at 20. Only the SearXNG backend is full-capability, which is why it is the
+  appended fallback. A chain moves to the next backend on transient failures only — auth, invalid request and
+  an empty result never do.
 - Logs are JSON lines on stderr; stdout is CLI output only.

@@ -34,9 +34,14 @@
       "name": "@searxng-js/sex-search",
       "version": "1.0.1",
       "dependencies": {
+        "@searxng-js/searchkit": "workspace:*",
         "@searxng-js/searxng": "0.1.0",
         "zod": "^4.6.7",
       },
+    },
+    "packages/searchkit": {
+      "name": "@searxng-js/searchkit",
+      "version": "0.1.0",
     },
   },
   "packages": {
@@ -69,6 +74,8 @@
     "@searxng-js/darwin-arm64": ["@searxng-js/darwin-arm64@0.1.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-jwE0kUQX8dc+guFjMBREwImVkzwKfQJD/7qnhRTgjomduE8IJy4+XCxbI6bsDMTyDgT52N/30+z6nvxm0+SRfw=="],
 
     "@searxng-js/linux-x64": ["@searxng-js/linux-x64@0.1.0", "", { "os": "linux", "cpu": "x64" }, "sha512-O+DVjVWT8zEAP1H6KDTKSz6mdYeFp1NpjNBukBNtFqFUbGr/hP25IFS2Q4f1A2ZJh0u6yY2WQHI4brMME3YHeg=="],
+
+    "@searxng-js/searchkit": ["@searxng-js/searchkit@workspace:packages/searchkit"],
 
     "@searxng-js/searxng": ["@searxng-js/searxng@0.1.0", "", { "optionalDependencies": { "@searxng-js/darwin-arm64": "0.1.0", "@searxng-js/linux-x64": "0.1.0", "@searxng-js/win32-x64": "0.1.0" } }, "sha512-yMK6z7ffAaKfx72CFlZwpng3Lk8TdDneOq/Qdj5NxWIau3Xx4Ono0WMUZrej2o+1cmSmWUxLUU1yWi6nzHs+KA=="],
 
