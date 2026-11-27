@@ -46,9 +46,44 @@ export function buildServer(engine: Engine): McpServer {
   return server;
 }
 
-/** `sex mcp`: the tools over stdio, for an AI agent that runs the binary itself. */
-export async function runStdio(engine: Engine): Promise<void> {
-  await buildServer(engine).connect(new StdioServerTransport());
+export type StdioTransport = Parameters<McpServer["connect"]>[0];
+
+export interface RunStdioOptions {
+  transport?: StdioTransport;
+  signal?: AbortSignal;
+}
+
+/** `sex mcp`: the tools over stdio, for an AI agent that runs the binary itself. Resolves once the transport closes. */
+export async function runStdio(engine: Engine, options: RunStdioOptions = {}): Promise<void> {
+  const server = buildServer(engine);
+  const transport = options.transport ?? new StdioServerTransport();
+  let finish!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const previous = server.server.onclose;
+  server.server.onclose = () => {
+    previous?.();
+    finish();
+  };
+  const onAbort = () => {
+    void server
+      .close()
+      .catch(() => {})
+      .finally(finish);
+  };
+  if (options.signal) {
+    if (options.signal.aborted) return;
+    options.signal.addEventListener("abort", onAbort, { once: true });
+  }
+  try {
+    await server.connect(transport);
+    if (options.signal?.aborted) return;
+    await closed;
+  } finally {
+    options.signal?.removeEventListener("abort", onAbort);
+    await server.close().catch(() => {});
+  }
 }
 
 async function run(body: () => Promise<string>): Promise<ToolResult> {
