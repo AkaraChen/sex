@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SearchBackendError } from "@searxng-js/sex-search";
 import type { Config } from "../src/config.ts";
 import { Engine } from "../src/engine.ts";
 import { createApp } from "../src/http.ts";
@@ -215,4 +216,77 @@ test("an unreachable firecrawl-local is a 503", async () => {
     body: JSON.stringify({ url: "https://example.com" }),
   });
   expect(response.status).toBe(503);
+});
+
+test("/v2/search maps SearchBackendError statuses onto HTTP responses", async () => {
+  const cases: Array<[backendStatus: number, httpStatus: number, code: string]> = [
+    [504, 504, "TIMEOUT"],
+    [408, 504, "TIMEOUT"],
+    [429, 429, "SEARCH_RATE_LIMITED"],
+    [503, 503, "SEARCH_UNAVAILABLE"],
+    [401, 502, "SEARCH_BACKEND_ERROR"],
+    [403, 502, "SEARCH_BACKEND_ERROR"],
+    [500, 502, "SEARCH_BACKEND_ERROR"],
+  ];
+
+  for (const [backendStatus, httpStatus, code] of cases) {
+    const fakeEngine = {
+      async search() {
+        throw new SearchBackendError(`upstream ${backendStatus}`, backendStatus);
+      },
+    } as unknown as Engine;
+    const testApp = createApp(fakeEngine);
+    const response = await testApp.request("/v2/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "alpha" }),
+    });
+    expect(response.status).toBe(httpStatus);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: `upstream ${backendStatus}`,
+      code,
+    });
+  }
+});
+
+test("/v2/search propagates provider rate limit, outage, and hides auth failures as 502", async () => {
+  const scenarios: Array<[upstreamStatus: number, httpStatus: number, code: string]> = [
+    [429, 429, "SEARCH_RATE_LIMITED"],
+    [503, 503, "SEARCH_UNAVAILABLE"],
+    [401, 502, "SEARCH_BACKEND_ERROR"],
+    [403, 502, "SEARCH_BACKEND_ERROR"],
+  ];
+
+  const original = globalThis.fetch;
+  try {
+    for (const [upstreamStatus, httpStatus, code] of scenarios) {
+      globalThis.fetch = (async () =>
+        new Response("secret upstream body", { status: upstreamStatus })) as unknown as typeof fetch;
+      const config: Config = {
+        host: "127.0.0.1",
+        port: 0,
+        logLevel: "error",
+        allowPrivate: false,
+        timeoutMs: 2000,
+        searchChain: ["tavily"],
+        searchExcluded: ["searxng"],
+        searchKeys: { tavily: "tvly-secret-test-key" },
+      };
+      const providerApp = createApp(new Engine(config, createLogger("error")));
+      const response = await providerApp.request("/v2/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: "alpha" }),
+      });
+      expect(response.status).toBe(httpStatus);
+      const body = await response.json();
+      expect(body.success).toBe(false);
+      expect(body.code).toBe(code);
+      expect(JSON.stringify(body)).not.toContain("secret upstream body");
+      expect(JSON.stringify(body)).not.toContain("tvly-secret-test-key");
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
 });
