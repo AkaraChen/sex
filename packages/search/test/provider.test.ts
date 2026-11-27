@@ -111,3 +111,83 @@ test("rate limits stay transient so the chain can move on", async () => {
   expect(err).toBeInstanceOf(SearchBackendError);
   expect((err as SearchBackendError).transient).toBe(true);
 });
+
+const hangingFetch: searchkit.FetchTransport = (request) =>
+  new Promise((_resolve, reject) => {
+    const abort = () => reject(request.signal.reason ?? new DOMException("Aborted", "AbortError"));
+    if (request.signal.aborted) {
+      abort();
+      return;
+    }
+    request.signal.addEventListener("abort", abort, { once: true });
+  });
+
+test("per-provider timeout throws transient 504 even when request deadline is longer", async () => {
+  const slow = new ProviderBackend(searchkit.tavily({ apiKey: "k", fetch: hangingFetch }), 40);
+  const err = await rejection(slow.search({ query: "x", timeout: 5_000 }, { deadlineAt: Date.now() + 5_000 }));
+  expect(err).toBeInstanceOf(SearchBackendError);
+  const backendError = err as SearchBackendError;
+  expect(backendError.status).toBe(504);
+  expect(backendError.transient).toBe(true);
+  expect(backendError.cause).toBeInstanceOf(searchkit.SearchError);
+  expect((backendError.cause as searchkit.SearchError).code).toBe("timeout");
+});
+
+test("request.timeout and deadlineAt expire as 504 timeout rather than aborted 502", async () => {
+  const slow = new ProviderBackend(searchkit.tavily({ apiKey: "k", fetch: hangingFetch }), 5_000);
+  const err = await rejection(slow.search({ query: "x", timeout: 40 }, { deadlineAt: Date.now() + 40 }));
+  expect(err).toBeInstanceOf(SearchBackendError);
+  const backendError = err as SearchBackendError;
+  expect(backendError.status).toBe(504);
+  expect(backendError.transient).toBe(true);
+  expect(backendError.cause).toBeInstanceOf(searchkit.SearchError);
+  expect((backendError.cause as searchkit.SearchError).code).toBe("timeout");
+
+  const deadlineOnly = await rejection(slow.search({ query: "x" }, { deadlineAt: Date.now() + 40 }));
+  expect(deadlineOnly).toBeInstanceOf(SearchBackendError);
+  expect((deadlineOnly as SearchBackendError).status).toBe(504);
+  expect((deadlineOnly as SearchBackendError).transient).toBe(true);
+  expect(((deadlineOnly as SearchBackendError).cause as searchkit.SearchError).code).toBe("timeout");
+});
+
+test("already-expired deadlineAt throws transient 504 without calling the provider", async () => {
+  let calls = 0;
+  const counted = new ProviderBackend(
+    searchkit.tavily({
+      apiKey: "k",
+      fetch: async (request) => {
+        calls++;
+        return tavilyFetch(request);
+      },
+    }),
+    5_000,
+  );
+  const err = await rejection(counted.search({ query: "x" }, { deadlineAt: Date.now() }));
+  expect(err).toBeInstanceOf(SearchBackendError);
+  expect((err as SearchBackendError).status).toBe(504);
+  expect((err as SearchBackendError).transient).toBe(true);
+  expect(calls).toBe(0);
+});
+
+test("explicit caller abort stays non-transient and wins over an expired deadline", async () => {
+  const slow = new ProviderBackend(searchkit.tavily({ apiKey: "k", fetch: hangingFetch }), 5_000);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 30);
+  const err = await rejection(
+    slow.search({ query: "x" }, { signal: controller.signal, deadlineAt: Date.now() + 5_000 }),
+  );
+  expect(err).toBeInstanceOf(SearchBackendError);
+  const backendError = err as SearchBackendError;
+  expect(backendError.transient).toBe(false);
+  expect(backendError.cause).toBeInstanceOf(searchkit.SearchError);
+  expect((backendError.cause as searchkit.SearchError).code).toBe("aborted");
+
+  const preAborted = new AbortController();
+  preAborted.abort();
+  const early = await rejection(
+    slow.search({ query: "x" }, { signal: preAborted.signal, deadlineAt: Date.now() - 10 }),
+  );
+  expect(early).toBeInstanceOf(SearchBackendError);
+  expect((early as SearchBackendError).transient).toBe(false);
+  expect(((early as SearchBackendError).cause as searchkit.SearchError).code).toBe("aborted");
+});

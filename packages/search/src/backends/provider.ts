@@ -50,6 +50,7 @@ const NON_TRANSIENT_STATUS = 502;
 /** The SDK carries 1–20 results; the Firecrawl shape accepts up to 100. */
 const PROVIDER_LIMIT = 20;
 const DEFAULT_LIMIT = 10;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Firecrawl fields the normalized contract cannot carry: deleted and named, never silently dropped. */
 const REFUSED: Array<[field: string, warning: (value: unknown) => string]> = [
@@ -77,6 +78,10 @@ export class ProviderBackend implements SearchBackend {
   }
 
   async search(request: SearchRequest, time?: CallTime): Promise<{ data: SearchData; warnings: string[] }> {
+    if (time?.signal?.aborted) throw asChainFailure(new SearchError("aborted"), this.id);
+    const timeoutMs = resolveTimeoutMs(this.timeoutMs, request.timeout, time?.deadlineAt);
+    if (timeoutMs <= 0) throw asChainFailure(new SearchError("timeout"), this.id);
+
     const warnings: string[] = [];
 
     const nonWeb = (request.sources ?? ["web"]).map(kind).filter((source) => source !== "web");
@@ -96,8 +101,8 @@ export class ProviderBackend implements SearchBackend {
     try {
       response = await createSearch({
         provider: this.provider,
-        timeoutMs: request.timeout ?? this.timeoutMs ?? 30_000,
-      }).web.search({ query: request.query, limit, ...domains }, { signal: composeSignal(time) });
+        timeoutMs,
+      }).web.search({ query: request.query, limit, ...domains }, { signal: time?.signal });
     } catch (err) {
       throw asChainFailure(err, this.id);
     }
@@ -154,10 +159,14 @@ function kind(source: string | { type: string }): string {
   return typeof source === "string" ? source : source.type;
 }
 
-/** The caller's signal plus any deadline it carries, the same composition `searchWeb` does. */
-function composeSignal(time?: CallTime): AbortSignal | undefined {
-  const signals: AbortSignal[] = [];
-  if (time?.signal) signals.push(time.signal);
-  if (time?.deadlineAt !== undefined) signals.push(AbortSignal.timeout(Math.max(1, time.deadlineAt - Date.now())));
-  return signals.length ? AbortSignal.any(signals) : undefined;
+/** Single-call budget: the tightest of the provider default, per-request timeout, and remaining caller deadline. */
+function resolveTimeoutMs(
+  providerTimeoutMs: number | undefined,
+  requestTimeoutMs: number | undefined,
+  deadlineAt: number | undefined,
+): number {
+  let budget = providerTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (requestTimeoutMs !== undefined) budget = Math.min(budget, requestTimeoutMs);
+  if (deadlineAt !== undefined) budget = Math.min(budget, Math.floor(deadlineAt - Date.now()));
+  return budget;
 }
