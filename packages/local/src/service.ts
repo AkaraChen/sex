@@ -17,7 +17,7 @@ export interface LocalOptions {
   /** Extra arguments for the child. */
   args?: readonly string[];
   env?: Record<string, string | undefined>;
-  /** How long a child gets to answer `/health`. Default: 30 s. */
+  /** How long a child gets to answer `/health` (default: 30 s) and the default per-request timeout (default: 60 s). */
   timeoutMs?: number;
   onOutput?: (line: string) => void;
 }
@@ -62,7 +62,7 @@ export class LocalService {
 
   /** A client for this instance. Cheap: it holds no connection. */
   async client(): Promise<LocalClient> {
-    return createClient({ baseUrl: await this.url(), token: await this.token() });
+    return createClient({ baseUrl: await this.url(), token: await this.token(), timeoutMs: this.options.timeoutMs });
   }
 
   /** Eagerly start the child so the first scrape does not pay for it. */
