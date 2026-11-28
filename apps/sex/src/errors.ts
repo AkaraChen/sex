@@ -27,7 +27,13 @@ export function failure(err: unknown): HttpError {
     }
     return new HttpError(err.status, err.code, err.message, { cause: err });
   }
-  if (err instanceof SearchBackendError) return new HttpError(502, "SEARCH_BACKEND_ERROR", err.message, { cause: err });
+  if (err instanceof SearchBackendError) {
+    if (err.status === 504 || err.status === 408) return new HttpError(504, "TIMEOUT", err.message, { cause: err });
+    if (err.status === 429) return new HttpError(429, "SEARCH_RATE_LIMITED", err.message, { cause: err });
+    if (err.status === 503) return new HttpError(503, "SEARCH_UNAVAILABLE", err.message, { cause: err });
+    // Upstream auth (401/403), 5xx, or unknown backend errors are ours, not the caller's.
+    return new HttpError(502, "SEARCH_BACKEND_ERROR", err.message, { cause: err });
+  }
   if (err instanceof ParserUnavailableError)
     return new HttpError(503, "PARSE_UNAVAILABLE", err.message, { cause: err });
   if (err instanceof ParserTimeoutError) return new HttpError(504, "TIMEOUT", err.message, { cause: err });

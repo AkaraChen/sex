@@ -4,6 +4,7 @@ import {
   PROVIDERS,
   ProviderBackend,
   type SearchBackend,
+  SearchBackendError,
   SearchChain,
   type SearchData,
   type SearchRequest,
@@ -12,7 +13,14 @@ import {
   withSearxngFallback,
 } from "@searxng-js/sex-search";
 import type { Config } from "./config.ts";
+import { failure } from "./errors.ts";
 import type { Logger } from "./log.ts";
+
+const loggedSearchErrors = new WeakSet<object>();
+const MAX_LOG_TEXT = 300;
+const SECRET_PARAM_RE = /([?&](?:api[_-]?key|apikey|key|token|access[_-]?token)=)[^&\s]+/gi;
+const SECRET_HEADER_RE =
+  /\b((?:authorization\s*[:=]\s*bearer\s+|bearer\s+|(?:x-api-key|x-subscription-token)\s*[:=]\s*))\S+/gi;
 
 /** Formats and options firecrawl-local has no equivalent for; they are refused with a warning, never silently dropped. */
 const LOCAL_FORMATS = new Set(["markdown", "html", "rawHtml", "links"]);
@@ -106,8 +114,46 @@ export class Engine {
         ),
       );
     }
-    if (!backends.length) return [searxng];
-    return excluded.has("searxng") ? backends : withSearxngFallback(backends, searxng);
+    const resolved = !backends.length
+      ? [searxng]
+      : excluded.has("searxng")
+        ? backends
+        : withSearxngFallback(backends, searxng);
+    const chain = resolved.map((backend) => backend.id);
+    return resolved.map((backend) => this.observeBackend(backend, chain));
+  }
+
+  private observeBackend(backend: SearchBackend, chain: readonly string[]): SearchBackend {
+    return {
+      id: backend.id,
+      search: async (request, time) => {
+        try {
+          return await backend.search(request, time);
+        } catch (err) {
+          this.logSearchFailure(err, backend.id, chain);
+          if (typeof err === "object" && err !== null) loggedSearchErrors.add(err);
+          throw err;
+        }
+      },
+    };
+  }
+
+  private logSearchFailure(err: unknown, provider: string | undefined, chain: readonly string[]): void {
+    const mapped = failure(err);
+    const secrets = Object.values(this.config.searchKeys);
+    const cause = err instanceof Error ? err.cause : undefined;
+    const resolvedProvider = provider ?? providerFromCause(cause);
+    const causeSummary = summarizeCause(cause, secrets);
+    this.log.debug("search failed", {
+      ...(resolvedProvider ? { provider: resolvedProvider } : {}),
+      chain: [...chain],
+      status: err instanceof SearchBackendError ? err.status : mapped.status,
+      ...(err instanceof SearchBackendError && err.status !== mapped.status ? { httpStatus: mapped.status } : {}),
+      code: mapped.code,
+      ...(err instanceof SearchBackendError ? { transient: err.transient } : {}),
+      error: truncate(redactSecrets(err instanceof Error ? err.message : String(err), secrets)),
+      ...(causeSummary ? { cause: causeSummary } : {}),
+    });
   }
 
   /** Scrapes through firecrawl-local and answers the Firecrawl v2 scrape shape. */
@@ -150,12 +196,27 @@ export class Engine {
   ): Promise<{ data: SearchData; warning?: string; provider: string }> {
     const time: CallTime = { signal };
     if (request.timeout) time.deadlineAt = Date.now() + request.timeout;
-    const result = await this.searchChain.search(request, time);
-    return {
-      data: result.data,
-      warning: result.warnings.length ? result.warnings.join("; ") : undefined,
-      provider: result.provider,
-    };
+    try {
+      const result = await this.searchChain.search(request, time);
+      if (result.provider !== this.searchChain.ids[0]) {
+        const secrets = Object.values(this.config.searchKeys);
+        this.log.debug("search fallback", {
+          provider: result.provider,
+          chain: this.searchChain.ids,
+          warnings: result.warnings.map((warning) => truncate(redactSecrets(warning, secrets))),
+        });
+      }
+      return {
+        data: result.data,
+        warning: result.warnings.length ? result.warnings.join("; ") : undefined,
+        provider: result.provider,
+      };
+    } catch (err) {
+      if (typeof err !== "object" || err === null || !loggedSearchErrors.has(err)) {
+        this.logSearchFailure(err, undefined, this.searchChain.ids);
+      }
+      throw err;
+    }
   }
 
   async map(body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -234,4 +295,51 @@ function formatName(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (typeof value === "object" && value !== null && "type" in value) return String((value as { type: unknown }).type);
   return undefined;
+}
+
+function providerFromCause(cause: unknown): string | undefined {
+  if (typeof cause !== "object" || cause === null || !("attempts" in cause)) return undefined;
+  const attempts = (cause as { attempts?: unknown }).attempts;
+  if (!Array.isArray(attempts) || !attempts.length) return undefined;
+  const last = attempts.at(-1);
+  if (typeof last === "object" && last !== null && typeof (last as { provider?: unknown }).provider === "string") {
+    return (last as { provider: string }).provider;
+  }
+  return undefined;
+}
+
+function summarizeCause(cause: unknown, secrets: readonly string[], depth = 0): Record<string, unknown> | undefined {
+  if (cause === undefined || cause === null || depth > 2) return undefined;
+  if (typeof cause !== "object") return { message: truncate(redactSecrets(String(cause), secrets)) };
+  const record = cause as Record<string, unknown>;
+  const summary: Record<string, unknown> = {};
+  if (typeof record.name === "string" && record.name) summary.name = record.name;
+  if (typeof record.code === "string" && record.code) summary.code = record.code;
+  if (typeof record.status === "number" && Number.isFinite(record.status)) summary.status = record.status;
+  if (typeof record.retryAfterMs === "number" && Number.isFinite(record.retryAfterMs)) {
+    summary.retryAfterMs = record.retryAfterMs;
+  }
+  if (typeof record.message === "string" && record.message) {
+    summary.message = truncate(redactSecrets(record.message, secrets));
+  }
+  if ("cause" in record && record.cause !== undefined && record.cause !== cause) {
+    const inner = summarizeCause(record.cause, secrets, depth + 1);
+    if (inner) summary.cause = inner;
+  }
+  return Object.keys(summary).length ? summary : undefined;
+}
+
+function redactSecrets(text: string, secrets: readonly string[]): string {
+  let out = text.replace(SECRET_PARAM_RE, "$1[REDACTED]").replace(SECRET_HEADER_RE, "$1[REDACTED]");
+  for (const secret of secrets) {
+    if (secret.length < 6) continue;
+    out = out.replaceAll(secret, "[REDACTED]");
+    const encoded = encodeURIComponent(secret);
+    if (encoded !== secret) out = out.replaceAll(encoded, "[REDACTED]");
+  }
+  return out;
+}
+
+function truncate(text: string): string {
+  return text.length > MAX_LOG_TEXT ? `${text.slice(0, MAX_LOG_TEXT)}…` : text;
 }
