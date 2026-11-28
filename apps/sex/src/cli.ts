@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { basename } from "node:path";
-import { parseArgs } from "node:util";
 import type { SearchRequest } from "@searxng-js/sex-search";
+import { type CommandDef, defineCommand, renderUsage, runCommand } from "citty";
 import { type Config, loadConfig } from "./config.ts";
 import { Engine } from "./engine.ts";
 import { failure } from "./errors.ts";
@@ -15,143 +15,288 @@ export interface SignalSource {
   off(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
 }
 
+export interface ServeHandle {
+  port?: number;
+  stop: () => void | Promise<void>;
+}
+
+export interface ServeOptions {
+  hostname: string;
+  port: number;
+  fetch: (request: Request) => Response | Promise<Response>;
+}
+
 export interface CliDeps {
   createEngine?: (config: Config, log: Logger) => Engine;
   runStdio?: typeof runStdio;
+  serve?: (options: ServeOptions) => ServeHandle;
   signals?: SignalSource;
   exit?: (code: number) => void;
+  env?: Record<string, string | undefined>;
+  stdout?: (line: string) => void;
 }
 
-const USAGE = `sex ${VERSION}
+const serveArgs = {
+  host: {
+    type: "string",
+    description: "Bind host (env SEX_HOST, default 127.0.0.1)",
+    valueHint: "host",
+  },
+  port: {
+    type: "string",
+    description: "Bind port (env SEX_PORT, default 3002)",
+    valueHint: "port",
+  },
+} as const;
 
-Usage:
-  sex serve                         The Firecrawl v2 API on 127.0.0.1:3002
-  sex scrape <url> [--markdown] [--format markdown,links]
-  sex search <query> [--limit 10]
-  sex map <url>
-  sex parse <file>
-  sex mcp                           The MCP tools over stdio
+function buildEngine(
+  deps: CliDeps,
+  envOverrides: Record<string, string | undefined> = {},
+): { config: Config; log: Logger; engine: Engine } {
+  const config = loadConfig({ ...(deps.env ?? process.env), ...envOverrides });
+  const log = createLogger(config.logLevel);
+  const engine = (deps.createEngine ?? ((c, l) => new Engine(c, l)))(config, log);
+  return { config, log, engine };
+}
 
-Environment: SEX_HOST, SEX_PORT, SEX_LOCAL_PATH, SEX_LOCAL_URL, SEX_LOCAL_TOKEN,
-SEX_CHROME_PATH, SEX_BROWSER, SEX_ALLOW_PRIVATE, SEX_SEARXNG_URL, SEX_SEARXNG_PATH,
-SEX_SEARCH_PROVIDER, SEX_SEARCH_<ID>_KEY, SEX_SEARCH_TIMEOUT,
-SEX_LOG_LEVEL, SEX_TIMEOUT
-`;
-
-export async function main(argv: string[], deps: CliDeps = {}): Promise<void> {
-  const [command = "serve", ...rest] = argv;
-  if (command === "help" || argv.includes("--help")) {
-    console.log(USAGE);
-    return;
+async function withEngine(deps: CliDeps, fn: (engine: Engine) => Promise<void>): Promise<void> {
+  const { engine } = buildEngine(deps);
+  try {
+    await fn(engine);
+  } finally {
+    await engine.close();
   }
-  if (command === "version") {
-    console.log(VERSION);
-    return;
-  }
+}
 
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: {
-      host: { type: "string" },
-      port: { type: "string" },
-      markdown: { type: "boolean" },
-      format: { type: "string" },
-      limit: { type: "string" },
-      help: { type: "boolean" },
+function createCli(deps: CliDeps = {}) {
+  const stdout = deps.stdout ?? ((line: string) => console.log(line));
+
+  const serve = defineCommand({
+    meta: {
+      name: "serve",
+      description: "Start the Firecrawl v2 HTTP API server on 127.0.0.1:3002 (default)",
+    },
+    args: serveArgs,
+    run({ args }) {
+      const { config, log, engine } = buildEngine(deps, {
+        ...(args.host ? { SEX_HOST: args.host } : {}),
+        ...(args.port ? { SEX_PORT: args.port } : {}),
+      });
+      const app = createApp(engine);
+      const startServer = deps.serve ?? ((options: ServeOptions) => Bun.serve(options));
+      const server = startServer({
+        hostname: config.host,
+        port: config.port,
+        fetch: (request) => app.fetch(request),
+      });
+      log.info("listening", { url: `http://${config.host}:${server.port}`, ...engine.describe() });
+      void engine.warmup();
+
+      const signals = deps.signals ?? process;
+      const exit = deps.exit ?? ((code: number) => process.exit(code));
+      let closing = false;
+      const onSignal = () => {
+        if (closing) return;
+        closing = true;
+        signals.off("SIGINT", onSignal);
+        signals.off("SIGTERM", onSignal);
+        void (async () => {
+          try {
+            await engine.close().catch(() => {});
+            await server.stop();
+          } finally {
+            exit(0);
+          }
+        })();
+      };
+      signals.once("SIGINT", onSignal);
+      signals.once("SIGTERM", onSignal);
     },
   });
 
-  const config = loadConfig({
-    ...process.env,
-    ...(values.host ? { SEX_HOST: values.host } : {}),
-    ...(values.port ? { SEX_PORT: values.port } : {}),
+  const scrape = defineCommand({
+    meta: {
+      name: "scrape",
+      description: "Scrape a URL and print JSON or markdown",
+    },
+    args: {
+      url: {
+        type: "positional",
+        description: "URL to scrape",
+        required: true,
+      },
+      markdown: {
+        type: "boolean",
+        description: "Print markdown content only",
+      },
+      format: {
+        type: "string",
+        description: "Comma-separated output formats (e.g. markdown,links)",
+        valueHint: "formats",
+      },
+    },
+    async run({ args }) {
+      const formats = args.format
+        ? args.format
+            .split(",")
+            .map((format) => format.trim())
+            .filter(Boolean)
+        : args.markdown
+          ? ["markdown"]
+          : undefined;
+      await withEngine(deps, async (engine) => {
+        const { data } = await engine.scrape({ url: args.url, formats });
+        stdout(args.markdown ? String(data.markdown ?? "") : JSON.stringify({ success: true, data }, null, 2));
+      });
+    },
   });
-  const log = createLogger(config.logLevel);
-  const engine = (deps.createEngine ?? ((c, l) => new Engine(c, l)))(config, log);
 
-  switch (command) {
-    case "serve": {
-      const app = createApp(engine);
-      const server = Bun.serve({ hostname: config.host, port: config.port, fetch: (request) => app.fetch(request) });
-      log.info("listening", { url: `http://${config.host}:${server.port}`, ...engine.describe() });
-      void engine.warmup();
-      let closing = false;
-      const shutdown = async () => {
-        if (closing) return;
-        closing = true;
-        await engine.close();
-        await server.stop();
-        process.exit(0);
-      };
-      process.once("SIGINT", () => void shutdown());
-      process.once("SIGTERM", () => void shutdown());
-      return;
-    }
-
-    case "scrape": {
-      try {
-        const url = positionals[0];
-        if (!url) return fail("scrape needs a URL");
-        const formats = values.format
-          ? values.format.split(",").map((format) => format.trim())
-          : values.markdown
-            ? ["markdown"]
-            : undefined;
-        const { data } = await engine.scrape({ url, formats });
-        console.log(values.markdown ? String(data.markdown ?? "") : JSON.stringify({ success: true, data }, null, 2));
-      } finally {
-        await engine.close();
+  const search = defineCommand({
+    meta: {
+      name: "search",
+      description: "Search the web via SearXNG or configured search providers",
+    },
+    args: {
+      query: {
+        type: "positional",
+        description: "Search query (multiple words allowed)",
+        required: true,
+      },
+      limit: {
+        type: "string",
+        description: "Maximum number of results (positive integer)",
+        valueHint: "n",
+      },
+    },
+    async run({ args }) {
+      const query = args._.join(" ").trim();
+      if (!query) throw new Error("search needs a non-empty query");
+      const limit = args.limit !== undefined ? Number(args.limit) : undefined;
+      if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
+        throw new Error(`--limit must be a positive integer, got "${args.limit}"`);
       }
-      return;
-    }
-
-    case "search": {
-      try {
-        const query = positionals.join(" ");
-        if (!query) return fail("search needs a query");
-        const request: SearchRequest = { query, ...(values.limit ? { limit: Number(values.limit) } : {}) };
+      const request: SearchRequest = { query, ...(limit !== undefined ? { limit } : {}) };
+      await withEngine(deps, async (engine) => {
         const { data, warning, provider } = await engine.search(request);
-        console.log(JSON.stringify({ data, provider, ...(warning ? { warning } : {}) }, null, 2));
-      } finally {
-        await engine.close();
-      }
-      return;
-    }
+        stdout(JSON.stringify({ data, provider, ...(warning ? { warning } : {}) }, null, 2));
+      });
+    },
+  });
 
-    case "map": {
-      try {
-        const url = positionals[0];
-        if (!url) return fail("map needs a URL");
-        console.log(JSON.stringify(await engine.map({ url }), null, 2));
-      } finally {
-        await engine.close();
-      }
-      return;
-    }
+  const map = defineCommand({
+    meta: {
+      name: "map",
+      description: "Discover URLs on a website",
+    },
+    args: {
+      url: {
+        type: "positional",
+        description: "URL to map",
+        required: true,
+      },
+    },
+    async run({ args }) {
+      await withEngine(deps, async (engine) => {
+        stdout(JSON.stringify(await engine.map({ url: args.url }), null, 2));
+      });
+    },
+  });
 
-    case "parse": {
-      try {
-        const path = positionals[0];
-        if (!path) return fail("parse needs a file");
-        const file = Bun.file(path);
-        if (!(await file.exists())) return fail(`no such file: ${path}`);
-        console.log(JSON.stringify(await engine.parse(new File([await file.arrayBuffer()], basename(path))), null, 2));
-      } finally {
-        await engine.close();
-      }
-      return;
-    }
+  const parse = defineCommand({
+    meta: {
+      name: "parse",
+      description: "Convert a local document to markdown via here-docs",
+    },
+    args: {
+      file: {
+        type: "positional",
+        description: "Path to the file to parse",
+        required: true,
+      },
+    },
+    async run({ args }) {
+      const file = Bun.file(args.file);
+      if (!(await file.exists())) throw new Error(`no such file: ${args.file}`);
+      await withEngine(deps, async (engine) => {
+        stdout(JSON.stringify(await engine.parse(new File([await file.arrayBuffer()], basename(args.file))), null, 2));
+      });
+    },
+  });
 
-    case "mcp": {
+  const mcp = defineCommand({
+    meta: {
+      name: "mcp",
+      description: "Serve the MCP tools over stdio",
+    },
+    async run() {
+      const { engine } = buildEngine(deps);
       await runMcp(engine, deps);
-      return;
-    }
+    },
+  });
 
-    default:
-      console.error(USAGE);
-      process.exitCode = 1;
+  const version = defineCommand({
+    meta: {
+      name: "version",
+      description: "Print the sex version",
+    },
+    run() {
+      stdout(VERSION);
+    },
+  });
+
+  const subCommands: Record<string, CommandDef<any>> = {
+    serve,
+    scrape,
+    search,
+    map,
+    parse,
+    mcp,
+    version,
+  };
+
+  const root = defineCommand({
+    meta: {
+      name: "sex",
+      version: VERSION,
+      description: "Self-hosted Firecrawl v2 API, MCP server, and web CLI",
+    },
+    args: serveArgs,
+    default: "serve",
+    subCommands: {
+      ...subCommands,
+      help: defineCommand({
+        meta: { name: "help", hidden: true },
+        args: { command: { type: "positional", required: false } },
+        async run({ args }) {
+          const sub = args.command ? subCommands[args.command] : undefined;
+          if (args.command && !sub) throw new Error(`Unknown command ${args.command}`);
+          stdout(await renderUsage(sub ?? root, sub ? root : undefined));
+        },
+      }),
+    },
+  });
+
+  return { root, subCommands };
+}
+
+export async function main(argv: string[], deps: CliDeps = {}): Promise<void> {
+  const stdout = deps.stdout ?? ((line: string) => console.log(line));
+  const { root, subCommands } = createCli(deps);
+
+  if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
+    stdout(VERSION);
+    return;
   }
+
+  const endOfOptions = argv.indexOf("--");
+  const flagsPart = endOfOptions === -1 ? argv : argv.slice(0, endOfOptions);
+  if (flagsPart.includes("--help") || flagsPart.includes("-h")) {
+    const sub = argv[0] ? subCommands[argv[0]] : undefined;
+    stdout(await renderUsage(sub ?? root, sub ? root : undefined));
+    return;
+  }
+
+  await runCommand(root, { rawArgs: argv });
 }
 
 export async function runMcp(engine: Engine, deps: Pick<CliDeps, "runStdio" | "signals" | "exit"> = {}): Promise<void> {
@@ -190,15 +335,17 @@ export async function runMcp(engine: Engine, deps: Pick<CliDeps, "runStdio" | "s
   }
 }
 
-function fail(message: string): void {
-  console.error(message);
-  console.error(USAGE);
-  process.exitCode = 1;
-}
-
 export function run(argv = process.argv.slice(2)): void {
-  main(argv).catch((err) => {
-    console.error(failure(err).message);
+  main(argv).catch(async (err) => {
+    if (err instanceof Error && err.name === "CLIError") {
+      const { root, subCommands } = createCli();
+      const sub = argv[0] ? subCommands[argv[0]] : undefined;
+      console.error(err.message);
+      console.error("");
+      console.error(await renderUsage(sub ?? root, sub ? root : undefined));
+    } else {
+      console.error(failure(err).message);
+    }
     process.exitCode = 1;
   });
 }
