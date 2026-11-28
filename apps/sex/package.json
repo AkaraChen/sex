@@ -9,6 +9,7 @@
     "@searxng-js/sex-local": "workspace:*",
     "@searxng-js/sex-parse": "workspace:*",
     "@searxng-js/sex-search": "workspace:*",
+    "citty": "^0.2.2",
     "hono": "^4.13.19",
     "zod": "^4.6.7"
   }
