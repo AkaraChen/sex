@@ -31,6 +31,9 @@ export class SearchChain {
     request: SearchRequest,
     time?: CallTime,
   ): Promise<{ data: SearchData; warnings: string[]; provider: string }> {
+    if (!time?.signal?.aborted && isDeadlineExpired(time)) {
+      throw new SearchBackendError("Search exceeded its total time budget.", 504, { transient: true });
+    }
     const warnings: string[] = [];
     for (const [index, backend] of this.backends.entries()) {
       try {
@@ -38,7 +41,12 @@ export class SearchChain {
         return { data: answered.data, warnings: [...warnings, ...answered.warnings], provider: backend.id };
       } catch (err) {
         const next = this.backends[index + 1];
-        if (!isTransient(err) || !next) throw err;
+        if (!isTransient(err) || !next || time?.signal?.aborted) throw err;
+        if (isDeadlineExpired(time)) {
+          throw err instanceof SearchBackendError && err.status === 504
+            ? err
+            : new SearchBackendError("Search exceeded its total time budget.", 504, { cause: err, transient: true });
+        }
         warnings.push(
           `${backend.id} failed and the search moved to ${next.id}: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -47,6 +55,10 @@ export class SearchChain {
     // Unreachable: the last backend either answers or throws.
     throw new SearchBackendError("The search chain is empty");
   }
+}
+
+function isDeadlineExpired(time?: CallTime): boolean {
+  return time?.deadlineAt !== undefined && Math.floor(time.deadlineAt - Date.now()) <= 0;
 }
 
 /**
