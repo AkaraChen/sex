@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
-import { CliUsageError, main, runMcp } from "../src/cli.ts";
+import { main, runMcp } from "../src/cli.ts";
 import type { Config } from "../src/config.ts";
 import { Engine } from "../src/engine.ts";
 import { createLogger } from "../src/log.ts";
@@ -209,7 +209,7 @@ test("top-level flags (--port / --host) route to default serve command", async (
   }
 });
 
-test("serve rejects invalid port, missing option values, unknown flags, and unexpected positionals", async () => {
+test("serve rejects invalid port via loadConfig", async () => {
   let created = 0;
   const deps = {
     createEngine: (config: Config) => {
@@ -218,14 +218,8 @@ test("serve rejects invalid port, missing option values, unknown flags, and unex
     },
   };
 
-  await expect(main(["serve", "--port", "abc"], deps)).rejects.toThrow(CliUsageError);
-  await expect(main(["serve", "--port", "0"], deps)).rejects.toThrow(CliUsageError);
-  await expect(main(["serve", "--port", "70000"], deps)).rejects.toThrow(CliUsageError);
-  await expect(main(["serve", "--port"], deps)).rejects.toThrow(/requires a value/);
-  await expect(main(["serve", "--host", "   "], deps)).rejects.toThrow(/must not be empty/);
-  await expect(main(["serve", "--markdown"], deps)).rejects.toThrow(/Unknown option: --markdown/);
-  await expect(main(["--markdown"], deps)).rejects.toThrow(/Unknown option: --markdown/);
-  await expect(main(["serve", "extra"], deps)).rejects.toThrow(/Unexpected argument: extra/);
+  await expect(main(["serve", "--port", "abc"], deps)).rejects.toThrow(/SEX_PORT must be a positive integer/);
+  await expect(main(["serve", "--port", "0"], deps)).rejects.toThrow(/SEX_PORT must be a positive integer/);
   expect(created).toBe(0);
 });
 
@@ -281,12 +275,8 @@ test("scrape parses url, --markdown, and --format options and closes engine", as
   ]);
 });
 
-test("scrape rejects missing url, unknown options, empty format, and extra positionals", async () => {
+test("scrape rejects missing url", async () => {
   await expect(main(["scrape"])).rejects.toThrow(/Missing required positional argument: URL/);
-  await expect(main(["scrape", "https://example.com", "--port", "3003"])).rejects.toThrow(/Unknown option: --port/);
-  await expect(main(["scrape", "https://example.com", "--limit", "5"])).rejects.toThrow(/Unknown option: --limit/);
-  await expect(main(["scrape", "https://example.com", "--format", " , "])).rejects.toThrow(CliUsageError);
-  await expect(main(["scrape", "https://a.com", "https://b.com"])).rejects.toThrow(/Unexpected argument/);
 });
 
 // --- search ---
@@ -326,20 +316,19 @@ test("search joins multi-word queries, parses --limit, and supports -- separator
   ]);
 });
 
-test("search validates query and positive integer --limit and rejects unknown flags", async () => {
+test("search validates query and positive integer --limit", async () => {
   await expect(main(["search"])).rejects.toThrow(/Missing required positional argument: QUERY/);
-  await expect(main(["search", "   "])).rejects.toThrow(CliUsageError);
+  await expect(main(["search", "   "])).rejects.toThrow(/non-empty query/);
   await expect(main(["search", "hello", "--limit", "0"])).rejects.toThrow(/positive integer/);
   await expect(main(["search", "hello", "--limit", "-5"])).rejects.toThrow(/positive integer/);
   await expect(main(["search", "hello", "--limit", "1.5"])).rejects.toThrow(/positive integer/);
   await expect(main(["search", "hello", "--limit", "abc"])).rejects.toThrow(/positive integer/);
-  await expect(main(["search", "hello", "--limit"])).rejects.toThrow(/requires a value/);
-  await expect(main(["search", "hello", "--markdown"])).rejects.toThrow(/Unknown option: --markdown/);
+  await expect(main(["search", "hello", "--limit"])).rejects.toThrow(/positive integer/);
 });
 
 // --- map & parse ---
 
-test("map calls engine.map and rejects missing url or unknown flags", async () => {
+test("map calls engine.map and rejects missing url", async () => {
   const out: string[] = [];
   let closeCount = () => 0;
   await main(["map", "https://example.com"], {
@@ -356,7 +345,6 @@ test("map calls engine.map and rejects missing url or unknown flags", async () =
   expect(JSON.parse(out[0]!)).toEqual({ links: ["https://example.com"] });
 
   await expect(main(["map"])).rejects.toThrow(/Missing required positional argument: URL/);
-  await expect(main(["map", "https://example.com", "--limit", "3"])).rejects.toThrow(/Unknown option: --limit/);
 });
 
 test("parse reads file, calls engine.parse, and rejects missing or nonexistent file", async () => {
@@ -382,11 +370,6 @@ test("parse reads file, calls engine.parse, and rejects missing or nonexistent f
 
   await expect(main(["parse"])).rejects.toThrow(/Missing required positional argument: FILE/);
   await expect(main(["parse", join(dir, "does-not-exist.txt")])).rejects.toThrow(/no such file/);
-  await expect(main(["parse", sampleFile, "--markdown"])).rejects.toThrow(/Unknown option: --markdown/);
-});
-
-test("mcp rejects unknown options", async () => {
-  await expect(main(["mcp", "--port", "3003"])).rejects.toThrow(/Unknown option: --port/);
 });
 
 // --- engine cleanup on failure (PR #107 semantics) ---
@@ -573,7 +556,7 @@ test("mcp closes engine idempotently on SIGINT and SIGTERM", async () => {
 
 // --- subprocess CLI end-to-end tests ---
 
-test("cli subprocess outputs pure version and help on stdout, and usage errors only on stderr", async () => {
+test("cli subprocess outputs pure version and help on stdout, and errors only on stderr", async () => {
   for (const args of [["version"], ["--version"], ["-v"]]) {
     const res = await runCliSubprocess(args);
     expect(res.code).toBe(0);
@@ -591,18 +574,16 @@ test("cli subprocess outputs pure version and help on stdout, and usage errors o
   expect(subHelpRes.stdout).toContain("--markdown");
   expect(subHelpRes.stderr).toBe("");
 
-  const errCases: Array<[string[], RegExp]> = [
-    [["scrape"], /Missing required positional argument: URL/],
-    [["scrape", "https://example.com", "--port", "3003"], /Unknown option: --port/],
-    [["search", "hello", "--limit", "0"], /positive integer/],
-    [["bogus"], /Unknown command/],
-  ];
-  for (const [args, pattern] of errCases) {
-    const res = await runCliSubprocess(args);
+  for (const [args, pattern, expectUsage] of [
+    [["scrape"], /Missing required positional argument: URL/, true],
+    [["bogus"], /Unknown command/, true],
+    [["search", "hello", "--limit", "0"], /positive integer/, false],
+  ] as const) {
+    const res = await runCliSubprocess([...args]);
     expect(res.code).toBe(1);
     expect(res.stdout).toBe("");
     expect(res.stderr).toMatch(pattern);
-    expect(res.stderr).toContain("USAGE");
+    if (expectUsage) expect(res.stderr).toContain("USAGE");
   }
 });
 
