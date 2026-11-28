@@ -20,7 +20,8 @@ if (binary) {
 import { registerEmbedded } from "@searxng-js/sex-local";
 import file from ${JSON.stringify(binary)} with { type: "file" };
 registerEmbedded(${JSON.stringify(version)}, ${JSON.stringify(sha256)}, file);
-await import("./cli.ts");
+const { run } = await import("./cli.ts");
+run();
 `,
   );
   entry = generated;

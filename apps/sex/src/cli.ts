@@ -2,13 +2,25 @@
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
 import type { SearchRequest } from "@searxng-js/sex-search";
-import { loadConfig } from "./config.ts";
+import { type Config, loadConfig } from "./config.ts";
 import { Engine } from "./engine.ts";
 import { failure } from "./errors.ts";
 import { createApp } from "./http.ts";
-import { createLogger } from "./log.ts";
+import { createLogger, type Logger } from "./log.ts";
 import { runStdio } from "./mcp.ts";
 import { VERSION } from "./version.ts";
+
+export interface SignalSource {
+  once(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  off(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+}
+
+export interface CliDeps {
+  createEngine?: (config: Config, log: Logger) => Engine;
+  runStdio?: typeof runStdio;
+  signals?: SignalSource;
+  exit?: (code: number) => void;
+}
 
 const USAGE = `sex ${VERSION}
 
@@ -26,7 +38,7 @@ SEX_SEARCH_PROVIDER, SEX_SEARCH_<ID>_KEY, SEX_SEARCH_TIMEOUT,
 SEX_LOG_LEVEL, SEX_TIMEOUT
 `;
 
-async function main(argv: string[]): Promise<void> {
+export async function main(argv: string[], deps: CliDeps = {}): Promise<void> {
   const [command = "serve", ...rest] = argv;
   if (command === "help" || argv.includes("--help")) {
     console.log(USAGE);
@@ -56,7 +68,7 @@ async function main(argv: string[]): Promise<void> {
     ...(values.port ? { SEX_PORT: values.port } : {}),
   });
   const log = createLogger(config.logLevel);
-  const engine = new Engine(config, log);
+  const engine = (deps.createEngine ?? ((c, l) => new Engine(c, l)))(config, log);
 
   switch (command) {
     case "serve": {
@@ -78,49 +90,61 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case "scrape": {
-      const url = positionals[0];
-      if (!url) return fail("scrape needs a URL");
-      const formats = values.format
-        ? values.format.split(",").map((format) => format.trim())
-        : values.markdown
-          ? ["markdown"]
-          : undefined;
-      const { data } = await engine.scrape({ url, formats });
-      console.log(values.markdown ? String(data.markdown ?? "") : JSON.stringify({ success: true, data }, null, 2));
-      await engine.close();
+      try {
+        const url = positionals[0];
+        if (!url) return fail("scrape needs a URL");
+        const formats = values.format
+          ? values.format.split(",").map((format) => format.trim())
+          : values.markdown
+            ? ["markdown"]
+            : undefined;
+        const { data } = await engine.scrape({ url, formats });
+        console.log(values.markdown ? String(data.markdown ?? "") : JSON.stringify({ success: true, data }, null, 2));
+      } finally {
+        await engine.close();
+      }
       return;
     }
 
     case "search": {
-      const query = positionals.join(" ");
-      if (!query) return fail("search needs a query");
-      const request: SearchRequest = { query, ...(values.limit ? { limit: Number(values.limit) } : {}) };
-      const { data, warning, provider } = await engine.search(request);
-      console.log(JSON.stringify({ data, provider, ...(warning ? { warning } : {}) }, null, 2));
-      await engine.close();
+      try {
+        const query = positionals.join(" ");
+        if (!query) return fail("search needs a query");
+        const request: SearchRequest = { query, ...(values.limit ? { limit: Number(values.limit) } : {}) };
+        const { data, warning, provider } = await engine.search(request);
+        console.log(JSON.stringify({ data, provider, ...(warning ? { warning } : {}) }, null, 2));
+      } finally {
+        await engine.close();
+      }
       return;
     }
 
     case "map": {
-      const url = positionals[0];
-      if (!url) return fail("map needs a URL");
-      console.log(JSON.stringify(await engine.map({ url }), null, 2));
-      await engine.close();
+      try {
+        const url = positionals[0];
+        if (!url) return fail("map needs a URL");
+        console.log(JSON.stringify(await engine.map({ url }), null, 2));
+      } finally {
+        await engine.close();
+      }
       return;
     }
 
     case "parse": {
-      const path = positionals[0];
-      if (!path) return fail("parse needs a file");
-      const file = Bun.file(path);
-      if (!(await file.exists())) return fail(`no such file: ${path}`);
-      console.log(JSON.stringify(await engine.parse(new File([await file.arrayBuffer()], basename(path))), null, 2));
-      await engine.close();
+      try {
+        const path = positionals[0];
+        if (!path) return fail("parse needs a file");
+        const file = Bun.file(path);
+        if (!(await file.exists())) return fail(`no such file: ${path}`);
+        console.log(JSON.stringify(await engine.parse(new File([await file.arrayBuffer()], basename(path))), null, 2));
+      } finally {
+        await engine.close();
+      }
       return;
     }
 
     case "mcp": {
-      await runStdio(engine);
+      await runMcp(engine, deps);
       return;
     }
 
@@ -130,13 +154,53 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
+export async function runMcp(engine: Engine, deps: Pick<CliDeps, "runStdio" | "signals" | "exit"> = {}): Promise<void> {
+  const serve = deps.runStdio ?? runStdio;
+  const signals = deps.signals ?? process;
+  const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const controller = new AbortController();
+
+  let closing: Promise<void> | undefined;
+  const closeEngine = () => {
+    if (!closing) closing = engine.close();
+    return closing;
+  };
+
+  let signaled = false;
+  const onSignal = () => {
+    if (signaled) return;
+    signaled = true;
+    controller.abort();
+    void closeEngine()
+      .catch(() => {})
+      .finally(() => exit(0));
+  };
+
+  signals.once("SIGINT", onSignal);
+  signals.once("SIGTERM", onSignal);
+  try {
+    await serve(engine, { signal: controller.signal });
+  } finally {
+    try {
+      await closeEngine();
+    } finally {
+      signals.off("SIGINT", onSignal);
+      signals.off("SIGTERM", onSignal);
+    }
+  }
+}
+
 function fail(message: string): void {
   console.error(message);
   console.error(USAGE);
   process.exitCode = 1;
 }
 
-main(process.argv.slice(2)).catch((err) => {
-  console.error(failure(err).message);
-  process.exitCode = 1;
-});
+export function run(argv = process.argv.slice(2)): void {
+  main(argv).catch((err) => {
+    console.error(failure(err).message);
+    process.exitCode = 1;
+  });
+}
+
+if (import.meta.main) run();
